@@ -1,0 +1,35 @@
+# --- Pliki CAD klientów NIGDY do repozytorium (repo jest publiczne) ---
+*.step
+*.stp
+*.STEP
+*.STP
+*.iges
+*.igs
+*.IGES
+*.IGS
+*.sldprt
+*.sldasm
+*.SLDPRT
+*.SLDASM
+*.glb
+*.gltf
+# Wyjątek: własne złożenie testowe wygenerowane przez test/make_test_step.py
+!test/test_zlozenie.step
+
+# --- Foldery projektów (screeny, adnotacje, kontekst klienta) ---
+projekt/
+projekty/
+
+# --- Pliki robocze testu ---
+node_modules/
+package.json
+package-lock.json
+test/index_local.html
+test/screenshot.png
+__pycache__/
+
+# --- Ustawienia lokalne ---
+.claude/settings.local.json
+.vscode/
+Thumbs.db
+desktop.ini

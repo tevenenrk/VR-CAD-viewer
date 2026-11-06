@@ -1,0 +1,754 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAD VR Viewer</title>
+<link rel="icon" href="data:,">
+<!--
+  CAD VR Viewer v0.1 — otwiera pliki STEP/IGES (np. eksport z SolidWorksa) w przeglądarce
+  i w goglach Meta Quest (VR lub AR/passthrough). Jeden plik, bez instalacji.
+  Wersja three.js jest ustawiona w importmap poniżej (musi się zgadzać w obu liniach).
+-->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+  :root { --bg: #1d2026; --panel: rgba(24,27,33,.92); --fg: #e8eaed; --muted: #9aa0a6; --accent: #ff8a1f; --line: #3a3f47; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  #panel { position: fixed; top: 12px; left: 12px; width: min(360px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto;
+           background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; z-index: 10; }
+  h1 { font-size: 17px; margin: 0 0 10px; } h1 span { color: var(--muted); font-weight: 400; font-size: 13px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  button, .btn, select { font: inherit; color: var(--fg); background: #2c3139; border: 1px solid var(--line); border-radius: 8px;
+           padding: 10px 14px; cursor: pointer; min-height: 44px; }
+  button.primary, .btn.primary { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 600; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  #status { color: var(--muted); margin: 6px 0; white-space: pre-line; }
+  #picked { margin: 6px 0; padding: 8px; border-radius: 8px; background: #2a2416; border: 1px solid #5a4318; display: none; }
+  details { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
+  summary { cursor: pointer; color: var(--muted); }
+  #tree { margin-top: 6px; font-size: 13px; }
+  .node { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+  .node span { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node span:hover { color: var(--accent); }
+  .node.active span { color: var(--accent); font-weight: 600; }
+  .help { font-size: 13px; color: var(--muted); } .help b { color: var(--fg); }
+  #drop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; font-size: 28px;
+          background: rgba(255,138,31,.15); border: 4px dashed var(--accent); z-index: 20; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <h1>CAD VR Viewer <span>v0.1</span></h1>
+  <div class="row">
+    <label class="btn primary" for="fileInput">Otwórz STEP</label>
+    <input type="file" id="fileInput" hidden>
+    <select id="quality" title="Dokładność siatki">
+      <option value="niska">Siatka: niska (szybko)</option>
+      <option value="srednia" selected>Siatka: średnia</option>
+      <option value="wysoka">Siatka: wysoka (wolno)</option>
+    </select>
+    <select id="upAxis" title="Która oś w pliku jest pionowa">
+      <option value="Y" selected>Góra: Y (SolidWorks)</option>
+      <option value="Z">Góra: Z</option>
+    </select>
+  </div>
+  <div class="row">
+    <button id="btnVR" disabled>Wejdź w VR</button>
+    <button id="btnAR" disabled>AR (passthrough)</button>
+  </div>
+  <div id="status">Wybierz plik .step / .stp (eksport z SolidWorksa).</div>
+  <div id="picked"></div>
+  <details id="treeBox"><summary>Drzewo części</summary><div id="tree"></div></details>
+  <details><summary>Sterowanie</summary>
+    <div class="help">
+      <p><b>PC:</b> lewy przycisk – obrót, prawy – przesuw, kółko – zoom, klik – nazwa części.</p>
+      <p><b>Quest:</b><br>
+      Grip (boczny) – chwyć i obracaj cały model<br>
+      Spust – wskaż część, pokaże nazwę<br>
+      Gałka prawa góra/dół – powiększ/pomniejsz<br>
+      A / X – przełącz: „na stole” ↔ skala 1:1<br>
+      B / Y – reset pozycji modelu</p>
+    </div>
+  </details>
+</div>
+<div id="drop">Upuść plik STEP</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+
+// ============================================================================
+// KONFIGURACJA
+// ============================================================================
+const CONFIG = {
+  OCCT_JS_URL:   'https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.js',
+  OCCT_WASM_URL: 'https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.wasm',
+
+  // Dokładność siatki (tessellacja). Mniejsza wartość = gładsze łuki, więcej trójkątów.
+  QUALITY: {
+    niska:   { linearDeflection: 0.003,  angularDeflection: 0.8 },
+    srednia: { linearDeflection: 0.001,  angularDeflection: 0.5 },
+    wysoka:  { linearDeflection: 0.0004, angularDeflection: 0.3 },
+  },
+
+  DEFAULT_UP_AXIS: 'Y',        // SolidWorks: 'Y' (domyślnie), wiele innych CAD: 'Z' — można zmienić w panelu
+  DEFAULT_PART_RGB: [0.55, 0.57, 0.6],
+
+  // Rozmieszczenie w goglach (metry)
+  TABLE_FIT_SIZE: 0.6,         // tryb „na stole”: najdłuższy wymiar modelu skalowany do tej wielkości
+  TABLE_HEIGHT: 1.1,           // wysokość środka modelu nad podłogą
+  TABLE_DISTANCE: 0.7,         // odległość przed użytkownikiem
+  LIFE_SIZE_GAP: 1.0,          // tryb 1:1: odstęp od użytkownika do przodu modelu
+
+  SCALE_SPEED: 1.2,            // szybkość skalowania gałką (na sekundę)
+  SCALE_MIN: 0.0005,
+  SCALE_MAX: 20,
+  STICK_DEADZONE: 0.25,
+
+  HIGHLIGHT_RGB: 0xff7a00,
+  HIGHLIGHT_INTENSITY: 0.55,
+  BG_DESKTOP: 0x1d2026,
+  BG_VR: 0x2b2f36,
+  RAY_LENGTH: 5,
+  TOAST_SECONDS: 1.8,
+};
+
+// ============================================================================
+// STAN
+// ============================================================================
+const $ = (id) => document.getElementById(id);
+const ui = { file: $('fileInput'), quality: $('quality'), upAxis: $('upAxis'), vr: $('btnVR'), ar: $('btnAR'),
+             status: $('status'), picked: $('picked'), tree: $('tree'), drop: $('drop') };
+
+let renderer, scene, camera, controls, grid;
+let pivot, offsetGroup, cadRoot = null;      // pivot: przesuwa użytkownik; offsetGroup: centruje model; cadRoot: model
+const modelSize = new THREE.Vector3(1, 1, 1);
+let placementMode = 'stol';                   // 'stol' | 'life'
+let xrMode = null;                            // 'vr' | 'ar' | null
+let parts = [];                               // { mesh, name, path, el }
+let highlighted = null;
+let grab = null;                              // { controller, offset: Matrix4 }
+let label, toast, toastTimer = 0;
+const controllers = [];
+const raycaster = new THREE.Raycaster();
+let lastFrameTime = performance.now();
+const xrSupport = { vr: false, ar: false };
+
+// ============================================================================
+// SCENA
+// ============================================================================
+function init() {
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  document.body.appendChild(renderer.domElement);
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(CONFIG.BG_DESKTOP);
+
+  camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 2000);
+  camera.position.set(0.6, 1.6, 0.6);
+  scene.add(camera);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x444a55, 1.6));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.8); sun.position.set(2, 4, 3); scene.add(sun);
+  const fill = new THREE.DirectionalLight(0xffffff, 0.6); fill.position.set(-3, 2, -2); scene.add(fill);
+
+  grid = new THREE.GridHelper(10, 20, 0x6b7280, 0x3f444d);
+  scene.add(grid);
+
+  pivot = new THREE.Group();
+  offsetGroup = new THREE.Group();
+  pivot.add(offsetGroup);
+  scene.add(pivot);
+
+  label = makeTextSprite();
+  scene.add(label.sprite);
+  toast = makeTextSprite();
+  toast.sprite.position.set(0, -0.12, -0.6);
+  camera.add(toast.sprite);
+
+  setupControllers();
+  setupUI();
+  checkXR();
+  placeModel(placementMode);
+  fitDesktopCamera();
+
+  window.addEventListener('resize', onResize);
+  renderer.setAnimationLoop(tick);
+
+  const urlModel = new URLSearchParams(location.search).get('model');
+  if (urlModel) loadUrl(urlModel);
+}
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// ============================================================================
+// WCZYTYWANIE STEP (OpenCascade w osobnym wątku, żeby nie zamrażać obrazu)
+// ============================================================================
+let worker = null, workerSeq = 0;
+const workerPending = new Map();
+
+function getWorker() {
+  if (worker) return worker;
+  const src = `
+    importScripts(${JSON.stringify(CONFIG.OCCT_JS_URL)});
+    let occtPromise = null;
+    onmessage = async (ev) => {
+      const { id, format, buffer, params } = ev.data;
+      try {
+        if (!occtPromise) occtPromise = occtimportjs({ locateFile: () => ${JSON.stringify(CONFIG.OCCT_WASM_URL)} });
+        const occt = await occtPromise;
+        const result = format === 'iges' ? occt.ReadIgesFile(buffer, params) : occt.ReadStepFile(buffer, params);
+        postMessage({ id, ok: true, result });
+      } catch (e) {
+        postMessage({ id, ok: false, error: String((e && e.message) || e) });
+      }
+    };`;
+  worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+  worker.onmessage = (ev) => {
+    const p = workerPending.get(ev.data.id);
+    if (!p) return;
+    workerPending.delete(ev.data.id);
+    ev.data.ok ? p.resolve(ev.data.result) : p.reject(new Error(ev.data.error));
+  };
+  worker.onerror = (ev) => {
+    for (const p of workerPending.values()) p.reject(new Error(ev.message || 'Błąd wątku importu'));
+    workerPending.clear();
+    worker = null;
+  };
+  return worker;
+}
+
+function parseCad(buffer, format, params) {
+  return new Promise((resolve, reject) => {
+    const id = ++workerSeq;
+    workerPending.set(id, { resolve, reject });
+    getWorker().postMessage({ id, format, buffer, params }, [buffer.buffer]);
+  });
+}
+
+function detectFormat(name) {
+  const ext = name.toLowerCase().split('.').pop();
+  if (ext === 'step' || ext === 'stp') return 'step';
+  if (ext === 'iges' || ext === 'igs') return 'iges';
+  return null;
+}
+
+async function loadFile(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  await loadBuffer(buf, file.name);
+}
+
+async function loadUrl(url) {
+  try {
+    setStatus('Pobieranie: ' + url);
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const buf = new Uint8Array(await resp.arrayBuffer());
+    await loadBuffer(buf, decodeURIComponent(url.split('/').pop().split('?')[0]));
+  } catch (e) {
+    setStatus('Nie udało się pobrać pliku: ' + e.message);
+  }
+}
+
+async function loadBuffer(buffer, name) {
+  const format = detectFormat(name);
+  if (!format) { setStatus(`„${name}” to nie STEP/IGES. W SolidWorksie: Plik → Zapisz jako → STEP AP214/AP242.`); return; }
+
+  const q = CONFIG.QUALITY[ui.quality.value] || CONFIG.QUALITY.srednia;
+  const params = { linearUnit: 'meter', linearDeflectionType: 'bounding_box_ratio', ...q };
+  const sizeMB = (buffer.byteLength / 1048576).toFixed(1);
+  setStatus(`Wczytywanie „${name}” (${sizeMB} MB)…\nDuże złożenia na Quest mogą liczyć się nawet minutę.`);
+  setButtons(false);
+  const t0 = performance.now();
+  try {
+    const result = await parseCad(buffer, format, params);
+    if (!result || !result.success) throw new Error('plik uszkodzony lub nieobsługiwany');
+    const stats = buildModel(result);
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    setStatus(`Wczytano „${name}”\n${stats.parts} części, ${(stats.tris / 1000).toFixed(0)} tys. trójkątów, ${secs} s` +
+              `\nWymiary: ${(modelSize.x * 1000).toFixed(0)} × ${(modelSize.y * 1000).toFixed(0)} × ${(modelSize.z * 1000).toFixed(0)} mm`);
+    document.title = name + ' — CAD VR Viewer';
+  } catch (e) {
+    setStatus('Błąd odczytu: ' + e.message);
+  }
+  setButtons(true);
+}
+
+// ============================================================================
+// BUDOWA MODELU 3D Z WYNIKU OPENCASCADE
+// ============================================================================
+function buildModel(result) {
+  clearModel();
+  cadRoot = new THREE.Group();
+  cadRoot.name = 'CAD';
+
+  const geoCache = new Map();
+  let tris = 0;
+  ui.tree.innerHTML = '';
+
+  const walk = (node, parentObj, path, depth) => {
+    const nodeName = node.name || '';
+    const group = new THREE.Group();
+    group.name = nodeName;
+    parentObj.add(group);
+    const isLeafPart = node.meshes.length === 1 && node.children.length === 0;   // pojedyncza część: jeden wiersz w drzewie
+    const groupRow = nodeName && !isLeafPart;
+    if (groupRow) addTreeRow(group, nodeName, depth, false);
+    const curPath = nodeName ? [...path, nodeName] : path;
+
+    for (const mi of node.meshes) {
+      const m = result.meshes[mi];
+      let geo = geoCache.get(mi);
+      if (!geo) { geo = makeGeometry(m); geoCache.set(mi, geo); }
+      const mesh = new THREE.Mesh(geo, makeMaterials(m, geo));
+      const partName = m.name || nodeName || 'bez nazwy';
+      mesh.name = partName;
+      group.add(mesh);
+      tris += geo.index.count / 3;
+      const p = { mesh, name: partName, path: [...curPath, partName].filter((v, i, a) => i === 0 || v !== a[i - 1]) };
+      mesh.userData.part = p;
+      p.el = addTreeRow(mesh, partName, depth + (groupRow ? 1 : 0), true);
+      parts.push(p);
+    }
+    for (const child of node.children) walk(child, group, curPath, depth + (nodeName ? 1 : 0));
+  };
+  walk(result.root, cadRoot, [], 0);
+
+  offsetGroup.add(cadRoot);
+  applyUpAxis();
+  window.__viewer = { parts, scene, modelSize, pivot };   // do testów / debugowania
+  return { parts: parts.length, tris };
+}
+
+// Obrót CAD → świat (w goglach Y jest w górę) i wycentrowanie modelu
+function applyUpAxis() {
+  if (!cadRoot) return;
+  cadRoot.rotation.set(ui.upAxis.value === 'Z' ? -Math.PI / 2 : 0, 0, 0);
+  pivot.position.set(0, 0, 0); pivot.quaternion.identity(); pivot.scale.setScalar(1);
+  offsetGroup.position.set(0, 0, 0);
+  pivot.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(cadRoot);
+  if (box.isEmpty()) box.set(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5));
+  box.getSize(modelSize);
+  offsetGroup.position.copy(box.getCenter(new THREE.Vector3())).negate();
+  placeModel(placementMode);
+  fitDesktopCamera();
+}
+
+function makeGeometry(m) {
+  const geo = new THREE.BufferGeometry();
+  const pos = m.attributes.position.array;
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  if (m.attributes.normal) geo.setAttribute('normal', new THREE.Float32BufferAttribute(m.attributes.normal.array, 3));
+  const vcount = pos.length / 3;
+  geo.setIndex(vcount > 65535 ? new THREE.Uint32BufferAttribute(m.index.array, 1) : new THREE.Uint16BufferAttribute(m.index.array, 1));
+  if (!m.attributes.normal) geo.computeVertexNormals();
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+function newMaterial(rgb) {
+  return new THREE.MeshStandardMaterial({
+    color: new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2]),   // OpenCascade zwraca kolory liniowe
+    roughness: 0.55, metalness: 0.15, side: THREE.DoubleSide,
+  });
+}
+
+function makeMaterials(m, geo) {
+  const base = m.color || CONFIG.DEFAULT_PART_RGB;
+  const faces = m.brep_faces || [];
+  const hasFaceColors = faces.some((f) => f.color);
+  if (!hasFaceColors) return newMaterial(base);
+
+  // Kolory na pojedynczych ścianach (SolidWorks często tak eksportuje) → grupy geometrii
+  if (geo.groups.length === 0) {
+    const keys = new Map();
+    for (const f of faces) {
+      const rgb = f.color || base;
+      const key = rgb.map((v) => v.toFixed(3)).join(',');
+      if (!keys.has(key)) keys.set(key, { index: keys.size, rgb });
+      geo.addGroup(f.first * 3, (f.last - f.first + 1) * 3, keys.get(key).index);
+    }
+    geo.userData.colorList = [...keys.values()].map((k) => k.rgb);
+  }
+  return geo.userData.colorList.map(newMaterial);
+}
+
+function clearModel() {
+  setHighlight(null);
+  label.sprite.visible = false;
+  if (!cadRoot) return;
+  const geos = new Set();
+  cadRoot.traverse((o) => {
+    if (!o.isMesh) return;
+    geos.add(o.geometry);
+    (Array.isArray(o.material) ? o.material : [o.material]).forEach((mat) => mat.dispose());
+  });
+  geos.forEach((g) => g.dispose());
+  offsetGroup.remove(cadRoot);
+  cadRoot = null;
+  parts = [];
+}
+
+// ============================================================================
+// DRZEWO CZĘŚCI (panel)
+// ============================================================================
+function addTreeRow(obj, name, depth, isPart) {
+  const row = document.createElement('div');
+  row.className = 'node';
+  row.style.paddingLeft = (depth * 14) + 'px';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox'; cb.checked = true; cb.title = 'Pokaż / ukryj';
+  cb.onchange = () => { obj.visible = cb.checked; };
+  const span = document.createElement('span');
+  span.textContent = (isPart ? '' : '▸ ') + name;
+  span.title = name;
+  span.onclick = () => { setHighlight(obj); showPicked(obj); };
+  row.append(cb, span);
+  ui.tree.appendChild(row);
+  return row;
+}
+
+function showPicked(obj) {
+  if (!obj) { ui.picked.style.display = 'none'; return; }
+  const p = obj.userData.part;
+  ui.picked.style.display = 'block';
+  ui.picked.textContent = p ? `Część: ${p.name}\nŚcieżka: ${p.path.join(' › ')}` : `Grupa: ${obj.name}`;
+  ui.picked.style.whiteSpace = 'pre-line';
+  document.querySelectorAll('.node.active').forEach((n) => n.classList.remove('active'));
+  if (p && p.el) { p.el.classList.add('active'); p.el.scrollIntoView({ block: 'nearest' }); }
+}
+
+// ============================================================================
+// PODŚWIETLANIE I WSKAZYWANIE
+// ============================================================================
+function forEachMaterial(obj, fn) {
+  obj.traverse((o) => {
+    if (!o.isMesh) return;
+    (Array.isArray(o.material) ? o.material : [o.material]).forEach(fn);
+  });
+}
+
+function setHighlight(obj) {
+  if (highlighted === obj) return;
+  if (highlighted) forEachMaterial(highlighted, (m) => { m.emissive.setHex(0x000000); m.emissiveIntensity = 1; });
+  highlighted = obj;
+  if (highlighted) forEachMaterial(highlighted, (m) => { m.emissive.setHex(CONFIG.HIGHLIGHT_RGB); m.emissiveIntensity = CONFIG.HIGHLIGHT_INTENSITY; });
+}
+
+function isVisibleDeep(o) {
+  for (let x = o; x; x = x.parent) if (!x.visible) return false;
+  return true;
+}
+
+function pick() {
+  if (!cadRoot) return null;
+  const hits = raycaster.intersectObject(cadRoot, true);
+  return hits.find((h) => h.object.isMesh && isVisibleDeep(h.object)) || null;
+}
+
+// ============================================================================
+// NAPISY W 3D (nazwa części, komunikaty)
+// ============================================================================
+function makeTextSprite() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024; canvas.height = 128;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
+  const sprite = new THREE.Sprite(mat);
+  sprite.renderOrder = 999;
+  sprite.visible = false;
+  sprite.scale.set(0.4, 0.05, 1);
+  return { sprite, canvas, tex };
+}
+
+function drawText(t, text) {
+  const ctx = t.canvas.getContext('2d');
+  ctx.clearRect(0, 0, t.canvas.width, t.canvas.height);
+  ctx.font = '600 54px system-ui, sans-serif';
+  const w = Math.min(t.canvas.width, ctx.measureText(text).width + 60);
+  const x = (t.canvas.width - w) / 2;
+  ctx.fillStyle = 'rgba(20,22,26,0.88)';
+  ctx.beginPath(); ctx.roundRect(x, 14, w, 100, 22); ctx.fill();
+  ctx.strokeStyle = '#ff8a1f'; ctx.lineWidth = 4; ctx.stroke();
+  ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, t.canvas.width / 2, 66, t.canvas.width - 80);
+  t.tex.needsUpdate = true;
+}
+
+const _camPos = new THREE.Vector3();
+function showLabelAt(text, point) {
+  if (label.text !== text) { drawText(label, text); label.text = text; }
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  cam.getWorldPosition(_camPos);
+  const d = _camPos.distanceTo(point);
+  const h = Math.max(0.02, d * 0.05);
+  label.sprite.scale.set(h * 8, h, 1);
+  label.sprite.position.copy(point).lerp(_camPos, 0.08);   // trochę przed powierzchnią
+  label.sprite.visible = true;
+}
+
+function showToast(text) {
+  drawText(toast, text);
+  toast.sprite.scale.set(0.32, 0.04, 1);
+  toast.sprite.visible = true;
+  toastTimer = CONFIG.TOAST_SECONDS;
+}
+
+// ============================================================================
+// ROZMIESZCZENIE MODELU
+// ============================================================================
+function placeModel(mode) {
+  const maxDim = Math.max(modelSize.x, modelSize.y, modelSize.z) || 1;
+  pivot.quaternion.identity();
+  if (mode === 'stol') {
+    pivot.scale.setScalar(CONFIG.TABLE_FIT_SIZE / maxDim);
+    pivot.position.set(0, CONFIG.TABLE_HEIGHT, -CONFIG.TABLE_DISTANCE);
+  } else {
+    pivot.scale.setScalar(1);
+    pivot.position.set(0, modelSize.y / 2, -(modelSize.z / 2 + CONFIG.LIFE_SIZE_GAP));
+  }
+  pivot.updateMatrixWorld(true);
+}
+
+function fitDesktopCamera() {
+  const size = Math.max(modelSize.x, modelSize.y, modelSize.z) * pivot.scale.x || 1;
+  const dist = size / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.6;
+  controls.target.copy(pivot.position);
+  camera.position.copy(pivot.position).add(new THREE.Vector3(0.55, 0.45, 0.7).normalize().multiplyScalar(dist));
+  camera.near = Math.max(0.001, dist / 200);
+  camera.far = dist * 200;
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+
+// ============================================================================
+// KONTROLERY QUEST
+// ============================================================================
+function setupControllers() {
+  const factory = new XRControllerModelFactory();
+  const rayGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]);
+
+  for (let i = 0; i < 2; i++) {
+    const c = renderer.xr.getController(i);
+    c.userData = { inputSource: null, selecting: false, prev: {} };
+    const ray = new THREE.Line(rayGeo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 }));
+    ray.scale.z = CONFIG.RAY_LENGTH;
+    c.add(ray);
+    c.userData.ray = ray;
+
+    c.addEventListener('connected', (e) => { c.userData.inputSource = e.data; ray.visible = e.data.targetRayMode === 'tracked-pointer'; });
+    c.addEventListener('disconnected', () => { c.userData.inputSource = null; if (grab && grab.controller === c) grab = null; });
+    c.addEventListener('selectstart', () => { c.userData.selecting = true; });
+    c.addEventListener('selectend', () => { c.userData.selecting = false; });
+    c.addEventListener('squeezestart', () => startGrab(c));
+    c.addEventListener('squeezeend', () => { if (grab && grab.controller === c) grab = null; });
+    scene.add(c);
+    controllers.push(c);
+
+    const gripSpace = renderer.xr.getControllerGrip(i);
+    gripSpace.add(factory.createControllerModel(gripSpace));
+    scene.add(gripSpace);
+  }
+
+  renderer.xr.addEventListener('sessionstart', () => {
+    scene.background = xrMode === 'ar' ? null : new THREE.Color(CONFIG.BG_VR);
+    grid.visible = xrMode !== 'ar';
+    placeModel(placementMode);
+    showToast(placementMode === 'stol' ? 'Model na stole — A/X: skala 1:1' : 'Skala 1:1 — A/X: na stół');
+  });
+  renderer.xr.addEventListener('sessionend', () => {
+    xrMode = null;
+    grab = null;
+    scene.background = new THREE.Color(CONFIG.BG_DESKTOP);
+    grid.visible = true;
+    toast.sprite.visible = false;
+    placeModel(placementMode);
+    fitDesktopCamera();
+  });
+}
+
+function startGrab(c) {
+  pivot.updateMatrixWorld(true);
+  c.updateMatrixWorld(true);
+  grab = { controller: c, offset: new THREE.Matrix4().copy(c.matrixWorld).invert().multiply(pivot.matrixWorld) };
+}
+
+const _m = new THREE.Matrix4();
+function updateGrab() {
+  _m.multiplyMatrices(grab.controller.matrixWorld, grab.offset);
+  _m.decompose(pivot.position, pivot.quaternion, pivot.scale);
+}
+
+function buttonPressedEdge(c, index) {
+  const gp = c.userData.inputSource && c.userData.inputSource.gamepad;
+  const now = !!(gp && gp.buttons[index] && gp.buttons[index].pressed);
+  const was = !!c.userData.prev[index];
+  c.userData.prev[index] = now;
+  return now && !was;
+}
+
+function handleXRInput(dt) {
+  let anyPointing = false;
+
+  for (const c of controllers) {
+    const src = c.userData.inputSource;
+    if (!src) continue;
+    const gp = src.gamepad;
+
+    // A / X (przycisk 4): przełącz tryb skali
+    if (buttonPressedEdge(c, 4)) {
+      placementMode = placementMode === 'stol' ? 'life' : 'stol';
+      grab = null;
+      placeModel(placementMode);
+      showToast(placementMode === 'stol' ? 'Tryb: model na stole' : 'Tryb: skala 1:1');
+    }
+    // B / Y (przycisk 5): reset pozycji
+    if (buttonPressedEdge(c, 5)) {
+      grab = null;
+      placeModel(placementMode);
+      showToast('Reset pozycji');
+    }
+    // Prawa gałka góra/dół: skalowanie (gdy model nie jest trzymany)
+    if (gp && src.handedness === 'right' && !grab && gp.axes.length >= 4) {
+      const y = gp.axes[3];
+      if (Math.abs(y) > CONFIG.STICK_DEADZONE) {
+        const s = THREE.MathUtils.clamp(pivot.scale.x * Math.exp(-y * CONFIG.SCALE_SPEED * dt), CONFIG.SCALE_MIN, CONFIG.SCALE_MAX);
+        pivot.scale.setScalar(s);
+      }
+    }
+    // Spust: wskazywanie części
+    if (c.userData.selecting) {
+      anyPointing = true;
+      raycaster.setFromXRController(c);
+      const hit = pick();
+      if (hit) {
+        setHighlight(hit.object);
+        showPicked(hit.object);
+        showLabelAt(hit.object.userData.part ? hit.object.userData.part.name : hit.object.name, hit.point);
+        c.userData.ray.scale.z = hit.distance;
+      } else {
+        setHighlight(null);
+        label.sprite.visible = false;
+        c.userData.ray.scale.z = CONFIG.RAY_LENGTH;
+      }
+    } else {
+      c.userData.ray.scale.z = CONFIG.RAY_LENGTH;
+    }
+  }
+  return anyPointing;
+}
+
+// ============================================================================
+// WEJŚCIE W VR / AR
+// ============================================================================
+async function checkXR() {
+  if (!('xr' in navigator)) {
+    ui.vr.title = ui.ar.title = 'Ta przeglądarka nie obsługuje WebXR — otwórz stronę w przeglądarce Meta Quest.';
+    return;
+  }
+  try { xrSupport.vr = await navigator.xr.isSessionSupported('immersive-vr'); } catch { xrSupport.vr = false; }
+  try { xrSupport.ar = await navigator.xr.isSessionSupported('immersive-ar'); } catch { xrSupport.ar = false; }
+  setButtons(true);
+}
+
+function setButtons(enabled) {
+  ui.vr.disabled = !(enabled && xrSupport.vr && cadRoot);
+  ui.ar.disabled = !(enabled && xrSupport.ar && cadRoot);
+}
+
+async function enterXR(mode) {
+  if (renderer.xr.isPresenting) return;
+  try {
+    const session = await navigator.xr.requestSession(mode === 'ar' ? 'immersive-ar' : 'immersive-vr', {
+      optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'],
+    });
+    xrMode = mode;
+    renderer.xr.setReferenceSpaceType('local-floor');
+    await renderer.xr.setSession(session);
+  } catch (e) {
+    xrMode = null;
+    setStatus('Nie udało się uruchomić ' + mode.toUpperCase() + ': ' + e.message);
+  }
+}
+
+// ============================================================================
+// PANEL / MYSZ (PC)
+// ============================================================================
+function setStatus(t) { ui.status.textContent = t; }
+
+function setupUI() {
+  ui.file.addEventListener('change', () => { if (ui.file.files[0]) loadFile(ui.file.files[0]); ui.file.value = ''; });
+  ui.upAxis.value = CONFIG.DEFAULT_UP_AXIS;
+  ui.upAxis.addEventListener('change', applyUpAxis);
+  ui.vr.addEventListener('click', () => enterXR('vr'));
+  ui.ar.addEventListener('click', () => enterXR('ar'));
+
+  // Przeciągnij i upuść
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; ui.drop.style.display = 'flex'; });
+  window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; ui.drop.style.display = 'none'; } });
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => {
+    e.preventDefault(); dragDepth = 0; ui.drop.style.display = 'none';
+    const f = e.dataTransfer.files[0];
+    if (f) loadFile(f);
+  });
+
+  // Klik (bez przeciągania) = wskazanie części
+  let down = null;
+  renderer.domElement.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY }; });
+  renderer.domElement.addEventListener('pointerup', (e) => {
+    if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) { down = null; return; }
+    down = null;
+    const ndc = new THREE.Vector2((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+    raycaster.setFromCamera(ndc, camera);
+    const hit = pick();
+    setHighlight(hit ? hit.object : null);
+    showPicked(hit ? hit.object : null);
+  });
+}
+
+// ============================================================================
+// PĘTLA RENDEROWANIA
+// ============================================================================
+function tick() {
+  const now = performance.now();
+  const dt = Math.min((now - lastFrameTime) / 1000, 0.1);
+  lastFrameTime = now;
+  if (renderer.xr.isPresenting) {
+    handleXRInput(dt);
+    if (grab) updateGrab();
+    if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toast.sprite.visible = false; }
+  } else {
+    controls.update();
+  }
+  renderer.render(scene, camera);
+}
+
+init();
+</script>
+</body>
+</html>
