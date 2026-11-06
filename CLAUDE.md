@@ -16,21 +16,28 @@ Program do oglądania modeli CAD z SolidWorksa (przez STEP) w goglach Meta Quest
 
 ## Decyzje architektoniczne (już podjęte)
 - WebXR + three.js w jednym pliku `index.html` (bez bundlera), hostowany na GitHub Pages (HTTPS wymagany przez WebXR). Kod w repo publicznym, pliki STEP klientów NIGDY do repo.
-- Parsowanie STEP: `occt-import-js` 0.0.23 (OpenCascade WASM), w Web Workerze z Blob URL. Biblioteki z CDN jsdelivr (three@0.187.0, importmap).
-- Jednostki: import w metrach (`linearUnit: 'meter'`). Drzewo złożenia i nazwy części zachowane (`result.root`), kolory z `meshes[].color` i `brep_faces[].color` (grupy geometrii).
-- Struktura sceny: `pivot` (przesuwa/skaluje użytkownik) → `offsetGroup` (centruje) → `cadRoot` (obrót osi góry: SolidWorks Y-up, opcja Z-up w panelu).
-- Sterowanie Quest: grip = chwyt modelu, spust = wskazanie części (nazwa nad częścią), prawa gałka = skala, A/X = stół ↔ 1:1, B/Y = reset.
+- Parsowanie STEP: `occt-import-js` 0.0.23 (OpenCascade WASM), w Web Workerze z Blob URL. Biblioteki z CDN jsdelivr (importmap): three@0.187.0, three-mesh-bvh@0.9.16 (BVH na każdej geometrii: szybki raycast + test sfery chwytu; BVH zachowuje grupy kolorów).
+- Jednostki: import w metrach (`linearUnit: 'meter'`). Drzewo złożenia i nazwy części zachowane (`result.root`), kolory z `meshes[].color` i `brep_faces[].color` (grupy geometrii). Geometria z OCCT jest już w układzie globalnym (macierze części = jednostkowe; `userData.origMatrix` do resetu).
+- Struktura sceny: `pivot` (przesuwa/skaluje użytkownik) → `offsetGroup` (centruje) → `cadRoot` (obrót osi góry: SolidWorks Y-up, opcja Z-up w panelu) → części + `annoRoot` (rysunki i miary w układzie CAD, metry → gotowe pod `adnotacje.json`).
+- Sterowanie Quest (wzór: Gravity Sketch), ręka główna = `CONFIG.DOMINANT_HAND` (prawa):
+  spust = narzędzie (wskaz/rysuj/gumka/miarka/kolor), grip przy części = chwyt części (tryb „czesc”, zasięg `PART_GRAB_RADIUS`) lub grupy w sferze (tryb „grupa”, promień S.sphere), grip w pustym miejscu = cały model, dwa gripy = obrót+skala trzymanego (część albo model),
+  A = zrzut, B = cofnij, X = panel narzędzi, Y = reset modelu, prawa gałka = grubość pędzla/gumki lub skala modelu, lewa gałka = sfera.
+  Panel narzędzi = płótno 2D (CanvasTexture) na lewym kontrolerze (`PALETTE_ATTACH: 'hand'`, opcja 'world'), klik promieniem drugiej ręki + spust. Położenie panelu: `PALETTE_POS`, `PALETTE_TILT_DEG` — do dostrojenia po teście na goglach.
+- Zrzut ekranu: render do WebGLRenderTarget z `texture.colorSpace = SRGBColorSpace` (sprzętowe sRGB = kolory jak na ekranie), na czas renderu `renderer.xr.enabled = false`, potem przywrócenie render targetu XR. Zapis JPG 1920×1080 w IndexedDB (`cad-vr-viewer`/`zrzuty`), pobieranie z panelu PC. Chmura: NIE ustalona.
+- Cofanie: `undoStack` (add/remove/move/color), bez „ponów”.
 - Wszystkie stałe w obiekcie `CONFIG` na górze skryptu.
 
-## Stan (v0.1) — ZROBIONE I PRZETESTOWANE NA PC (headless Chrome)
-Wczytanie STEP, drzewo części, kolory, kliknięcie myszą w część, wymiary. 
-NIE PRZETESTOWANE na prawdziwych goglach: tryb VR/AR, kontrolery, chwytanie, skalowanie, napisy 3D. Test na Quest robi Robert i raportuje.
+## Stan (v0.2) — PRZETESTOWANE AUTOMATYCZNIE (headless Chrome + emulator Meta Quest 3 IWER)
+v0.1: wczytanie STEP, drzewo części, kolory, kliknięcie myszą w część, wymiary.
+v0.2: panel narzędzi, rysowanie (rurka, grubość od nacisku spustu), gumka, miarka (punkty na powierzchni przez raycast, wynik w mm CAD), malowanie części (VR + PC), chwyt części / grupy w sferze / modelu, dwie ręce = skala+obrót, zrzut (A i przycisk PC), cofnij (B, Ctrl+Z), reset części/kolorów.
+Test `test/run_headless.py`: 28 sprawdzeń, w tym numery przycisków A/B/X/Y w emulatorze (zgodne z xr-standard: 4 = A/X, 5 = B/Y).
+NIE PRZETESTOWANE na prawdziwych goglach. Test na Quest robi Robert i raportuje.
 Znane ryzyka: duże złożenia (parsowanie na Quest może trwać ~minutę → w razie potrzeby przenieść konwersję STEP→GLB na PC),
-wydajność renderu na Quest 3S (może wymagać uproszczenia siatki/LOD), pomiar przycisków kontrolera (indeks 4 = A/X, 5 = B/Y; sprawdzić na sprzęcie).
+wydajność renderu na Quest 3S (może wymagać uproszczenia siatki/LOD), wygoda położenia panelu na kontrolerze, zrzut w AR nie zawiera obrazu z kamer (ograniczenie WebXR, tło = kolor).
 
 ## Plan dalej
-- v0.2: rysowanie 3D (kolor, grubość), strzałki, komentarze, zrzut ekranu (przycisk kontrolera) → zapis do chmury (Robert wybiera: Google Drive / OneDrive / Dropbox — jeszcze nie ustalone; zapytać).
-- v0.3: chwytanie pojedynczych części, przekrój (clipping plane + zamknięcie przekroju).
+- v0.2 reszta: strzałki, komentarze, zapis zrzutów do chmury (Robert wybiera: Google Drive / OneDrive / Dropbox — jeszcze nie ustalone; zapytać), zapis/odczyt `adnotacje.json`.
+- v0.3: przekrój (clipping plane + zamknięcie przekroju). (Chwytanie pojedynczych części — zrobione w v0.2.)
 - v0.4: program B (Python, PC): mikrofon → Gemini Live API (limity: audio ~15 min, audio+wideo ~2 min, 1 klatka/s; użyć kompresji kontekstu i wznawiania sesji; sprawdzić aktualną dokumentację), komunikacja WebSocket z viewerem.
 - v0.5: integracja z systemem zarządzania projektami.
 
@@ -43,7 +50,7 @@ wydajność renderu na Quest 3S (może wymagać uproszczenia siatki/LOD), pomiar
 ## Pliki
 - `index.html` — cały viewer.
 - `test/test_zlozenie.step` — małe złożenie testowe (użyć z ustawieniem „Góra: Z”). Generator: `test/make_test_step.py` (CadQuery).
-- `test/run_headless.py` — automatyczny test w headless Chrome przez Playwright (sam znajduje Chrome na Windowsie lub Linuksie, lista `CHROME_PATHS`). Wymaga `pip install playwright` i `npm install --no-save three@0.187.0 occt-import-js@0.0.23` w folderze projektu. Uruchamiać z folderu projektu: `python test/run_headless.py`. Na PC Roberta (Windows) zainstalowane i działa.
+- `test/run_headless.py` — automatyczny test w headless Chrome przez Playwright (sam znajduje Chrome na Windowsie lub Linuksie, lista `CHROME_PATHS`). Część 1: PC. Część 2: emulator Meta Quest 3 (IWER, `installRuntime({forceInstall: true})`, `stereoEnabled = false`) — steruje kontrolerami (`T.pose`, `T.tipAt`, `T.btn`, `T.palClick`) i sprawdza wszystkie narzędzia. Wymaga `pip install playwright` i `npm install --no-save three@0.187.0 occt-import-js@0.0.23 three-mesh-bvh@0.9.16 iwer@2.6.0` w folderze projektu. Uruchamiać z folderu projektu: `python test/run_headless.py` (kod wyjścia 1 = błąd). Wyniki obrazowe: `test/screenshot.png`, `test/screenshot_vr.png`, `test/zrzut_pc.jpg`, `test/zrzut_vr.jpg` (w .gitignore). Na PC Roberta (Windows) zainstalowane i działa.
 
 ## Zasady pracy
 - Zawsze testuj zmiany w headless Chrome przed oddaniem; sprawdzaj konsolę pod kątem błędów.

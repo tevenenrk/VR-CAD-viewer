@@ -26,6 +26,8 @@ package.json
 package-lock.json
 test/index_local.html
 test/screenshot.png
+test/screenshot_vr.png
+test/zrzut_*.jpg
 __pycache__/
 
 # --- Ustawienia lokalne ---
