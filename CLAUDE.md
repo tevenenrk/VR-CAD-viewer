@@ -23,22 +23,28 @@ Program do oglądania modeli CAD z SolidWorksa (przez STEP) w goglach Meta Quest
   spust = narzędzie (wskaz/rysuj/gumka/miarka/kolor), grip przy części = chwyt części (tryb „czesc”, zasięg `PART_GRAB_RADIUS`) lub grupy w sferze (tryb „grupa”, promień S.sphere), grip w pustym miejscu = cały model, dwa gripy = obrót+skala trzymanego (część albo model),
   A = zrzut, B = cofnij, X = panel narzędzi, Y = reset modelu, prawa gałka = grubość pędzla/gumki lub skala modelu, lewa gałka = sfera.
   Panel narzędzi = płótno 2D (CanvasTexture) na lewym kontrolerze (`PALETTE_ATTACH: 'hand'`, opcja 'world'), klik promieniem drugiej ręki + spust. Położenie panelu: `PALETTE_POS`, `PALETTE_TILT_DEG` — do dostrojenia po teście na goglach.
-- Zrzut ekranu: render do WebGLRenderTarget z `texture.colorSpace = SRGBColorSpace` (sprzętowe sRGB = kolory jak na ekranie), na czas renderu `renderer.xr.enabled = false`, potem przywrócenie render targetu XR. Zapis JPG 1920×1080 w IndexedDB (`cad-vr-viewer`/`zrzuty`), pobieranie z panelu PC. Chmura: NIE ustalona.
+- Zrzut ekranu: render do WebGLRenderTarget z `texture.colorSpace = SRGBColorSpace` (sprzętowe sRGB = kolory jak na ekranie), na czas renderu `renderer.xr.enabled = false`, potem przywrócenie render targetu XR. Zapis JPG 1920×1080 w IndexedDB (`cad-vr-viewer` v2: magazyny `zrzuty` i `modele`), pobieranie z panelu PC.
+- Chmura = **Google Drive** (wybór Roberta, v0.3; inne dyski ewentualnie później). Logowanie: Google Identity Services, token client (bez serwera), zakres `drive` (pełny, bo trzeba czytać foldery wrzucone ręcznie i pisać do `projekt/vr/screeny`), aplikacja w trybie „Testowanie” w Google Cloud Robert-a. Token 1 h w localStorage; po wygaśnięciu zrzuty czekają (`rec.cloud` = '' / 'ok' / 'error'). Client ID: `CONFIG.GOOGLE_CLIENT_ID` albo panel Ustawienia (localStorage `cad-vr-viewer-ustawienia`). Drive REST v3 przez fetch. Zrzuty → `<folder projektu>/vr/screeny`, bez projektu → `Mój dysk/CAD VR Viewer/vr/screeny`. Plik otwarty z `X/cad/` → folder projektu = `X`.
+- Głos: Quest Browser nie ma SpeechRecognition → dyktowanie przez Gemini `generateContent` (MediaRecorder audio/webm → inline_data), klucz Roberta tylko w localStorage, model `CONFIG.GEMINI_MODEL` (`gemini-flash-latest`). Fallback: Web Speech API (Chrome PC).
+- Przekrój: `material.clippingPlanes` (wspólna płaszczyzna `section.world`, wyłączony = stała 1e9, bez rekompilacji shaderów), zamknięcie przekroju = tylne ściany malowane płaskim kolorem (`onBeforeCompile`, `gl_FrontFacing`) — wymaga zamkniętych brył o poprawnej orientacji (OCCT daje). Płaszczyzna zapisana w układzie CAD (`section.local`). Raycast pomija trafienia po odciętej stronie.
+- Komentarze: klasa `Note` w `annoRoot` (kotwica + pozycja płytki w metrach CAD, `toJSON()` pod `adnotacje.json`), płytka = CanvasTexture zwrócona do oczu, stała wielkość w świecie. Edycja: `edit` (wspólne PC/gogle), klawiatura na płótnie panelu, klawiatura systemowa Quest (`session.isSystemKeyboardSupported`, fokus na ukrytym `<input id="xrKb">`).
+- Panel w goglach: zakładki `pal.page` = narzedzia / drzewo / menu (+ klawiatura), układ liczony co klatkę w `layoutPalette()`, rysowany tylko po zmianie sygnatury. Przyciski wymagające gestu (`GESTURE_IDS`: VR/AR/wyjście, mikrofon, klawiatura systemowa) obsługiwane w zdarzeniu `selectstart`.
 - Cofanie: `undoStack` (add/remove/move/color), bez „ponów”.
 - Wszystkie stałe w obiekcie `CONFIG` na górze skryptu.
 
-## Stan (v0.2) — PRZETESTOWANE AUTOMATYCZNIE (headless Chrome + emulator Meta Quest 3 IWER)
+## Stan (v0.3) — PRZETESTOWANE AUTOMATYCZNIE (headless Chrome + emulator Meta Quest 3 IWER)
 v0.1: wczytanie STEP, drzewo części, kolory, kliknięcie myszą w część, wymiary.
 v0.2: panel narzędzi, rysowanie (rurka, grubość od nacisku spustu), gumka, miarka (punkty na powierzchni przez raycast, wynik w mm CAD), malowanie części (VR + PC), chwyt części / grupy w sferze / modelu, dwie ręce = skala+obrót, zrzut (A i przycisk PC), cofnij (B, Ctrl+Z), reset części/kolorów.
-Test `test/run_headless.py`: 28 sprawdzeń, w tym numery przycisków A/B/X/Y w emulatorze (zgodne z xr-standard: 4 = A/X, 5 = B/Y).
+v0.3: drzewo złożenia w goglach, przekrój, komentarze (płytka + strzałka, klawiatura w panelu, klawiatura Quest, dyktowanie Gemini), menu główne w goglach (plik z Drive / ostatnie, oś, siatka, VR↔AR, wyjście), Google Drive (otwieranie STEP, automatyczny upload zrzutów), ostatnio otwierane pliki (IndexedDB), wejście w VR bez modelu.
+Test `test/run_headless.py`: 62 sprawdzenia w 3 częściach (PC, gogle, gogle bez modelu + Drive), w tym numery przycisków A/B/X/Y w emulatorze (zgodne z xr-standard: 4 = A/X, 5 = B/Y). Google (GIS, Drive, Gemini) symulowane klasą `GoogleMock` (Playwright route); mikrofon sztuczny (flagi Chrome). W środowisku z HTTPS_PROXY błędy pobierania modeli kontrolerów z CDN są ignorowane.
+Niezweryfikowane nigdzie: prawdziwe logowanie Google / Drive, prawdziwe Gemini, klawiatura systemowa Quest, przełączanie VR↔AR z menu (zależy od tego, czy Quest uznaje spust za gest użytkownika).
 NIE PRZETESTOWANE na prawdziwych goglach. Test na Quest robi Robert i raportuje.
 Znane ryzyka: duże złożenia (parsowanie na Quest może trwać ~minutę → w razie potrzeby przenieść konwersję STEP→GLB na PC),
 wydajność renderu na Quest 3S (może wymagać uproszczenia siatki/LOD), wygoda położenia panelu na kontrolerze, zrzut w AR nie zawiera obrazu z kamer (ograniczenie WebXR, tło = kolor).
 
 ## Plan dalej
-- v0.2 reszta: strzałki, komentarze, zapis zrzutów do chmury (Robert wybiera: Google Drive / OneDrive / Dropbox — jeszcze nie ustalone; zapytać), zapis/odczyt `adnotacje.json`.
-- v0.3: przekrój (clipping plane + zamknięcie przekroju). (Chwytanie pojedynczych części — zrobione w v0.2.)
-- v0.4: program B (Python, PC): mikrofon → Gemini Live API (limity: audio ~15 min, audio+wideo ~2 min, 1 klatka/s; użyć kompresji kontekstu i wznawiania sesji; sprawdzić aktualną dokumentację), komunikacja WebSocket z viewerem.
+- Następnie: zapis/odczyt `projekt/vr/adnotacje.json` na Drive (komentarze, rysunki, miary — teraz znikają po zamknięciu), samodzielne strzałki bez płytki, komenda głosowa „zrób zdjęcie”.
+- v0.4 (zmiana planu Roberta): zamiast asystenta patrzącego na stream — Gemini czyta zrzuty z folderu `projekt/vr/screeny` na Drive (+ `kontekst.md`, `adnotacje.json`) i się do nich odnosi. Szczegóły później.
 - v0.5: integracja z systemem zarządzania projektami.
 
 ## Repozytorium
@@ -48,7 +54,7 @@ wydajność renderu na Quest 3S (może wymagać uproszczenia siatki/LOD), wygoda
 - `.gitignore` blokuje *.step/*.stp/*.iges/*.sldprt/*.glb i foldery `projekt/` — wyjątek tylko `test/test_zlozenie.step`.
 
 ## Pliki
-- `index.html` — cały viewer.
+- `index.html` — cały viewer (v0.3).
 - `test/test_zlozenie.step` — małe złożenie testowe (użyć z ustawieniem „Góra: Z”). Generator: `test/make_test_step.py` (CadQuery).
 - `test/run_headless.py` — automatyczny test w headless Chrome przez Playwright (sam znajduje Chrome na Windowsie lub Linuksie, lista `CHROME_PATHS`). Część 1: PC. Część 2: emulator Meta Quest 3 (IWER, `installRuntime({forceInstall: true})`, `stereoEnabled = false`) — steruje kontrolerami (`T.pose`, `T.tipAt`, `T.btn`, `T.palClick`) i sprawdza wszystkie narzędzia. Wymaga `pip install playwright` i `npm install --no-save three@0.187.0 occt-import-js@0.0.23 three-mesh-bvh@0.9.16 iwer@2.6.0` w folderze projektu. Uruchamiać z folderu projektu: `python test/run_headless.py` (kod wyjścia 1 = błąd). Wyniki obrazowe: `test/screenshot.png`, `test/screenshot_vr.png`, `test/zrzut_pc.jpg`, `test/zrzut_vr.jpg` (w .gitignore). Na PC Roberta (Windows) zainstalowane i działa.
 
