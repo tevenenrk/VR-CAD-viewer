@@ -6,7 +6,7 @@
 <title>CAD VR Viewer</title>
 <link rel="icon" href="data:,">
 <!--
-  CAD VR Viewer v0.2 — otwiera pliki STEP/IGES (np. eksport z SolidWorksa) w przeglądarce
+  CAD VR Viewer v0.3 — otwiera pliki STEP/IGES (np. eksport z SolidWorksa) w przeglądarce
   i w goglach Meta Quest (VR lub AR/passthrough). Jeden plik, bez instalacji.
   Wersje bibliotek są ustawione w importmap poniżej.
 -->
@@ -48,13 +48,24 @@
   .shot img { width: 100%; border-radius: 6px; display: block; margin-bottom: 4px; }
   .shot .row { margin: 0; } .shot .btn, .shot button { padding: 6px 10px; min-height: 36px; font-size: 13px; }
   .help { font-size: 13px; color: var(--muted); } .help b { color: var(--fg); }
+  .tree-tools { margin: 6px 0 2px; } .tree-tools button, #sectionBox button, #cloudBox button, #noteBox button { padding: 6px 10px; min-height: 36px; font-size: 13px; }
+  #sectionBox button.on { background: var(--accent); color: #111; border-color: var(--accent); }
+  input[type=range] { width: 100%; }
+  input[type=text], input[type=password], textarea { font: inherit; color: var(--fg); background: #15181d; border: 1px solid var(--line); border-radius: 8px; padding: 8px; width: 100%; }
+  textarea { min-height: 70px; resize: vertical; }
+  #noteBox { margin: 6px 0; padding: 8px; border-radius: 8px; background: #26241a; border: 1px solid #6b5a1a; display: none; }
+  #cloudFiles { margin-top: 6px; font-size: 13px; max-height: 260px; overflow: auto; }
+  #cloudFiles .f { padding: 5px 4px; border-bottom: 1px solid #2a2e35; cursor: pointer; display: flex; justify-content: space-between; gap: 8px; }
+  #cloudFiles .f:hover { color: var(--accent); } #cloudFiles .f.dis { color: var(--muted); cursor: default; }
+  .small { font-size: 12px; color: var(--muted); }
+  #xrKb { position: fixed; left: -1000px; top: 0; width: 10px; opacity: 0; }
   #drop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; font-size: 28px;
           background: rgba(255,138,31,.15); border: 4px dashed var(--accent); z-index: 20; pointer-events: none; }
 </style>
 </head>
 <body>
 <div id="panel">
-  <h1>CAD VR Viewer <span>v0.2</span></h1>
+  <h1>CAD VR Viewer <span>v0.3</span></h1>
   <div class="row">
     <label class="btn primary" for="fileInput">Otwórz STEP</label>
     <input type="file" id="fileInput" hidden>
@@ -72,6 +83,7 @@
     <button id="btnVR" disabled>Wejdź w VR</button>
     <button id="btnAR" disabled>AR (passthrough)</button>
     <button id="btnShot">Zrzut ekranu</button>
+    <button id="btnNote" title="Kliknij potem miejsce na modelu">Dodaj komentarz</button>
   </div>
   <div id="status">Wybierz plik .step / .stp (eksport z SolidWorksa).</div>
   <div id="msg"></div>
@@ -82,7 +94,55 @@
       <button id="partColorReset">Kolor oryginalny</button>
     </div>
   </div>
-  <details id="treeBox"><summary>Drzewo części</summary><div id="tree"></div></details>
+  <div id="noteBox">
+    <div id="noteTitle" style="margin-bottom:6px"></div>
+    <textarea id="noteText" placeholder="Treść komentarza…"></textarea>
+    <div class="row" style="margin-top:6px">
+      <button id="noteVoice">Dyktuj</button>
+      <button id="noteSave">Zapisz</button>
+      <button id="noteDelete">Usuń komentarz</button>
+      <button id="noteCancel">Anuluj</button>
+    </div>
+    <div id="noteStatus" class="small"></div>
+  </div>
+  <details id="treeBox"><summary>Drzewo złożenia</summary>
+    <div class="row tree-tools"><button id="treeAll">Pokaż wszystko</button><button id="treeOnly">Tylko wybrana</button><button id="treeHide">Ukryj wybraną</button></div>
+    <div id="tree"></div>
+  </details>
+  <details id="sectionBox"><summary>Przekrój</summary>
+    <div class="row" style="margin-top:6px">
+      <button id="secOn">Włącz</button><button id="secX">X</button><button id="secY">Y</button><button id="secZ">Z</button><button id="secFlip">Odwróć</button>
+    </div>
+    <input type="range" id="secPos" min="-100" max="100" value="0" step="0.5" title="Położenie płaszczyzny">
+    <div id="secInfo" class="small">Osie X/Y/Z w układzie pliku CAD. W goglach: narzędzie „Przekrój”.</div>
+  </details>
+  <details id="cloudBox"><summary>Chmura (Google Drive): <span id="cloudState">niepołączony</span></summary>
+    <div class="row" style="margin-top:6px">
+      <button id="cloudConnect" class="primary">Połącz z Google Drive</button>
+      <button id="cloudDisconnect">Rozłącz</button>
+    </div>
+    <label class="row"><input type="checkbox" id="cloudAuto"> Wysyłaj zrzuty od razu do chmury</label>
+    <div class="small" id="cloudFolder"></div>
+    <div class="row" style="margin-top:6px">
+      <button id="cloudBrowse">Pliki w chmurze</button>
+      <button id="cloudUp">⬆ Wyżej</button>
+      <button id="cloudSetFolder">Ustaw ten folder jako folder projektu</button>
+      <button id="cloudPending">Wyślij zaległe zrzuty</button>
+    </div>
+    <div class="small" id="cloudPath"></div>
+    <div id="cloudFiles"></div>
+  </details>
+  <details id="recentBox"><summary>Ostatnio otwierane (<span id="recentCount">0</span>)</summary><div id="recent" style="margin-top:6px"></div></details>
+  <details id="settingsBox"><summary>Ustawienia (chmura, głos)</summary>
+    <p class="small">Google Client ID (z Google Cloud Console — instrukcja w README):</p>
+    <input type="text" id="setClientId" placeholder="123…apps.googleusercontent.com">
+    <p class="small">Klucz Gemini API (do dyktowania głosem; z aistudio.google.com — zostaje tylko w tej przeglądarce):</p>
+    <input type="password" id="setGeminiKey" placeholder="AIza…">
+    <p class="small">Model Gemini:</p>
+    <input type="text" id="setGeminiModel">
+    <div class="row" style="margin-top:8px"><button id="setSave">Zapisz</button><button id="setMic">Sprawdź mikrofon</button></div>
+    <div class="small" id="setInfo"></div>
+  </details>
   <details id="shotsBox"><summary>Zrzuty ekranu (<span id="shotCount">0</span>)</summary>
     <div class="row" style="margin-top:6px">
       <button id="shotsDownload">Pobierz wszystkie</button>
@@ -92,14 +152,16 @@
   </details>
   <details><summary>Sterowanie</summary>
     <div class="help">
-      <p><b>PC:</b> lewy przycisk – obrót, prawy – przesuw, kółko – zoom, klik – wybór części (kolor w panelu), Ctrl+Z – cofnij.</p>
+      <p><b>PC:</b> lewy przycisk – obrót, prawy – przesuw, kółko – zoom, klik – wybór części (kolor w panelu), klik w płytkę – edycja komentarza, Ctrl+Z – cofnij.</p>
       <p><b>Quest:</b><br>
-      <b>Spust</b> – wybrane narzędzie: Wskaż / Rysuj / Gumka / Miarka / Kolor<br>
+      <b>Spust</b> – wybrane narzędzie: Wskaż / Rysuj / Gumka / Miarka / Kolor / Komentarz / Przekrój<br>
+      <b>Komentarz</b>: spust na części, przeciągnij w bok i puść = płytka ze strzałką, potem wpisz tekst (klawiatura w panelu albo „Mów”)<br>
+      <b>Przekrój</b>: trzymaj spust – płaszczyzna cięcia idzie za kontrolerem jak nóż; prawa gałka – przesuw płaszczyzny<br>
       <b>Grip</b> przy części – chwyć część albo grupę w sferze (wybór w panelu)<br>
       <b>Grip</b> w pustym miejscu – chwyć cały model<br>
       <b>Oba gripy</b> – obracaj i powiększaj trzymany element / model<br>
       <b>A</b> – zrzut ekranu &nbsp; <b>B</b> – cofnij<br>
-      <b>X</b> – pokaż / ukryj panel narzędzi (na lewym kontrolerze, klikasz promieniem prawego + spust)<br>
+      <b>X</b> – pokaż / ukryj panel (na lewym kontrolerze, klikasz promieniem prawego + spust). Zakładki: Narzędzia / Drzewo / Menu (plik, tryb, chmura)<br>
       <b>Y</b> – reset pozycji modelu<br>
       <b>Prawa gałka</b> ↑↓ – grubość pędzla / gumki, w innych narzędziach skala modelu<br>
       <b>Lewa gałka</b> ↑↓ – wielkość sfery chwytu (tryb Grupa)</p>
@@ -107,6 +169,7 @@
   </details>
 </div>
 <div id="drop">Upuść plik STEP</div>
+<input type="text" id="xrKb" autocomplete="off">
 
 <script type="module">
 import * as THREE from 'three';
@@ -180,6 +243,36 @@ const CONFIG = {
   SHOT_JPEG_QUALITY: 0.92,
   SHOT_HIDE_CONTROLLERS: true, // ukryj kontrolery, promienie i panel na zrzucie
 
+  // Przekrój
+  SECTION_CAP_RGB: 0xff8a1f,   // kolor powierzchni przekroju (mieszany z kolorem części)
+  SECTION_CAP_MIX: 0.55,       // 0 = kolor części, 1 = sam kolor przekroju
+  SECTION_SNAP_DEG: 8,         // „nóż” w ręce: blisko osi X/Y/Z → przyciąga do osi
+  SECTION_STICK_SPEED: 0.25,   // przesuw płaszczyzny gałką: ułamek wielkości modelu na sekundę
+  SECTION_PLANE_RGB: 0x0a84ff, // podgląd płaszczyzny (widoczny przy narzędziu Przekrój)
+
+  // Komentarze (płytka z tekstem + strzałka do miejsca na modelu)
+  NOTE_WIDTH: 0.14,            // szerokość płytki w goglach (m, stała niezależnie od skali modelu)
+  NOTE_ARROW_RADIUS: 0.0014,   // grubość strzałki (m)
+  NOTE_COLOR: '#ffd60a',       // ramka płytki i strzałka
+  NOTE_AUTO_OFFSET: 0.09,      // spust bez przeciągania: płytka tyle metrów nad wskazanym punktem
+  NOTE_MIN_DRAG: 0.02,         // krótszy ruch = klik (bez przeciągania)
+
+  // Głos (dyktowanie komentarzy)
+  VOICE_LANG: 'pl-PL',
+  GEMINI_MODEL: 'gemini-flash-latest',   // można zmienić w Ustawieniach
+  GEMINI_URL: 'https://generativelanguage.googleapis.com/v1beta/models/',
+  VOICE_MAX_SECONDS: 30,       // nagranie kończy się samo po tym czasie
+
+  // Chmura: Google Drive
+  GOOGLE_CLIENT_ID: '',        // można wpisać tutaj albo w panelu „Ustawienia” (zapamiętywane w przeglądarce)
+  DRIVE_SCOPE: 'https://www.googleapis.com/auth/drive',
+  DRIVE_DEFAULT_FOLDER: 'CAD VR Viewer',  // folder w „Mój dysk”, gdy nie wybrano folderu projektu
+  DRIVE_SHOTS_PATH: ['vr', 'screeny'],    // zrzuty: <folder projektu>/vr/screeny
+  DRIVE_CAD_FOLDER: 'cad',                // plik otwarty z <projekt>/cad → folder projektu = <projekt>
+  OPEN_EXT: ['step', 'stp', 'iges', 'igs'],
+  NATIVE_EXT: ['sldprt', 'sldasm', 'slddrw'],  // SolidWorks — przeglądarka nie umie ich otworzyć
+  RECENT_MAX: 6,               // ile ostatnich plików pamiętać w przeglądarce (do otwarcia z menu w goglach)
+
   HIGHLIGHT_RGB: 0xff7a00,     // wskazana / wybrana część
   HIGHLIGHT_INTENSITY: 0.55,
   GRAB_RGB: 0x1aa3ff,          // część w zasięgu chwytu / trzymana
@@ -198,10 +291,15 @@ THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;     // szybkie wskazywanie na dużych złożeniach
 
 const $ = (id) => document.getElementById(id);
-const ui = { file: $('fileInput'), quality: $('quality'), upAxis: $('upAxis'), vr: $('btnVR'), ar: $('btnAR'), shot: $('btnShot'),
-             status: $('status'), msg: $('msg'), picked: $('picked'), pickedText: $('pickedText'), partColor: $('partColor'),
-             partColorReset: $('partColorReset'), tree: $('tree'), drop: $('drop'), shotCount: $('shotCount'), shots: $('shots'),
-             shotsDownload: $('shotsDownload'), shotsClear: $('shotsClear') };
+const ui = {};
+for (const id of ['fileInput', 'quality', 'upAxis', 'btnVR', 'btnAR', 'btnShot', 'btnNote', 'status', 'msg', 'picked', 'pickedText',
+  'partColor', 'partColorReset', 'tree', 'drop', 'shotCount', 'shots', 'shotsDownload', 'shotsClear', 'treeAll', 'treeOnly', 'treeHide',
+  'noteBox', 'noteTitle', 'noteText', 'noteVoice', 'noteSave', 'noteDelete', 'noteCancel', 'noteStatus',
+  'secOn', 'secX', 'secY', 'secZ', 'secFlip', 'secPos', 'secInfo', 'sectionBox',
+  'cloudBox', 'cloudState', 'cloudConnect', 'cloudDisconnect', 'cloudAuto', 'cloudFolder', 'cloudBrowse', 'cloudUp', 'cloudSetFolder', 'cloudPending',
+  'cloudPath', 'cloudFiles', 'recent', 'recentCount', 'setClientId', 'setGeminiKey', 'setGeminiModel', 'setSave', 'setMic', 'setInfo', 'xrKb'])
+  ui[id] = $(id);
+Object.assign(ui, { file: ui.fileInput, vr: ui.btnVR, ar: ui.btnAR, shot: ui.btnShot });
 
 let renderer, scene, camera, controls, grid;
 let pivot, offsetGroup, cadRoot = null, annoRoot = null; // pivot: przesuwa użytkownik; offsetGroup: centruje; cadRoot: model; annoRoot: rysunki i miary
@@ -219,7 +317,7 @@ let lastFrameTime = performance.now();
 const xrSupport = { vr: false, ar: false };
 
 const S = {                                   // ustawienia narzędzi (panel w goglach)
-  tool: 'wskaz',                              // wskaz | rysuj | gumka | miarka | kolor
+  tool: 'wskaz',                              // wskaz | rysuj | gumka | miarka | kolor | komentarz | przekroj
   grabMode: 'czesc',                          // model | czesc | grupa
   colorIdx: 0,
   brush: CONFIG.BRUSH_DEFAULT,
@@ -227,10 +325,24 @@ const S = {                                   // ustawienia narzędzi (panel w g
   sphere: CONFIG.SPHERE_DEFAULT,
   paletteVisible: true,
 };
-const TOOLS = { wskaz: 'Wskaż', rysuj: 'Rysuj', gumka: 'Gumka', miarka: 'Miarka', kolor: 'Kolor' };
+const TOOLS = { wskaz: 'Wskaż', rysuj: 'Rysuj', gumka: 'Gumka', miarka: 'Miarka', kolor: 'Kolor', komentarz: 'Komentarz', przekroj: 'Przekrój' };
 const GRABS = { model: 'Cały model', czesc: 'Część', grupa: 'Grupa' };
 
-let strokes = [], measures = [], undoStack = [];
+let strokes = [], measures = [], notes = [], undoStack = [];
+let treeRows = [];                            // { obj, name, depth, isPart, cb } — drzewo złożenia (PC i gogle)
+const cadBox = new THREE.Box3();              // wymiary modelu w układzie pliku CAD (m)
+let noteCounter = 0;
+let edit = null;                              // edytowany komentarz: { note, isNew, text, shift, prevText }
+let pcMode = 'wybor';                         // mysz na PC: 'wybor' | 'komentarz'
+let pendingXR = null;                         // przełączanie VR ↔ AR z menu w goglach
+
+// Ustawienia zapamiętywane w przeglądarce (nie trafiają do repozytorium)
+const SETTINGS_KEY = 'cad-vr-viewer-ustawienia';
+const settings = Object.assign({ clientId: '', geminiKey: '', geminiModel: '', autoUpload: true, project: null },
+  (() => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { return {}; } })());
+function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* tryb prywatny */ } }
+const clientId = () => settings.clientId || CONFIG.GOOGLE_CLIENT_ID;
+const geminiModel = () => settings.geminiModel || CONFIG.GEMINI_MODEL;
 let twoHand = null;
 let shotPending = false;
 const frameHL = { hover: new Set(), point: new Set(), held: new Set() };
@@ -286,7 +398,13 @@ function init() {
   checkXR();
   placeModel(placementMode);
   fitDesktopCamera();
+  renderer.localClippingEnabled = true;       // przekrój
+  drive.restore();
+  syncCloudUI();
+  syncSectionUI();
   refreshShots();
+  refreshRecent();
+  setInterval(() => { syncCloudUI(); if (drive.connected && settings.autoUpload) uploadPendingShots(false); }, 30000);
   exposeDebug();
 
   window.addEventListener('resize', onResize);
@@ -371,14 +489,26 @@ async function loadUrl(url) {
   }
 }
 
-async function loadBuffer(buffer, name) {
+// meta: undefined = plik z dysku, obiekt = skąd (np. Google Drive), false = nie zapisuj w „ostatnich” (już tam jest)
+async function loadBuffer(buffer, name, meta) {
   const format = detectFormat(name);
-  if (!format) { setStatus(`„${name}” to nie STEP/IGES. W SolidWorksie: Plik → Zapisz jako → STEP AP214/AP242.`); return; }
+  if (!format) {
+    const msg = CONFIG.NATIVE_EXT.includes(extOf(name))
+      ? `„${name}” to plik SolidWorksa — przeglądarka nie umie go otworzyć. W SolidWorksie: Plik → Zapisz jako → STEP AP214/AP242.`
+      : `„${name}” to nie STEP/IGES. W SolidWorksie: Plik → Zapisz jako → STEP AP214/AP242.`;
+    setStatus(msg); say(msg);
+    return;
+  }
+  const blob = new Blob([buffer]);              // kopia (oryginał idzie do wątku importu)
+  lastFile = { blob, name };
+  if (meta !== false) rememberFile(blob, name, meta || { source: 'dysk' });
 
   const q = CONFIG.QUALITY[ui.quality.value] || CONFIG.QUALITY.srednia;
   const params = { linearUnit: 'meter', linearDeflectionType: 'bounding_box_ratio', ...q };
   const sizeMB = (buffer.byteLength / 1048576).toFixed(1);
   setStatus(`Wczytywanie „${name}” (${sizeMB} MB)…\nDuże złożenia na Quest mogą liczyć się nawet minutę.`);
+  say(`Wczytywanie „${name}” (${sizeMB} MB)…`);
+  if (renderer.xr.isPresenting) pal.msg = `Wczytywanie „${name}”…`;
   setButtons(false);
   const t0 = performance.now();
   try {
@@ -390,8 +520,11 @@ async function loadBuffer(buffer, name) {
     loadInfo.secs = ((performance.now() - t0) / 1000).toFixed(1);
     renderLoadStatus();
     document.title = name + ' — CAD VR Viewer';
+    say(`Wczytano „${name}”: ${loadInfo.stats.parts} części`);
+    if (renderer.xr.isPresenting && pal.page === 'menu') pal.page = 'narzedzia';
   } catch (e) {
     setStatus('Błąd odczytu: ' + e.message);
+    say('Błąd odczytu: ' + e.message);
   }
   setButtons(true);
 }
@@ -414,6 +547,8 @@ function buildModel(result) {
   const geoCache = new Map();
   let tris = 0;
   ui.tree.innerHTML = '';
+  treeRows = [];
+  pal.treeScroll = 0;
 
   const walk = (node, parentObj, path, depth) => {
     const nodeName = node.name || '';
@@ -454,6 +589,14 @@ function buildModel(result) {
   annoRoot.name = 'Adnotacje';
   cadRoot.add(annoRoot);
 
+  // wymiary w układzie CAD (części mają jeszcze macierze jednostkowe)
+  cadBox.makeEmpty();
+  for (const g of geoCache.values()) cadBox.union(g.boundingBox);
+  if (cadBox.isEmpty()) cadBox.set(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5));
+  section.vis = makeSectionVisual();
+  cadRoot.add(section.vis);
+  setSectionAxis('X', 0, false);
+
   offsetGroup.add(cadRoot);
   applyUpAxis();
   return { parts: parts.length, tris, bvhMs };
@@ -490,11 +633,30 @@ function makeGeometry(m) {
   return geo;
 }
 
+// Przekrój: płaszczyzna cięcia wspólna dla wszystkich części. Tylne ściany (widoczne tylko po przecięciu bryły)
+// są malowane płaskim kolorem przekroju — wygląda jak zamknięty przekrój, bez dodatkowego rysowania.
+const SECTION_UNI = { uSectionOn: { value: false }, uCapColor: { value: new THREE.Color(CONFIG.SECTION_CAP_RGB) }, uCapMix: { value: CONFIG.SECTION_CAP_MIX } };
+const section = { on: false, local: new THREE.Plane(new THREE.Vector3(1, 0, 0), 0), world: new THREE.Plane(new THREE.Vector3(0, 1, 0), 1e9), axis: 'X', vis: null };
+const SECTION_PLANES = [section.world];
+
+function sectionShader(sh) {
+  sh.uniforms.uSectionOn = SECTION_UNI.uSectionOn;
+  sh.uniforms.uCapColor = SECTION_UNI.uCapColor;
+  sh.uniforms.uCapMix = SECTION_UNI.uCapMix;
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', '#include <common>\nuniform bool uSectionOn;\nuniform vec3 uCapColor;\nuniform float uCapMix;')
+    .replace('#include <tonemapping_fragment>',
+      'if (uSectionOn && !gl_FrontFacing) gl_FragColor = vec4(mix(diffuseColor.rgb, uCapColor, uCapMix) * 0.9 + totalEmissiveRadiance, 1.0);\n#include <tonemapping_fragment>');
+}
+
 function newMaterial(rgb) {
   const mat = new THREE.MeshStandardMaterial({
     color: new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2]),   // OpenCascade zwraca kolory liniowe
     roughness: 0.55, metalness: 0.15, side: THREE.DoubleSide,
+    clippingPlanes: SECTION_PLANES,
   });
+  mat.onBeforeCompile = sectionShader;
+  mat.customProgramCacheKey = () => 'cad-section';
   mat.userData.origColor = mat.color.clone();
   return mat;
 }
@@ -521,18 +683,21 @@ function makeMaterials(m, geo) {
 
 function clearModel() {
   releaseAll();
-  for (const c of controllers) { c.userData.stroke = null; c.userData.measure = null; c.userData.activeTool = null; }
+  for (const c of controllers) { c.userData.stroke = null; c.userData.measure = null; c.userData.noteDrag = null; c.userData.activeTool = null; }
   setSelected(null);
   hlApplied = new Map();
   label.sprite.visible = false;
-  strokes = []; measures = []; undoStack = []; visibleCache = null;
+  strokes = []; measures = []; notes = []; undoStack = []; visibleCache = null;
+  closeNoteEditor(false);
+  noteCounter = 0;
+  section.on = false; SECTION_UNI.uSectionOn.value = false; section.vis = null;
   annoRoot = null;
   if (!cadRoot) return;
   const geos = new Set();
   cadRoot.traverse((o) => {
     if (o.isMesh) {
       if (!o.userData.sharedGeo) geos.add(o.geometry);
-      mats(o).forEach((mat) => mat.dispose());
+      mats(o).forEach((mat) => { if (mat.map) mat.map.dispose(); if (!mat.userData.shared) mat.dispose(); });
     } else if (o.isSprite) {
       if (o.material.map) o.material.map.dispose();
       o.material.dispose();
@@ -553,14 +718,49 @@ function addTreeRow(obj, name, depth, isPart) {
   row.style.paddingLeft = (depth * 14) + 'px';
   const cb = document.createElement('input');
   cb.type = 'checkbox'; cb.checked = true; cb.title = 'Pokaż / ukryj';
-  cb.onchange = () => { obj.visible = cb.checked; visibleCache = null; };
+  const tr = { obj, name, depth, isPart, cb, el: row };
+  cb.onchange = () => setRowVisible(tr, cb.checked);
   const span = document.createElement('span');
   span.textContent = (isPart ? '' : '▸ ') + name;
   span.title = name;
-  span.onclick = () => { setSelected(obj); showPicked(obj); };
+  span.onclick = () => selectObject(obj);
   row.append(cb, span);
   ui.tree.appendChild(row);
+  treeRows.push(tr);
   return row;
+}
+
+function setRowVisible(tr, v) {
+  tr.obj.visible = v;
+  tr.cb.checked = v;
+  visibleCache = null;
+}
+
+function selectObject(obj, fromVR) {
+  setSelected(obj);
+  showPicked(obj);
+  if (!obj) return;
+  const i = treeRows.findIndex((r) => r.obj === obj);
+  if (i >= 0 && (i < pal.treeScroll || i >= pal.treeScroll + PAL.TREE_ROWS)) pal.treeScroll = Math.max(0, i - 2);
+  if (fromVR) say('Wybrano: ' + obj.name);
+}
+
+// Pokaż wszystko / tylko wybrana / ukryj wybraną (PC i gogle)
+function treeCommand(cmd) {
+  if (!treeRows.length) return;
+  if (cmd === 'all') { treeRows.forEach((r) => setRowVisible(r, true)); say('Pokazano wszystkie części'); return; }
+  if (!selectedObj) { say('Najpierw wybierz część (klik / Wskaż / drzewo)'); return; }
+  const keep = new Set(selectedMeshes);
+  if (cmd === 'only') {
+    treeRows.forEach((r) => setRowVisible(r, r.isPart ? keep.has(r.obj) : true));
+    selectedMeshes.forEach((m) => { for (let x = m.parent; x && x !== cadRoot; x = x.parent) x.visible = true; });
+    treeRows.forEach((r) => { r.cb.checked = r.obj.visible; });
+    say('Widoczna tylko: ' + selectedObj.name);
+  } else if (cmd === 'hide') {
+    const tr = treeRows.find((r) => r.obj === selectedObj);
+    if (tr) setRowVisible(tr, false);
+    say('Ukryto: ' + selectedObj.name);
+  }
 }
 
 function showPicked(obj) {
@@ -657,9 +857,10 @@ function visibleParts() {
 
 function pickRay() {                          // raycaster musi być już ustawiony
   if (!cadRoot) return null;
-  raycaster.firstHitOnly = true;
+  raycaster.firstHitOnly = !section.on;
   const hits = raycaster.intersectObjects(visibleParts(), false);
-  return hits[0] || null;
+  if (!section.on) return hits[0] || null;
+  return hits.find((h) => section.world.distanceToPoint(h.point) >= 0) || null;   // pomiń to, co odcięte przekrojem
 }
 
 const _hitInfo = { point: new THREE.Vector3(), distance: 0, faceIndex: 0 };
@@ -931,14 +1132,317 @@ class Measure {
   dispose() { this.root.removeFromParent(); this.label.tex.dispose(); this.label.sprite.material.dispose(); }
 }
 
+// ----------------------------------------------------------------------------
+// KOMENTARZ: płytka z tekstem (zawsze zwrócona do patrzącego) + strzałka do miejsca na modelu
+// ----------------------------------------------------------------------------
+const CONE_GEO = new THREE.ConeGeometry(1, 1, 12);
+const NOTE_TEX = { W: 640, H: 320 };
+const NOTE_PLANE_GEO = new THREE.PlaneGeometry(1, NOTE_TEX.H / NOTE_TEX.W);
+const NOTE_ARROW_MAT = new THREE.MeshBasicMaterial({ color: CONFIG.NOTE_COLOR });
+NOTE_ARROW_MAT.userData.shared = true;
+
+function wrapText(ctx, text, maxW) {
+  const lines = [];
+  for (const para of String(text).split('\n')) {
+    let line = '';
+    for (const word of para.split(' ')) {
+      const t = line ? line + ' ' + word : word;
+      if (ctx.measureText(t).width <= maxW || !line) line = t;
+      else { lines.push(line); line = word; }
+      while (ctx.measureText(line).width > maxW && line.length > 1) {   // bardzo długie słowo
+        let k = line.length - 1;
+        while (k > 1 && ctx.measureText(line.slice(0, k)).width > maxW) k--;
+        lines.push(line.slice(0, k)); line = line.slice(k);
+      }
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+class Note {
+  constructor(anchor, pos, part) {             // anchor, pos w układzie modelu (m)
+    this.num = ++noteCounter;
+    this.anchor = anchor.clone(); this.pos = pos.clone();
+    this.text = ''; this.part = part || null;  // part: { name, path } — do adnotacje.json / asystenta
+    this.created = Date.now();
+    this.root = new THREE.Group();
+    this.canvas = document.createElement('canvas');
+    this.canvas.width = NOTE_TEX.W; this.canvas.height = NOTE_TEX.H;
+    this.tex = new THREE.CanvasTexture(this.canvas);
+    this.tex.colorSpace = THREE.SRGBColorSpace;
+    this.tex.anisotropy = 4;
+    this.plate = new THREE.Mesh(NOTE_PLANE_GEO, new THREE.MeshBasicMaterial({ map: this.tex, transparent: true, side: THREE.DoubleSide, toneMapped: false }));
+    this.plate.userData.sharedGeo = true;
+    this.plate.userData.note = this;
+    this.plate.renderOrder = 3;
+    this.shaft = new THREE.Mesh(CYL_GEO, NOTE_ARROW_MAT); this.shaft.userData.sharedGeo = true;
+    this.head = new THREE.Mesh(CONE_GEO, NOTE_ARROW_MAT); this.head.userData.sharedGeo = true;
+    this.root.add(this.plate, this.shaft, this.head);
+    annoRoot.add(this.root);
+    this.setText('');
+  }
+  setText(t) {
+    this.text = t;
+    const ctx = this.canvas.getContext('2d'), W = NOTE_TEX.W, H = NOTE_TEX.H;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(20,22,26,0.92)';
+    ctx.beginPath(); ctx.roundRect(6, 6, W - 12, H - 12, 26); ctx.fill();
+    ctx.lineWidth = 8; ctx.strokeStyle = CONFIG.NOTE_COLOR; ctx.stroke();
+    ctx.fillStyle = CONFIG.NOTE_COLOR; ctx.beginPath(); ctx.arc(52, 52, 30, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#111'; ctx.font = '700 34px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(this.num), 52, 54);
+    ctx.textAlign = 'left'; ctx.fillStyle = '#9aa0a6'; ctx.font = '500 26px system-ui, sans-serif';
+    ctx.fillText((this.part ? this.part.name : '').slice(0, 40), 96, 54, W - 120);
+    const body = t || '(pusty komentarz)';
+    ctx.fillStyle = t ? '#ffffff' : '#9aa0a6';
+    let size = 44, lines;
+    do { ctx.font = `600 ${size}px system-ui, sans-serif`; lines = wrapText(ctx, body, W - 60); size -= 2; }
+    while (lines.length * size * 1.2 > H - 110 && size > 18);
+    const lh = (size + 2) * 1.2;
+    const maxLines = Math.floor((H - 110) / lh);
+    lines.slice(0, maxLines).forEach((ln, i) => ctx.fillText(ln, 30, 112 + i * lh + lh / 2));
+    this.tex.needsUpdate = true;
+  }
+  setPos(p) { this.pos.copy(p); }
+  update(camPos, sc) {                         // co klatkę: stała wielkość w goglach, płytka przodem do oczu, strzałka
+    const w = CONFIG.NOTE_WIDTH / sc;
+    this.plate.position.copy(this.pos);
+    this.plate.scale.setScalar(w);
+    this.plate.lookAt(camPos);
+    const dir = _v3.subVectors(this.anchor, this.pos);
+    const len = dir.length();
+    const r = CONFIG.NOTE_ARROW_RADIUS / sc, headLen = Math.min(r * 9, len * 0.5);
+    const vis = len > w * 0.3;
+    this.shaft.visible = this.head.visible = vis;
+    if (!vis) return;
+    dir.divideScalar(len);
+    _q.setFromUnitVectors(_v4.set(0, 1, 0), dir);
+    const shaftLen = len - headLen;
+    this.shaft.position.copy(this.pos).addScaledVector(dir, shaftLen / 2);
+    this.shaft.quaternion.copy(_q);
+    this.shaft.scale.set(r, shaftLen, r);
+    this.head.position.copy(this.anchor).addScaledVector(dir, -headLen / 2);
+    this.head.quaternion.copy(_q);
+    this.head.scale.set(r * 3, headLen, r * 3);
+  }
+  distanceTo(p) {
+    const line = new THREE.Line3(this.pos, this.anchor);
+    return Math.min(this.pos.distanceTo(p), line.closestPointToPoint(p, true, _v2).distanceTo(p));
+  }
+  toJSON() {                                   // format pod przyszły projekt/vr/adnotacje.json (metry, układ CAD)
+    return { nr: this.num, tekst: this.text, czesc: this.part, punkt: this.anchor.toArray(), plytka: this.pos.toArray(), czas: this.created };
+  }
+  dispose() { this.root.removeFromParent(); this.tex.dispose(); this.plate.material.dispose(); }
+}
+
 function updateMeasureLabels() {
   if (!annoRoot) return;
   const list = measures.concat(controllers.map((c) => c.userData.measure).filter(Boolean));
-  if (!list.length) return;
+  if (!list.length && !notes.length) return;
   annoRoot.updateMatrixWorld();
   viewCamera().getWorldPosition(_camPos);
   const sc = annoScale();
   for (const m of list) m.updateLabel(_camPos, sc);
+  for (const n of notes) n.update(_camPos, sc);
+}
+
+function rayNotes() {                         // raycaster musi być już ustawiony
+  if (!notes.length) return null;
+  raycaster.firstHitOnly = false;
+  const hit = raycaster.intersectObjects(notes.map((n) => n.plate), false)[0];
+  return hit ? { note: hit.object.userData.note, distance: hit.distance, point: hit.point } : null;
+}
+
+function partInfo(mesh) {
+  const p = mesh && mesh.userData.part;
+  return p ? { name: p.name, path: p.path } : null;
+}
+
+// Nowy komentarz: anchorW = punkt na modelu (świat). posW = gdzie płytka (świat) albo null = automatycznie nad punktem
+function createNote(anchorW, posW, mesh) {
+  annoRoot.updateMatrixWorld();
+  const a = annoRoot.worldToLocal(anchorW.clone());
+  const note = new Note(a, a, partInfo(mesh));
+  notes.push(note);
+  if (posW) note.setPos(annoRoot.worldToLocal(posW.clone()));
+  else autoPlaceNote(note, anchorW);
+  return note;
+}
+
+function autoPlaceNote(note, anchorW) {
+  viewCamera().getWorldPosition(_camPos);
+  const p = anchorW.clone().add(_v1.set(0, CONFIG.NOTE_AUTO_OFFSET, 0));
+  p.add(_v2.subVectors(_camPos, anchorW).setY(0).normalize().multiplyScalar(CONFIG.NOTE_AUTO_OFFSET * 0.3));
+  note.setPos(annoRoot.worldToLocal(p));
+}
+
+// ----------------------------------------------------------------------------
+// EDYCJA TEKSTU KOMENTARZA (klawiatura w goglach, klawiatura Quest, głos, panel PC)
+// ----------------------------------------------------------------------------
+function openNoteEditor(note, isNew) {
+  if (edit && edit.note !== note) closeNoteEditor(true);
+  edit = { note, isNew, text: note.text, prevText: note.text, shift: false, voice: '' };
+  if (renderer.xr.isPresenting) {
+    pal.returnPage = pal.page === 'klawiatura' ? pal.returnPage : pal.page;
+    pal.page = 'klawiatura';
+    S.paletteVisible = true;
+  }
+  ui.noteBox.style.display = 'block';
+  ui.noteTitle.textContent = `Komentarz ${note.num}` + (note.part ? ` · część: ${note.part.name}` : '');
+  ui.noteText.value = note.text;
+  ui.noteStatus.textContent = '';
+  if (!renderer.xr.isPresenting) setTimeout(() => ui.noteText.focus(), 0);
+}
+
+function editSetText(t) {
+  if (!edit) return;
+  edit.text = t;
+  if (ui.noteText.value !== t) ui.noteText.value = t;
+}
+
+function closeNoteEditor(save) {
+  if (!edit) return;
+  const { note, isNew, prevText } = edit;
+  voice.cancel();
+  const text = edit.text.trim();
+  edit = null;
+  ui.noteBox.style.display = 'none';
+  try { ui.xrKb.blur(); } catch { /* brak klawiatury */ }
+  if (pal.page === 'klawiatura') pal.page = pal.returnPage || 'narzedzia';
+  if (save) {
+    note.setText(text);
+    if (isNew) { pushUndo({ type: 'add', obj: note, list: notes }); say(`Dodano komentarz ${note.num}`); }
+    else if (text !== prevText) { pushUndo({ type: 'text', note, prev: prevText }); say(`Zmieniono komentarz ${note.num}`); }
+  } else if (isNew) {
+    const i = notes.indexOf(note);
+    if (i >= 0) notes.splice(i, 1);
+    note.dispose();
+    say('Anulowano komentarz');
+  }
+}
+
+function deleteEditedNote() {
+  if (!edit) return;
+  const { note, isNew } = edit;
+  edit.text = note.text;
+  closeNoteEditor(!isNew ? true : false);
+  if (!isNew && notes.includes(note)) { removeAnno(note, notes); say(`Usunięto komentarz ${note.num}`); }
+}
+
+function editKey(k) {                          // klawisz z klawiatury w goglach albo z fizycznej klawiatury
+  if (!edit) return;
+  if (k === 'backspace') editSetText(edit.text.slice(0, -1));
+  else if (k === 'shift') edit.shift = !edit.shift;
+  else if (k === 'space') editSetText(edit.text + ' ');
+  else if (k === 'enter') editSetText(edit.text + '\n');
+  else if (k === 'clear') editSetText('');
+  else {
+    editSetText(edit.text + (edit.shift ? k.toUpperCase() : k));
+    edit.shift = false;
+  }
+  if (edit) edit.note.setText(edit.text);
+}
+
+// Klawiatura systemowa Quest w trybie VR (Quest Browser 26.1+): pole tekstowe dostaje fokus → pojawia się klawiatura
+function openSystemKeyboard() {
+  if (!edit) return;
+  ui.xrKb.value = edit.text;
+  ui.xrKb.focus();
+}
+
+// ----------------------------------------------------------------------------
+// PRZEKRÓJ
+// ----------------------------------------------------------------------------
+const AXES = { X: new THREE.Vector3(1, 0, 0), Y: new THREE.Vector3(0, 1, 0), Z: new THREE.Vector3(0, 0, 1) };
+const cadCenter = () => cadBox.getCenter(_v4);
+const cadDiag = () => cadBox.getSize(_v4).length() || 1;
+
+function makeSectionVisual() {
+  const g = new THREE.Group();
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({ color: CONFIG.SECTION_PLANE_RGB, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false }));
+  const edge = new THREE.LineSegments(new THREE.EdgesGeometry(plane.geometry), new THREE.LineBasicMaterial({ color: CONFIG.SECTION_PLANE_RGB }));
+  plane.renderOrder = edge.renderOrder = 4;
+  g.add(plane, edge);
+  g.visible = false;
+  g.name = 'Podgląd przekroju';
+  return g;
+}
+
+// Położenie płaszczyzny: przesunięcie środka płaszczyzny względem środka modelu, wzdłuż normalnej (m CAD)
+function sectionOffset() { return -section.local.normal.dot(cadCenter()) - section.local.constant; }
+function setSectionOffset(off) { section.local.constant = -section.local.normal.dot(cadCenter()) - off; updateSection(); }
+function sectionHalfRange() {
+  const n = section.local.normal, sz = cadBox.getSize(new THREE.Vector3());
+  return 0.5 * (Math.abs(n.x) * sz.x + Math.abs(n.y) * sz.y + Math.abs(n.z) * sz.z) * 1.02 || 0.5;
+}
+
+function setSectionAxis(axis, offset = 0, turnOn = true) {
+  const sameAxis = section.axis === axis;
+  const sign = sameAxis && section.local.normal.dot(AXES[axis]) < 0 ? -1 : 1;
+  section.local.normal.copy(AXES[axis]).multiplyScalar(sign);
+  section.axis = axis;
+  setSectionOffset(offset);
+  if (turnOn) setSectionOn(true);
+  syncSectionUI();
+}
+
+function setSectionOn(on) {
+  section.on = !!on && !!cadRoot;
+  SECTION_UNI.uSectionOn.value = section.on;
+  visibleCache = null;
+  updateSection();
+  syncSectionUI();
+}
+
+function flipSection() { section.local.negate(); setSectionOn(true); say('Przekrój odwrócony'); }
+
+// „Nóż” w ręce: płaszczyzna przez końcówkę kontrolera, prostopadła do jego osi bocznej
+function setSectionFromController(c) {
+  c.updateMatrixWorld();
+  const nW = _v1.set(1, 0, 0).transformDirection(c.matrixWorld);
+  const pW = tipWorld(c, _v2);
+  _mA.copy(cadRoot.matrixWorld).invert();
+  const nL = nW.clone().transformDirection(_mA);
+  const pL = pW.clone().applyMatrix4(_mA);
+  let snapped = null;
+  for (const [k, a] of Object.entries(AXES)) {
+    if (Math.abs(nL.dot(a)) > Math.cos(THREE.MathUtils.degToRad(CONFIG.SECTION_SNAP_DEG))) snapped = k;
+  }
+  if (snapped) { nL.copy(AXES[snapped]).multiplyScalar(Math.sign(nL.dot(AXES[snapped]))); section.axis = snapped; }
+  else section.axis = 'dowolny';
+  section.local.setFromNormalAndCoplanarPoint(nL, pL);
+  setSectionOn(true);
+}
+
+function updateSection() {
+  if (!cadRoot || !section.on) { section.world.normal.set(0, 1, 0); section.world.constant = 1e9; }
+  else { cadRoot.updateMatrixWorld(); section.world.copy(section.local).applyMatrix4(cadRoot.matrixWorld); }
+  if (section.vis) {
+    const show = section.on && (S.tool === 'przekroj' && renderer.xr.isPresenting || (!renderer.xr.isPresenting && ui.sectionBox.open));
+    section.vis.visible = show;
+    if (show) {
+      const size = cadDiag() * 1.1;
+      section.local.projectPoint(cadCenter(), section.vis.position);
+      section.vis.quaternion.setFromUnitVectors(_v3.set(0, 0, 1), section.local.normal);
+      section.vis.scale.set(size, size, 1);
+    }
+  }
+}
+
+function sectionText() {
+  if (!section.on) return 'Przekrój: wyłączony';
+  return `Przekrój ${section.axis}: ${(sectionOffset() * 1000).toFixed(0)} mm`;
+}
+
+function syncSectionUI() {
+  ui.secOn.textContent = section.on ? 'Wyłącz' : 'Włącz';
+  ui.secOn.classList.toggle('on', section.on);
+  for (const k of ['X', 'Y', 'Z']) ui['sec' + k].classList.toggle('on', section.on && section.axis === k);
+  const half = sectionHalfRange();
+  ui.secPos.value = String(clamp(sectionOffset() / half * 100, -100, 100));
+  ui.secInfo.textContent = sectionText() + ' · osie X/Y/Z w układzie pliku CAD. W goglach: narzędzie „Przekrój”.';
 }
 
 function removeAnno(obj, list) {
@@ -971,7 +1475,7 @@ function undo() {
     const i = u.list.indexOf(u.obj);
     if (i >= 0) u.list.splice(i, 1);
     u.obj.dispose();
-    say(u.obj instanceof Stroke ? 'Cofnięto rysunek' : 'Cofnięto pomiar');
+    say(u.obj instanceof Stroke ? 'Cofnięto rysunek' : u.obj instanceof Note ? 'Cofnięto komentarz' : 'Cofnięto pomiar');
   } else if (u.type === 'remove') {
     u.objs.forEach((o) => { annoRoot.add(o.root); u.list.push(o); });
     say('Cofnięto usunięcie');
@@ -979,6 +1483,12 @@ function undo() {
     releaseAll();
     u.items.forEach(({ obj, prev }) => prev.decompose(obj.position, obj.quaternion, obj.scale));
     say('Cofnięto przesunięcie');
+  } else if (u.type === 'text') {
+    u.note.setText(u.prev);
+    say(`Cofnięto zmianę komentarza ${u.note.num}`);
+  } else if (u.type === 'notepos') {
+    u.note.setPos(u.prev);
+    say('Cofnięto przesunięcie komentarza');
   } else if (u.type === 'color') {
     u.items.forEach(({ mesh, prev }) => mats(mesh).forEach((m, i) => m.color.copy(prev[i])));
     say('Cofnięto zmianę koloru');
@@ -989,8 +1499,12 @@ function undo() {
 // ============================================================================
 // PANEL NARZĘDZI W GOGLACH (rysowany na płótnie, klikany promieniem)
 // ============================================================================
-const PAL = { W: 1024, H: 1110, PAD: 28, GAP: 14 };
-const pal = { canvas: null, ctx: null, tex: null, mesh: null, buttons: [], hover: null, sig: '', msg: '' };
+const PAL = { W: 1024, H: 1240, PAD: 28, GAP: 14, TREE_ROWS: 10, LIST_ROWS: 9 };
+const pal = { canvas: null, ctx: null, tex: null, mesh: null, buttons: [], hover: null, sig: '', msg: '',
+              page: 'narzedzia', returnPage: 'narzedzia', menuView: 'glowne', treeScroll: 0, listScroll: 0 };
+const PAGES = { narzedzia: 'Narzędzia', drzewo: 'Drzewo', menu: 'Menu' };
+// Przyciski, które muszą zadziałać w chwili naciśnięcia spustu (przeglądarka wymaga „gestu użytkownika”)
+const GESTURE_IDS = new Set(['xr:vr', 'xr:ar', 'xr:exit', 'kb:system', 'kb:voice']);
 
 function setupPalette() {
   pal.canvas = document.createElement('canvas');
@@ -1014,37 +1528,146 @@ function fmtLen(m) {
   return mm < 100 ? `${mm < 10 ? mm.toFixed(1) : mm.toFixed(0)} mm` : `${(mm / 10).toFixed(0)} cm`;
 }
 
+function fmtMB(bytes) { return bytes ? (bytes / 1048576).toFixed(bytes < 1048576 ? 2 : 1) + ' MB' : ''; }
+
 function sizeText() {
   if (S.tool === 'rysuj') return 'Grubość pędzla: ' + fmtLen(S.brush * 2);
   if (S.tool === 'gumka') return 'Gumka: ' + fmtLen(S.eraser * 2);
+  if (S.tool === 'przekroj') return sectionText();
   const s = pivot.scale.x;
   return 'Skala modelu ' + (s >= 1 ? s.toFixed(s >= 10 ? 0 : 1) + ' : 1' : '1 : ' + (1 / s).toFixed(1 / s >= 10 ? 0 : 1));
 }
 
+// Układ panelu: lista przycisków zależna od zakładki. Liczony co klatkę (tani), rysowany tylko po zmianie.
 function layoutPalette() {
-  const B = [];
-  const row = (y, h, items) => {
+  const B = [], W = PAL.W, P = PAL.PAD, G = PAL.GAP;
+  const row = (y, h, items, x0 = P, x1 = W - P) => {
     const total = items.reduce((s, it) => s + (it.flex || 1), 0);
-    const avail = PAL.W - 2 * PAL.PAD - PAL.GAP * (items.length - 1);
-    let x = PAL.PAD;
-    for (const it of items) { const w = avail * (it.flex || 1) / total; B.push({ kind: 'button', ...it, x, y, w, h }); x += w + PAL.GAP; }
+    const avail = x1 - x0 - G * (items.length - 1);
+    let x = x0;
+    for (const it of items) { const w = avail * (it.flex || 1) / total; B.push({ kind: 'button', ...it, x, y, w, h }); x += w + G; }
   };
-  const label = (y, text) => B.push({ kind: 'label', x: PAL.PAD, y, w: PAL.W - 2 * PAL.PAD, h: 36, text });
-  label(96, 'Narzędzie (spust)');
-  row(136, 116, Object.entries(TOOLS).map(([id, text]) => ({ id: 'tool:' + id, text })));
-  label(272, 'Chwytanie (grip)');
-  row(312, 104, [
-    { id: 'grab:model', text: GRABS.model }, { id: 'grab:czesc', text: GRABS.czesc },
-    { id: 'grab:grupa', text: () => 'Grupa ' + fmtLen(S.sphere) },
-    { id: 'sphere:-', text: '−', flex: 0.45 }, { id: 'sphere:+', text: '+', flex: 0.45 }]);
-  label(436, 'Kolor (rysowanie i malowanie części)');
-  row(476, 86, CONFIG.COLORS.map((color, i) => ({ id: 'color:' + i, kind: 'swatch', color })));
-  label(582, 'Rozmiar (prawa gałka)');
-  row(622, 96, [{ id: 'size:-', text: '−', flex: 0.6 }, { id: 'sizeinfo', kind: 'info', text: sizeText, flex: 2 }, { id: 'size:+', text: '+', flex: 0.6 }]);
-  row(738, 104, [{ id: 'undo', text: 'Cofnij (B)' }, { id: 'clear:strokes', text: 'Usuń rysunki' }, { id: 'clear:measures', text: 'Usuń miary' }]);
-  row(862, 104, [{ id: 'shot', text: 'Zrzut (A)' }, { id: 'place', text: () => (placementMode === 'stol' ? 'Skala 1:1' : 'Na stół') },
-                 { id: 'reset:parts', text: 'Reset części' }, { id: 'reset:colors', text: 'Reset kolorów' }]);
+  const label = (y, text) => B.push({ kind: 'label', x: P, y, w: W - 2 * P, h: 36, text });
+  const info = (y, text, h = 48, align = 'left', color) => B.push({ kind: 'info', x: P, y, w: W - 2 * P, h, text, align, color });
+  const listNav = (y, scrollKey, total, rows, extra = []) => {
+    const page = `${total ? pal[scrollKey] + 1 : 0}–${Math.min(total, pal[scrollKey] + rows)} z ${total}`;
+    row(y, 88, [{ id: 'scroll:' + scrollKey + ':-', text: '▲', disabled: pal[scrollKey] <= 0, flex: 0.8 },
+                { id: 'scroll:' + scrollKey + ':+', text: '▼', disabled: pal[scrollKey] + rows >= total, flex: 0.8 },
+                { id: 'noop', kind: 'info', text: page, flex: 1.4 }, ...extra]);
+  };
+
+  if (pal.page !== 'klawiatura') row(20, 80, Object.entries(PAGES).map(([id, text]) => ({ id: 'page:' + id, text, active: pal.page === id, tab: true })));
+
+  if (pal.page === 'narzedzia') {
+    label(116, 'Narzędzie (spust)');
+    const t = Object.entries(TOOLS).map(([id, text]) => ({ id: 'tool:' + id, text, active: S.tool === id }));
+    row(154, 96, t.slice(0, 4));
+    row(262, 96, t.slice(4));
+    label(374, 'Chwytanie (grip)');
+    row(412, 90, [
+      { id: 'grab:model', text: GRABS.model, active: S.grabMode === 'model' }, { id: 'grab:czesc', text: GRABS.czesc, active: S.grabMode === 'czesc' },
+      { id: 'grab:grupa', text: 'Grupa ' + fmtLen(S.sphere), active: S.grabMode === 'grupa' },
+      { id: 'sphere:-', text: '−', flex: 0.45 }, { id: 'sphere:+', text: '+', flex: 0.45 }]);
+    label(516, 'Kolor (rysowanie i malowanie części)');
+    row(554, 76, CONFIG.COLORS.map((color, i) => ({ id: 'color:' + i, kind: 'swatch', color, active: S.colorIdx === i })));
+    label(644, S.tool === 'przekroj' ? 'Przesuw przekroju (prawa gałka)' : 'Rozmiar (prawa gałka)');
+    row(682, 86, [{ id: 'size:-', text: '−', flex: 0.6 }, { id: 'sizeinfo', kind: 'info', text: sizeText(), align: 'center', flex: 2 }, { id: 'size:+', text: '+', flex: 0.6 }]);
+    label(782, 'Przekrój');
+    row(820, 86, [{ id: 'sec:toggle', text: section.on ? 'Wyłącz' : 'Włącz', flex: 1.3 },
+      ...['X', 'Y', 'Z'].map((a) => ({ id: 'sec:' + a, text: a, active: section.on && section.axis === a, flex: 0.7 })),
+      { id: 'sec:flip', text: 'Odwróć', flex: 1.2 }]);
+    row(922, 92, [{ id: 'undo', text: 'Cofnij (B)' }, { id: 'clear:strokes', text: 'Usuń rysunki' },
+                  { id: 'clear:measures', text: 'Usuń miary' }, { id: 'clear:notes', text: 'Usuń komentarze' }]);
+    row(1028, 92, [{ id: 'shot', text: 'Zrzut (A)' }, { id: 'place', text: placementMode === 'stol' ? 'Skala 1:1' : 'Na stół' },
+                   { id: 'reset:parts', text: 'Reset części' }, { id: 'reset:colors', text: 'Reset kolorów' }]);
+  } else if (pal.page === 'drzewo') {
+    if (!treeRows.length) info(130, 'Brak modelu — otwórz plik w zakładce Menu.');
+    else {
+      info(116, `${modelName}: ${parts.length} części`, 48);
+      pal.treeScroll = clamp(pal.treeScroll, 0, Math.max(0, treeRows.length - PAL.TREE_ROWS));
+      for (let k = 0; k < PAL.TREE_ROWS; k++) {
+        const i = pal.treeScroll + k, r = treeRows[i];
+        if (!r) break;
+        const y = 172 + k * 78, x = P + Math.min(r.depth, 6) * 30;
+        B.push({ kind: 'check', id: 'tvis:' + i, checked: r.obj.visible, x, y, w: 70, h: 70 });
+        B.push({ kind: 'item', id: 'tsel:' + i, text: (r.isPart ? '' : '▸ ') + r.name, active: selectedObj === r.obj,
+                 dim: !isVisibleDeep(r.obj), x: x + 84, y, w: W - P - x - 84, h: 70 });
+      }
+      listNav(964, 'treeScroll', treeRows.length, PAL.TREE_ROWS);
+      row(1066, 84, [{ id: 'tree:all', text: 'Pokaż wszystko' }, { id: 'tree:only', text: 'Tylko wybrana' }, { id: 'tree:hide', text: 'Ukryj wybraną' }]);
+    }
+  } else if (pal.page === 'menu' && pal.menuView === 'glowne') {
+    label(116, 'Plik');
+    row(154, 92, [{ id: 'menu:drive', text: 'Google Drive' }, { id: 'menu:recent', text: 'Ostatnie pliki' },
+                  { id: 'menu:reload', text: 'Wczytaj ponownie', disabled: !lastFile }]);
+    label(262, 'Widok');
+    row(300, 86, [{ id: 'up:Y', text: 'Góra: Y', active: ui.upAxis.value === 'Y' }, { id: 'up:Z', text: 'Góra: Z', active: ui.upAxis.value === 'Z' },
+                  { id: 'placeset:stol', text: 'Na stół', active: placementMode === 'stol' }, { id: 'placeset:life', text: 'Skala 1:1', active: placementMode === 'life' }]);
+    row(398, 86, [['niska', 'Siatka: niska'], ['srednia', 'średnia'], ['wysoka', 'wysoka']].map(([v, text]) => ({ id: 'qual:' + v, text, active: ui.quality.value === v })));
+    label(500, 'Tryb gogli');
+    row(538, 86, [{ id: 'xr:vr', text: 'VR', active: xrMode === 'vr', disabled: !xrSupport.vr }, { id: 'xr:ar', text: 'AR (passthrough)', active: xrMode === 'ar', disabled: !xrSupport.ar },
+                  { id: 'xr:exit', text: 'Wyjdź z gogli' }]);
+    label(640, 'Chmura: Google Drive');
+    info(678, drive.statusText(), 48, 'left', drive.connected ? '#8be28b' : '#ffd27a');
+    row(734, 86, [{ id: 'cloud:auto', text: 'Zrzuty do chmury: ' + (settings.autoUpload ? 'TAK' : 'NIE'), active: settings.autoUpload },
+                  { id: 'cloud:pending', text: `Wyślij zaległe (${cloudPendingCount})`, disabled: !cloudPendingCount || !drive.connected }]);
+    info(830, 'Zrzuty trafiają do: ' + shotsTargetText(), 48);
+    label(898, 'Dyktowanie głosem');
+    info(936, voice.statusText(), 48);
+    info(1000, 'Plik SolidWorks (.sldprt/.sldasm) trzeba zapisać jako STEP.', 48, 'left', '#9aa0a6');
+  } else if (pal.page === 'menu' && pal.menuView === 'drive') {
+    if (!drive.connected) {
+      info(116, 'Google Drive nie jest połączony.', 48, 'left', '#ffd27a');
+      info(170, 'Połącz na ekranie 2D: panel → Chmura → Połącz,', 48);
+      info(222, 'potem wejdź ponownie w VR (połączenie ważne 1 godz.).', 48);
+      row(1036, 88, [{ id: 'menu:back', text: '◀ Menu' }]);
+    } else {
+      info(116, browserPathText(), 48);
+      row(170, 84, [{ id: 'drv:up', text: '⬆ Wyżej', disabled: browser.stack.length <= 1 }, { id: 'drv:root', text: 'Mój dysk' },
+                    { id: 'drv:setproj', text: 'Folder projektu = ten', flex: 1.5 }, { id: 'drv:refresh', text: 'Odśwież' }]);
+      const items = browser.items;
+      if (browser.loading) info(272, 'Wczytywanie listy…');
+      else if (browser.error) info(272, 'Błąd: ' + browser.error, 48, 'left', '#ff8a8a');
+      else if (!items.length) info(272, 'Pusty folder (pokazuję foldery i pliki STEP/IGES/SolidWorks).');
+      pal.listScroll = clamp(pal.listScroll, 0, Math.max(0, items.length - PAL.LIST_ROWS));
+      if (!browser.loading) for (let k = 0; k < PAL.LIST_ROWS; k++) {
+        const i = pal.listScroll + k, it = items[i];
+        if (!it) break;
+        const kind = it.folder ? 'folder' : it.native ? 'native' : 'file';
+        const text = kind === 'folder' ? '▸ ' + it.name : kind === 'native' ? it.name + '  — SolidWorks: zapisz jako STEP' : `${it.name}   ${fmtMB(it.size)}`;
+        B.push({ kind: 'item', id: 'drvi:' + i, text, disabled: kind === 'native', x: P, y: 268 + k * 82, w: W - 2 * P, h: 74 });
+      }
+      listNav(1036, 'listScroll', items.length, PAL.LIST_ROWS, [{ id: 'menu:back', text: '◀ Menu', flex: 1.2 }]);
+    }
+  } else if (pal.page === 'menu' && pal.menuView === 'ostatnie') {
+    info(116, 'Ostatnio otwierane (zapisane w pamięci gogli):', 48);
+    if (!recentList.length) info(172, 'Brak — otwórz plik z Google Drive albo z dysku na ekranie 2D.');
+    pal.listScroll = clamp(pal.listScroll, 0, Math.max(0, recentList.length - PAL.LIST_ROWS - 1));
+    for (let k = 0; k < PAL.LIST_ROWS + 1; k++) {
+      const i = pal.listScroll + k, r = recentList[i];
+      if (!r) break;
+      B.push({ kind: 'item', id: 'rec:' + i, text: `${r.name}   ${fmtMB(r.size)}`, active: lastFile && lastFile.name === r.name, x: P, y: 172 + k * 82, w: W - 2 * P, h: 74 });
+    }
+    listNav(1036, 'listScroll', recentList.length, PAL.LIST_ROWS + 1, [{ id: 'menu:back', text: '◀ Menu', flex: 1.2 }]);
+  } else if (pal.page === 'klawiatura' && edit) {
+    info(20, `Komentarz ${edit.note.num}` + (edit.note.part ? ' · ' + edit.note.part.name : ''), 48, 'left', CONFIG.NOTE_COLOR);
+    B.push({ kind: 'textbox', id: 'noop', text: edit.text, x: P, y: 76, w: W - 2 * P, h: 210 });
+    info(294, edit.voice || 'Pisz promieniem i spustem albo naciśnij „Mów”.', 48, 'left', edit.voice ? '#ffd27a' : '#9aa0a6');
+    const sh = (c) => (edit.shift ? c.toUpperCase() : c);
+    const keys = (y, chars, extra = []) => row(y, 90, [...chars.split('').map((c) => ({ id: 'kb:' + c, text: sh(c) })), ...extra]);
+    keys(350, '1234567890');
+    keys(452, 'qwertyuiop');
+    keys(554, 'asdfghjkl', [{ id: 'kb:backspace', text: '⌫' }]);
+    row(656, 90, [{ id: 'kb:shift', text: '⇧', active: edit.shift }, ...'zxcvbnm,.'.split('').map((c) => ({ id: 'kb:' + c, text: sh(c) }))]);
+    keys(758, 'ąćęłńóśźż-');
+    const sys = !!(renderer.xr.getSession() && renderer.xr.getSession().isSystemKeyboardSupported);
+    row(860, 90, [{ id: 'kb:voice', text: voice.active ? 'Stop' : 'Mów', active: voice.active, flex: 1.6 }, { id: 'kb:space', text: 'Spacja', flex: 3.4 },
+                  { id: 'kb:enter', text: 'Enter', flex: 1.4 }, ...(sys ? [{ id: 'kb:system', text: 'Klaw. Quest', flex: 2 }] : [])]);
+    row(962, 96, [{ id: 'kb:cancel', text: 'Anuluj' }, { id: 'kb:clear', text: 'Wyczyść' },
+                  ...(edit.isNew ? [] : [{ id: 'kb:delete', text: 'Usuń' }]), { id: 'kb:done', text: 'Gotowe', active: true }]);
+  }
   pal.buttons = B;
+  return B;
 }
 
 function fitFont(ctx, text, maxW, size, weight) {
@@ -1052,10 +1675,17 @@ function fitFont(ctx, text, maxW, size, weight) {
   do { ctx.font = `${weight} ${s}px system-ui, sans-serif`; } while (ctx.measureText(text).width > maxW && --s > 14);
 }
 
-function isActive(id) { return id === 'tool:' + S.tool || id === 'grab:' + S.grabMode; }
+function footerText() {
+  if (pal.msg) return pal.msg;
+  if (pal.page === 'klawiatura') return 'Gotowe – zapisz · Anuluj – bez zmian';
+  if (pal.page === 'drzewo') return 'Kwadrat – pokaż/ukryj · nazwa – wybierz część';
+  if (pal.page === 'menu') return 'X – ukryj panel · Y – reset pozycji modelu';
+  return 'X – ukryj panel · A – zrzut · B – cofnij · Y – reset';
+}
 
-function paletteSignature() {
-  return [S.tool, S.grabMode, S.colorIdx, fmtLen(S.sphere), sizeText(), placementMode, pal.hover, pal.msg].join('|');
+function paletteSignature(B) {
+  return pal.page + '|' + pal.hover + '|' + footerText() + '|' +
+    JSON.stringify(B.map((b) => [b.id, b.text, b.active, b.disabled, b.checked, b.dim, b.kind === 'textbox' ? edit && edit.shift : 0]));
 }
 
 function drawPalette() {
@@ -1065,66 +1695,139 @@ function drawPalette() {
   ctx.fillStyle = 'rgba(24,27,33,0.95)'; rr(4, 4, W - 8, H - 8, 36); ctx.fill();
   ctx.lineWidth = 4; ctx.strokeStyle = '#3a3f47'; ctx.stroke();
   ctx.textBaseline = 'middle';
-  ctx.textAlign = 'left'; ctx.fillStyle = '#e8eaed'; ctx.font = '700 46px system-ui, sans-serif';
-  ctx.fillText('Narzędzia', P, 54);
-  ctx.textAlign = 'right'; ctx.fillStyle = '#ff8a1f'; ctx.font = '600 34px system-ui, sans-serif';
-  ctx.fillText(`${TOOLS[S.tool]} · chwyt: ${GRABS[S.grabMode]}`, W - P, 54);
 
   for (const b of pal.buttons) {
-    const text = typeof b.text === 'function' ? b.text() : b.text;
+    const text = b.text == null ? '' : String(b.text);
+    const hov = pal.hover === b.id && !b.disabled;
     if (b.kind === 'label') {
       ctx.textAlign = 'left'; ctx.fillStyle = '#9aa0a6'; ctx.font = '500 30px system-ui, sans-serif';
       ctx.fillText(text, b.x + 4, b.y + b.h / 2); continue;
     }
     if (b.kind === 'info') {
-      ctx.textAlign = 'center'; ctx.fillStyle = '#e8eaed'; fitFont(ctx, text, b.w - 16, 38, 600);
-      ctx.fillText(text, b.x + b.w / 2, b.y + b.h / 2); continue;
+      ctx.textAlign = b.align || 'left'; ctx.fillStyle = b.color || '#e8eaed'; fitFont(ctx, text, b.w - 16, 34, 600);
+      ctx.fillText(text, b.align === 'center' ? b.x + b.w / 2 : b.x + 4, b.y + b.h / 2); continue;
     }
-    const hov = pal.hover === b.id;
-    if (b.kind === 'swatch') {
-      ctx.fillStyle = b.color; rr(b.x, b.y, b.w, b.h, 18); ctx.fill();
-      const sel = S.colorIdx === Number(b.id.split(':')[1]);
-      ctx.lineWidth = sel ? 10 : (hov ? 6 : 2); ctx.strokeStyle = sel ? '#ffffff' : (hov ? '#ff8a1f' : '#3a3f47'); ctx.stroke();
+    if (b.kind === 'textbox') {
+      ctx.fillStyle = '#111317'; rr(b.x, b.y, b.w, b.h, 18); ctx.fill();
+      ctx.lineWidth = 3; ctx.strokeStyle = CONFIG.NOTE_COLOR; ctx.stroke();
+      ctx.font = '600 38px system-ui, sans-serif'; ctx.fillStyle = '#ffffff'; ctx.textAlign = 'left';
+      const lines = wrapText(ctx, text + '│', b.w - 40).slice(-4);
+      lines.forEach((ln, i) => ctx.fillText(ln, b.x + 20, b.y + 36 + i * 46));
       continue;
     }
-    const active = isActive(b.id);
-    ctx.fillStyle = active ? '#ff8a1f' : (hov ? '#3b424d' : '#2c3139');
+    if (b.kind === 'swatch') {
+      ctx.fillStyle = b.color; rr(b.x, b.y, b.w, b.h, 18); ctx.fill();
+      ctx.lineWidth = b.active ? 10 : (hov ? 6 : 2); ctx.strokeStyle = b.active ? '#ffffff' : (hov ? '#ff8a1f' : '#3a3f47'); ctx.stroke();
+      continue;
+    }
+    if (b.kind === 'check') {
+      ctx.fillStyle = hov ? '#3b424d' : '#2c3139'; rr(b.x + 6, b.y + 6, b.w - 12, b.h - 12, 12); ctx.fill();
+      ctx.lineWidth = hov ? 6 : 3; ctx.strokeStyle = hov ? '#ffffff' : '#5a606a'; ctx.stroke();
+      if (b.checked) {
+        ctx.strokeStyle = '#ff8a1f'; ctx.lineWidth = 8; ctx.beginPath();
+        ctx.moveTo(b.x + 18, b.y + b.h * 0.52); ctx.lineTo(b.x + b.w * 0.43, b.y + b.h - 20); ctx.lineTo(b.x + b.w - 16, b.y + 18); ctx.stroke();
+      }
+      continue;
+    }
+    if (b.kind === 'item') {
+      ctx.fillStyle = hov ? '#3b424d' : '#22262d'; rr(b.x, b.y, b.w, b.h, 14); ctx.fill();
+      ctx.lineWidth = b.active ? 5 : (hov ? 5 : 2); ctx.strokeStyle = b.active ? '#ff8a1f' : (hov ? '#ffffff' : '#353a42'); ctx.stroke();
+      ctx.textAlign = 'left'; ctx.fillStyle = b.disabled || b.dim ? '#80868e' : (b.active ? '#ffb15c' : '#e8eaed');
+      fitFont(ctx, text, b.w - 36, 34, b.active ? 700 : 500);
+      ctx.fillText(text, b.x + 18, b.y + b.h / 2 + 1, b.w - 36);
+      continue;
+    }
+    ctx.fillStyle = b.active ? '#ff8a1f' : (hov ? '#3b424d' : (b.tab ? '#23272e' : '#2c3139'));
     rr(b.x, b.y, b.w, b.h, 20); ctx.fill();
     ctx.lineWidth = hov ? 6 : 3; ctx.strokeStyle = hov ? '#ffffff' : '#3a3f47'; ctx.stroke();
-    ctx.fillStyle = active ? '#111111' : '#e8eaed'; ctx.textAlign = 'center';
-    fitFont(ctx, text, b.w - 18, 38, 600);
+    ctx.fillStyle = b.disabled ? '#6b7079' : (b.active ? '#111111' : '#e8eaed'); ctx.textAlign = 'center';
+    fitFont(ctx, text, b.w - 18, b.tab ? 40 : 38, b.tab ? 700 : 600);
     ctx.fillText(text, b.x + b.w / 2, b.y + b.h / 2 + 2);
   }
-  const foot = pal.msg || 'X – ukryj panel · A – zrzut · B – cofnij · Y – reset';
+  const foot = footerText();
   ctx.textAlign = 'center'; ctx.fillStyle = pal.msg ? '#ffd27a' : '#9aa0a6';
   fitFont(ctx, foot, W - 2 * P, 34, 500);
-  ctx.fillText(foot, W / 2, H - 70);
+  ctx.fillText(foot, W / 2, H - 46);
   pal.tex.needsUpdate = true;
 }
 
 function paletteButtonAt(uv) {
   const x = uv.x * PAL.W, y = (1 - uv.y) * PAL.H;
-  const b = pal.buttons.find((b) => (b.kind === 'button' || b.kind === 'swatch') && x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
+  const b = pal.buttons.find((b) => ['button', 'swatch', 'check', 'item'].includes(b.kind) && !b.disabled && b.id !== 'noop' &&
+                                    x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
   return b ? b.id : null;
 }
 
 function paletteAction(id) {
-  const [k, v] = id.split(':');
-  if (k === 'tool') { S.tool = v; say('Narzędzie: ' + TOOLS[v]); }
+  const i = id.indexOf(':');
+  const k = i < 0 ? id : id.slice(0, i), v = i < 0 ? '' : id.slice(i + 1);
+  if (k === 'page') { pal.page = v; if (v === 'menu') pal.menuView = 'glowne'; }
+  else if (k === 'tool') { S.tool = v; say('Narzędzie: ' + TOOLS[v]); if (v === 'przekroj' && !section.on && cadRoot) setSectionOn(true); }
   else if (k === 'grab') { S.grabMode = v; say('Chwytanie: ' + GRABS[v]); }
   else if (k === 'sphere') S.sphere = clamp(S.sphere * (v === '+' ? 1.25 : 0.8), CONFIG.SPHERE_MIN, CONFIG.SPHERE_MAX);
   else if (k === 'color') S.colorIdx = Number(v);
-  else if (k === 'size') adjustToolSize(v === '+' ? 1.25 : 0.8);
+  else if (k === 'size') adjustToolSize(v === '+' ? 1.25 : 0.8, true);
   else if (k === 'undo') undo();
-  else if (k === 'clear') v === 'strokes' ? clearAnno(strokes, 'rysunki') : clearAnno(measures, 'miary');
+  else if (k === 'clear') v === 'strokes' ? clearAnno(strokes, 'rysunki') : v === 'notes' ? clearAnno(notes, 'komentarze') : clearAnno(measures, 'miary');
   else if (k === 'shot') requestScreenshot();
   else if (k === 'place') togglePlacement();
+  else if (k === 'placeset') { if (placementMode !== v) togglePlacement(); }
   else if (k === 'reset') v === 'parts' ? resetParts() : (restoreColors(parts.map((p) => p.mesh)), say('Przywrócono kolory'));
+  else if (k === 'sec') {
+    if (!cadRoot) say('Brak modelu');
+    else if (v === 'toggle') { setSectionOn(!section.on); say(section.on ? 'Przekrój włączony' : 'Przekrój wyłączony'); }
+    else if (v === 'flip') flipSection();
+    else { setSectionAxis(v, 0); say('Przekrój ' + v); }
+  }
+  else if (k === 'tvis') { const r = treeRows[Number(v)]; if (r) setRowVisible(r, !r.obj.visible); }
+  else if (k === 'tsel') { const r = treeRows[Number(v)]; if (r) selectObject(r.obj, true); }
+  else if (k === 'tree') treeCommand(v);
+  else if (k === 'scroll') {
+    const [key, dir] = v.split(':');
+    const step = key === 'treeScroll' ? PAL.TREE_ROWS - 1 : PAL.LIST_ROWS - 1;
+    pal[key] = Math.max(0, pal[key] + (dir === '+' ? step : -step));
+  }
+  else if (k === 'menu') {
+    if (v === 'back') pal.menuView = 'glowne';
+    else if (v === 'drive') { pal.menuView = 'drive'; pal.listScroll = 0; if (drive.connected && !browser.items.length && !browser.loading) browserList(); }
+    else if (v === 'recent') { pal.menuView = 'ostatnie'; pal.listScroll = 0; refreshRecent(); }
+    else if (v === 'reload') reloadCurrent();
+  }
+  else if (k === 'up') { ui.upAxis.value = v; applyUpAxis(); say('Góra: ' + v); }
+  else if (k === 'qual') { ui.quality.value = v; say('Siatka: ' + v + ' — działa po „Wczytaj ponownie”'); }
+  else if (k === 'xr') xrAction(v);
+  else if (k === 'cloud') {
+    if (v === 'auto') { settings.autoUpload = !settings.autoUpload; saveSettings(); syncCloudUI(); say('Zrzuty do chmury: ' + (settings.autoUpload ? 'TAK' : 'NIE')); }
+    else if (v === 'pending') uploadPendingShots(true);
+  }
+  else if (k === 'drv') {
+    if (v === 'up') browserUp();
+    else if (v === 'root') browserReset();
+    else if (v === 'refresh') browserList();
+    else if (v === 'setproj') setProjectFromBrowser();
+  }
+  else if (k === 'drvi') browserOpenItem(Number(v));
+  else if (k === 'rec') openRecent(Number(v));
+  else if (k === 'kb') {
+    if (v === 'done') closeNoteEditor(true);
+    else if (v === 'cancel') closeNoteEditor(false);
+    else if (v === 'delete') deleteEditedNote();
+    else if (v === 'voice') toggleVoice();
+    else if (v === 'system') openSystemKeyboard();
+    else editKey(v);
+  }
 }
 
-function adjustToolSize(f) {
+function adjustToolSize(f, button) {
   if (S.tool === 'rysuj') S.brush = clamp(S.brush * f, CONFIG.BRUSH_MIN, CONFIG.BRUSH_MAX);
   else if (S.tool === 'gumka') S.eraser = clamp(S.eraser * f, CONFIG.ERASER_MIN, CONFIG.ERASER_MAX);
+  else if (S.tool === 'przekroj') {
+    if (!section.on) return;
+    const step = button ? cadDiag() * 0.02 : Math.log(f) / CONFIG.SIZE_SPEED * CONFIG.SECTION_STICK_SPEED * cadDiag();
+    const half = sectionHalfRange();
+    setSectionOffset(clamp(sectionOffset() + (button ? (f > 1 ? step : -step) : step), -half, half));
+    syncSectionUI();
+  }
   else if (!controllers.some((c) => c.userData.held)) pivot.scale.setScalar(clamp(pivot.scale.x * f, CONFIG.SCALE_MIN, CONFIG.SCALE_MAX));
 }
 
@@ -1163,7 +1866,8 @@ function updatePalette() {
 
 function refreshPaletteTexture() {
   pal.hover = controllers.map((c) => c.userData.uiHover).find(Boolean) || null;
-  const sig = paletteSignature();
+  const B = layoutPalette();
+  const sig = paletteSignature(B);
   if (sig !== pal.sig) { pal.sig = sig; drawPalette(); }
 }
 
@@ -1196,7 +1900,7 @@ function setupControllers() {
       inputSource: null, handed: 'none', ray, tip, cursor, grabSphere,
       selecting: false, squeezing: false, trigPrev: false, gripPrev: false, prev: {},
       held: null, uiHover: null, uiConsumed: false, activeTool: null, rayHit: null,
-      stroke: null, smooth: new THREE.Vector3(), measure: null, grabHover: [],
+      stroke: null, smooth: new THREE.Vector3(), measure: null, grabHover: [], noteHit: null, noteDrag: null, gestureDone: false,
     };
     c.addEventListener('connected', (e) => {
       c.userData.inputSource = e.data;
@@ -1207,7 +1911,12 @@ function setupControllers() {
       endHold(c); toolEnd(c);
       Object.assign(c.userData, { inputSource: null, selecting: false, squeezing: false, trigPrev: false, gripPrev: false, uiHover: null });
     });
-    c.addEventListener('selectstart', () => { c.userData.selecting = true; });
+    c.addEventListener('selectstart', () => {
+      c.userData.selecting = true;
+      // przyciski wymagające „gestu” (wejście w AR, mikrofon, klawiatura) obsługujemy od razu, w zdarzeniu spustu
+      const id = c.userData.uiHover;
+      if (id && GESTURE_IDS.has(id)) { c.userData.gestureDone = true; paletteAction(id); pulse(c, 0.3, 20); }
+    });
     c.addEventListener('selectend', () => { c.userData.selecting = false; });
     c.addEventListener('squeezestart', () => { c.userData.squeezing = true; });
     c.addEventListener('squeezeend', () => { c.userData.squeezing = false; });
@@ -1225,10 +1934,15 @@ function setupControllers() {
     grid.visible = xrMode !== 'ar';
     placeModel(placementMode);
     pal.msg = '';
-    showToast('X – panel narzędzi · A – zrzut ekranu');
+    if (!cadRoot) { pal.page = 'menu'; pal.menuView = 'glowne'; S.paletteVisible = true; }
+    if (edit) { pal.returnPage = pal.page; pal.page = 'klawiatura'; }
+    showToast(cadRoot ? 'X – panel narzędzi · A – zrzut ekranu' : 'Wybierz plik w panelu: Menu');
+    const session = renderer.xr.getSession();
+    session.addEventListener('visibilitychange', () => { if (session.visibilityState === 'visible') ui.xrKb.blur(); });
   });
   renderer.xr.addEventListener('sessionend', () => {
     xrMode = null;
+    if (pal.page === 'klawiatura') pal.page = pal.returnPage || 'narzedzia';
     for (const c of controllers) { endHold(c); toolEnd(c); }
     releaseAll();
     scene.background = new THREE.Color(CONFIG.BG_DESKTOP);
@@ -1238,7 +1952,21 @@ function setupControllers() {
     pal.mesh.visible = false;
     placeModel(placementMode);
     fitDesktopCamera();
+    if (pendingXR) {                          // przełączenie VR ↔ AR z menu: od razu nowa sesja
+      const m = pendingXR; pendingXR = null;
+      enterXR(m).then((ok) => { if (!ok) setStatus(`Nie udało się przełączyć na ${m.toUpperCase()} bez kliknięcia — kliknij przycisk „${m === 'ar' ? 'AR (passthrough)' : 'Wejdź w VR'}”.`); });
+    }
   });
+}
+
+// Menu w goglach: VR / AR / wyjście
+function xrAction(v) {
+  const session = renderer.xr.getSession();
+  if (!session) { if (v !== 'exit') enterXR(v); return; }
+  if (v === 'exit') { session.end(); return; }
+  if (v === xrMode) { say('Już jesteś w trybie ' + v.toUpperCase()); return; }
+  pendingXR = v;
+  session.end();
 }
 
 function pulse(c, intensity, ms) {
@@ -1351,7 +2079,7 @@ function updateHolds() {
 // ============================================================================
 // NARZĘDZIA NA SPUŚCIE
 // ============================================================================
-const usesRay = (tool) => tool === 'wskaz' || tool === 'miarka' || tool === 'kolor';
+const usesRay = (tool) => tool === 'wskaz' || tool === 'miarka' || tool === 'kolor' || tool === 'komentarz';
 
 function toolStart(c) {
   const u = c.userData;
@@ -1365,7 +2093,40 @@ function toolStart(c) {
     u.measure = new Measure(annoRoot.worldToLocal(a));
   } else if (u.activeTool === 'kolor') {
     if (u.rayHit) { paintMeshes([u.rayHit.object], CONFIG.COLORS[S.colorIdx]); pulse(c, 0.3, 20); }
+  } else if (u.activeTool === 'wskaz') {
+    if (u.rayHit) selectObject(u.rayHit.object, true);
+  } else if (u.activeTool === 'komentarz') {
+    if (edit) closeNoteEditor(true);
+    if (u.noteHit) {                            // istniejąca płytka: przeciągnij = przesuń, klik = edytuj tekst
+      u.noteDrag = { note: u.noteHit.note, dist: u.noteHit.distance, prev: u.noteHit.note.pos.clone(), start: u.noteHit.point.clone(), moved: false };
+    } else if (u.rayHit) {                      // nowy komentarz w miejscu wskazanym promieniem
+      const note = createNote(u.rayHit.point, u.rayHit.point, u.rayHit.object);
+      u.noteDrag = { note, dist: u.rayHit.distance, isNew: true, start: u.rayHit.point.clone(), moved: false };
+      pulse(c, 0.3, 20);
+    } else say('Wskaż promieniem miejsce na modelu');
+  } else if (u.activeTool === 'przekroj') {
+    setSectionFromController(c);
   }
+}
+
+function dragNote(c) {
+  const d = c.userData.noteDrag;
+  raycaster.setFromXRController(c);
+  const p = raycaster.ray.at(d.dist, new THREE.Vector3());
+  if (p.distanceTo(d.start) > CONFIG.NOTE_MIN_DRAG) d.moved = true;
+  if (d.moved) { annoRoot.updateMatrixWorld(); d.note.setPos(annoRoot.worldToLocal(p)); }
+}
+
+function endNoteDrag(c) {
+  const d = c.userData.noteDrag;
+  c.userData.noteDrag = null;
+  if (d.isNew) {
+    if (!d.moved) autoPlaceNote(d.note, annoRoot.localToWorld(d.note.anchor.clone()));
+    openNoteEditor(d.note, true);
+  } else if (!d.moved) {
+    d.note.setPos(d.prev);
+    openNoteEditor(d.note, false);
+  } else pushUndo({ type: 'notepos', note: d.note, prev: d.prev });
 }
 
 function toolHold(c) {
@@ -1381,6 +2142,10 @@ function toolHold(c) {
   } else if (u.activeTool === 'miarka' && u.measure) {
     const b = u.rayHit ? u.rayHit.point.clone() : tipWorld(c, new THREE.Vector3());
     u.measure.setB(annoRoot.worldToLocal(b));
+  } else if (u.activeTool === 'komentarz' && u.noteDrag) {
+    dragNote(c);
+  } else if (u.activeTool === 'przekroj') {
+    setSectionFromController(c);
   }
 }
 
@@ -1399,6 +2164,10 @@ function toolEnd(c) {
       say('Pomiar: ' + u.measure.text);
     } else u.measure.dispose();
     u.measure = null;
+  } else if (u.activeTool === 'komentarz' && u.noteDrag) {
+    endNoteDrag(c);
+  } else if (u.activeTool === 'przekroj' && section.on) {
+    say(sectionText());
   }
   u.activeTool = null;
 }
@@ -1437,6 +2206,7 @@ function eraseAt(c) {
     if (s.distanceTo(lp) < lr + s.maxR) { removeAnno(s, strokes); n++; }
   }
   for (const m of [...measures]) if (m.distanceTo(lp) < lr) { removeAnno(m, measures); n++; }
+  for (const m of [...notes]) if (m.distanceTo(lp) < lr && (!edit || edit.note !== m)) { removeAnno(m, notes); n++; }
   if (n) pulse(c, 0.25, 15);
 }
 
@@ -1483,9 +2253,10 @@ function handleXRInput(dt) {
     if (!u.squeezing && u.gripPrev) endHold(c);
     u.gripPrev = u.squeezing;
 
-    // Promień: najpierw panel narzędzi, potem części
+    // Promień: najpierw panel narzędzi, potem płytki komentarzy, potem części
     u.uiHover = null;
     u.rayHit = null;
+    u.noteHit = null;
     let rayLen = CONFIG.RAY_LENGTH;
     if (pal.mesh.visible && pal.mesh.parent !== c) {
       raycaster.setFromXRController(c);
@@ -1493,7 +2264,12 @@ function handleXRInput(dt) {
       const hit = raycaster.intersectObject(pal.mesh, false)[0];
       if (hit) { u.uiHover = paletteButtonAt(hit.uv); rayLen = hit.distance; }
     }
-    if (!u.uiHover && !u.uiConsumed && usesRay(u.activeTool || S.tool)) {
+    if (!u.uiHover && !u.uiConsumed && (u.activeTool || S.tool) === 'komentarz' && !u.noteDrag) {
+      raycaster.setFromXRController(c);
+      u.noteHit = rayNotes();
+      if (u.noteHit) rayLen = u.noteHit.distance;
+    }
+    if (!u.uiHover && !u.uiConsumed && !u.noteHit && usesRay(u.activeTool || S.tool)) {
       raycaster.setFromXRController(c);
       u.rayHit = pickRay();
       if (u.rayHit) {
@@ -1506,7 +2282,8 @@ function handleXRInput(dt) {
     // Spust: klik w panel albo narzędzie
     const trig = u.selecting;
     if (trig && !u.trigPrev) {
-      if (u.uiHover) { paletteAction(u.uiHover); u.uiConsumed = true; pulse(c, 0.3, 20); }
+      if (u.gestureDone) { u.gestureDone = false; u.uiConsumed = true; }      // już obsłużone w zdarzeniu spustu
+      else if (u.uiHover) { paletteAction(u.uiHover); u.uiConsumed = true; pulse(c, 0.3, 20); }
       else toolStart(c);
     } else if (trig && !u.uiConsumed) {
       toolHold(c);
@@ -1540,13 +2317,13 @@ async function checkXR() {
   setButtons(true);
 }
 
-function setButtons(enabled) {
-  ui.vr.disabled = !(enabled && xrSupport.vr && cadRoot);
-  ui.ar.disabled = !(enabled && xrSupport.ar && cadRoot);
+function setButtons(enabled) {                // VR działa też bez modelu: plik można wybrać z menu w goglach
+  ui.vr.disabled = !(enabled && xrSupport.vr);
+  ui.ar.disabled = !(enabled && xrSupport.ar);
 }
 
 async function enterXR(mode) {
-  if (renderer.xr.isPresenting) return;
+  if (renderer.xr.isPresenting) return false;
   try {
     const session = await navigator.xr.requestSession(mode === 'ar' ? 'immersive-ar' : 'immersive-vr', {
       optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'],
@@ -1554,9 +2331,11 @@ async function enterXR(mode) {
     xrMode = mode;
     renderer.xr.setReferenceSpaceType('local-floor');
     await renderer.xr.setSession(session);
+    return true;
   } catch (e) {
     xrMode = null;
     setStatus('Nie udało się uruchomić ' + mode.toUpperCase() + ': ' + e.message);
+    return false;
   }
 }
 
@@ -1614,51 +2393,63 @@ async function captureScreenshot() {
     const d = new Date(), p2 = (n) => String(n).padStart(2, '0');
     const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}_${p2(d.getHours())}-${p2(d.getMinutes())}-${p2(d.getSeconds())}`;
     const name = `zrzut_${modelName.replace(/[^\w\-]+/g, '_')}_${stamp}.jpg`;
-    const count = await shotStore.add({ name, time: d.getTime(), model: modelName, blob });
+    const rec = { name, time: d.getTime(), model: modelName, blob, cloud: '' };
+    const count = await shotStore.addShot(rec);
     pulse(mainHand(), 0.6, 60);
-    say(`Zrzut zapisany (${count})`);
-    refreshShots();
+    say(`Zrzut zapisany (${count})` + (settings.autoUpload && drive.connected ? ' — wysyłam do chmury…' : ''));
+    await refreshShots();
+    if (settings.autoUpload) uploadPendingShots(false);
   } catch (e) {
     console.error(e);
     say('Błąd zrzutu: ' + e.message);
   }
 }
 
-// Przechowywanie zrzutów w pamięci przeglądarki (IndexedDB); gdy niedostępna — tylko do zamknięcia strony
-const shotStore = (() => {
-  let dbp = null, mem = null;
+// Pamięć przeglądarki (IndexedDB): 'zrzuty' i 'modele' (ostatnio otwierane pliki). Gdy niedostępna — tylko do zamknięcia strony.
+const idb = (() => {
+  let dbp = null;
+  const mem = { zrzuty: null, modele: null };
+  let memMode = false;
   const open = () => dbp || (dbp = new Promise((res, rej) => {
-    const r = indexedDB.open('cad-vr-viewer', 1);
-    r.onupgradeneeded = () => r.result.createObjectStore('zrzuty', { keyPath: 'id', autoIncrement: true });
+    const r = indexedDB.open('cad-vr-viewer', 2);
+    r.onupgradeneeded = () => {
+      for (const name of ['zrzuty', 'modele']) if (!r.result.objectStoreNames.contains(name)) r.result.createObjectStore(name, { keyPath: 'id', autoIncrement: true });
+    };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
   }));
-  const run = async (mode, fn) => {
-    if (mem) throw new Error('mem');
+  const run = async (store, mode, fn) => {
+    if (memMode) throw new Error('mem');
     let db;
-    try { db = await open(); } catch { mem = []; throw new Error('mem'); }
+    try { db = await open(); } catch { memMode = true; throw new Error('mem'); }
     return new Promise((res, rej) => {
-      const t = db.transaction('zrzuty', mode);
-      const req = fn(t.objectStore('zrzuty'));
+      const t = db.transaction(store, mode);
+      const req = fn(t.objectStore(store));
       t.oncomplete = () => res(req.result);
       t.onerror = () => rej(t.error);
     });
   };
-  return {
-    async add(rec) {
-      try { await run('readwrite', (s) => s.add(rec)); } catch { rec.id = Date.now(); (mem = mem || []).push(rec); }
-      return (await this.list()).length;
-    },
-    async list() { try { return await run('readonly', (s) => s.getAll()); } catch { return (mem || []).slice(); } },
-    async remove(id) { try { await run('readwrite', (s) => s.delete(id)); } catch { mem = (mem || []).filter((r) => r.id !== id); } },
-    async clear() { try { await run('readwrite', (s) => s.clear()); } catch { mem = []; } },
-  };
+  const m = (store) => (mem[store] = mem[store] || []);
+  return (store) => ({
+    async add(rec) { try { rec.id = await run(store, 'readwrite', (s) => s.add(rec)); } catch { rec.id = Date.now() + Math.random(); m(store).push(rec); } return rec.id; },
+    async put(rec) { try { await run(store, 'readwrite', (s) => s.put(rec)); } catch { const a = m(store); const i = a.findIndex((r) => r.id === rec.id); if (i >= 0) a[i] = rec; } },
+    async list() { try { return await run(store, 'readonly', (s) => s.getAll()); } catch { return m(store).slice(); } },
+    async remove(id) { try { await run(store, 'readwrite', (s) => s.delete(id)); } catch { mem[store] = m(store).filter((r) => r.id !== id); } },
+    async clear() { try { await run(store, 'readwrite', (s) => s.clear()); } catch { mem[store] = []; } },
+  });
 })();
 
+const shotStore = Object.assign(idb('zrzuty'), {});
+shotStore.addShot = async function (rec) { await this.add(rec); return (await this.list()).length; };
+const modelStore = idb('modele');
+
 let shotURLs = [];
+let cloudPendingCount = 0;
 async function refreshShots() {
   const list = await shotStore.list();
   ui.shotCount.textContent = list.length;
+  cloudPendingCount = list.filter((r) => r.cloud !== 'ok').length;
+  ui.cloudPending.textContent = `Wyślij zaległe zrzuty (${cloudPendingCount})`;
   shotURLs.forEach((u) => URL.revokeObjectURL(u));
   shotURLs = [];
   ui.shots.innerHTML = '';
@@ -1671,9 +2462,387 @@ async function refreshShots() {
     const del = document.createElement('button'); del.textContent = 'Usuń';
     del.onclick = async () => { await shotStore.remove(r.id); refreshShots(); };
     const row = document.createElement('div'); row.className = 'row'; row.append(a, del);
-    box.append(img, row);
+    const st = document.createElement('div'); st.className = 'small';
+    st.textContent = r.cloud === 'ok' ? '✓ w chmurze' : r.cloud === 'error' ? '✗ nie wysłano (spróbuj „Wyślij zaległe”)' : 'tylko w przeglądarce';
+    box.append(img, row, st);
     ui.shots.appendChild(box);
   }
+}
+
+// ============================================================================
+// CHMURA: GOOGLE DRIVE (logowanie Google w przeglądarce, bez serwera)
+// ============================================================================
+const GIS_URL = 'https://accounts.google.com/gsi/client';
+const DRIVE_API = 'https://www.googleapis.com/drive/v3';
+const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name';
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+const TOKEN_KEY = 'cad-vr-viewer-token';
+const extOf = (n) => n.toLowerCase().split('.').pop();
+
+const drive = {
+  token: '', expires: 0, gis: null,
+  get connected() { return !!this.token && Date.now() < this.expires - 60000; },
+  minutesLeft() { return Math.max(0, Math.round((this.expires - Date.now()) / 60000)); },
+  statusText() {
+    if (this.connected) return `Połączony — ważne jeszcze ${this.minutesLeft()} min`;
+    if (!clientId()) return 'Nieskonfigurowany (Ustawienia → Google Client ID)';
+    return this.token ? 'Połączenie wygasło — połącz ponownie na ekranie 2D' : 'Niepołączony';
+  },
+  restore() {
+    try {
+      const t = JSON.parse(localStorage.getItem(TOKEN_KEY));
+      if (t && t.expires > Date.now()) { this.token = t.token; this.expires = t.expires; }
+    } catch { /* brak zapisanego połączenia */ }
+  },
+  loadGis() {
+    if (window.google && google.accounts && google.accounts.oauth2) return Promise.resolve();
+    return this.gis || (this.gis = new Promise((res, rej) => {
+      const sc = document.createElement('script');
+      sc.src = GIS_URL; sc.async = true;
+      sc.onload = () => res();
+      sc.onerror = () => { this.gis = null; rej(new Error('nie można wczytać logowania Google (brak internetu?)')); };
+      document.head.appendChild(sc);
+    }));
+  },
+  async connect() {
+    if (!clientId()) throw new Error('wpisz Google Client ID w „Ustawieniach”');
+    await this.loadGis();
+    await new Promise((res, rej) => {
+      const tc = google.accounts.oauth2.initTokenClient({
+        client_id: clientId(), scope: CONFIG.DRIVE_SCOPE,
+        callback: (r) => { if (r.error) rej(new Error(r.error_description || r.error)); else { this.setToken(r.access_token, r.expires_in); res(); } },
+        error_callback: (e) => rej(new Error((e && (e.message || e.type)) || 'logowanie przerwane')),
+      });
+      tc.requestAccessToken({ prompt: settings.everConnected ? '' : 'consent' });
+    });
+  },
+  setToken(t, secs) {
+    this.token = t;
+    this.expires = Date.now() + (Number(secs) || 3600) * 1000;
+    settings.everConnected = true; saveSettings();
+    try { localStorage.setItem(TOKEN_KEY, JSON.stringify({ token: t, expires: this.expires })); } catch { /* tryb prywatny */ }
+  },
+  disconnect() {
+    try { if (this.token && window.google && google.accounts) google.accounts.oauth2.revoke(this.token, () => {}); } catch { /* bez znaczenia */ }
+    this.token = ''; this.expires = 0;
+    try { localStorage.removeItem(TOKEN_KEY); } catch { /* tryb prywatny */ }
+  },
+  async req(url, opts = {}) {
+    if (!this.connected) throw new Error('Google Drive niepołączony');
+    const r = await fetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: 'Bearer ' + this.token } });
+    if (r.status === 401) { this.expires = 0; throw new Error('połączenie wygasło — połącz ponownie'); }
+    if (!r.ok) {
+      let m = 'HTTP ' + r.status;
+      try { const j = await r.json(); m = (j.error && j.error.message) || m; } catch { /* odpowiedź bez JSON */ }
+      throw new Error(m);
+    }
+    return r;
+  },
+  async list(folderId) {
+    const q = `'${folderId}' in parents and trashed=false`;
+    const fields = 'nextPageToken,files(id,name,mimeType,size,modifiedTime)';
+    const out = [];
+    let pageToken = '';
+    do {
+      const url = `${DRIVE_API}/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent(fields)}&orderBy=folder,name&pageSize=500` +
+                  `&supportsAllDrives=true&includeItemsFromAllDrives=true` + (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
+      const j = await (await this.req(url)).json();
+      out.push(...(j.files || []));
+      pageToken = j.nextPageToken || '';
+    } while (pageToken && out.length < 2000);
+    return out;
+  },
+  async download(id) {
+    return new Uint8Array(await (await this.req(`${DRIVE_API}/files/${encodeURIComponent(id)}?alt=media&supportsAllDrives=true`)).arrayBuffer());
+  },
+  async ensureFolder(name, parent) {
+    const q = `name='${name.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}' and '${parent}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`;
+    const j = await (await this.req(`${DRIVE_API}/files?q=${encodeURIComponent(q)}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`)).json();
+    if (j.files && j.files[0]) return j.files[0].id;
+    const c = await (await this.req(`${DRIVE_API}/files?supportsAllDrives=true&fields=id`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parent] }) })).json();
+    return c.id;
+  },
+  async ensurePath(parent, names) { let id = parent; for (const n of names) id = await this.ensureFolder(n, id); return id; },
+  async upload(blob, name, parent, mime) {
+    const boundary = 'cadvr' + Math.random().toString(36).slice(2);
+    const meta = JSON.stringify({ name, parents: [parent], mimeType: mime });
+    const body = new Blob([`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: ${mime}\r\n\r\n`,
+                           blob, `\r\n--${boundary}--`]);
+    return (await this.req(DRIVE_UPLOAD, { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body })).json();
+  },
+};
+
+// Gdzie lądują zrzuty: <folder projektu>/vr/screeny, a bez projektu: Mój dysk/CAD VR Viewer/vr/screeny
+let shotsFolderCache = { key: '', id: '' };
+async function shotsFolderId() {
+  const key = settings.project ? settings.project.id : 'domyslny';
+  if (shotsFolderCache.key === key) return shotsFolderCache.id;
+  const base = settings.project ? settings.project.id : await drive.ensureFolder(CONFIG.DRIVE_DEFAULT_FOLDER, 'root');
+  const id = await drive.ensurePath(base, CONFIG.DRIVE_SHOTS_PATH);
+  shotsFolderCache = { key, id };
+  return id;
+}
+function shotsTargetText() {
+  return (settings.project ? settings.project.path : 'Mój dysk/' + CONFIG.DRIVE_DEFAULT_FOLDER) + '/' + CONFIG.DRIVE_SHOTS_PATH.join('/');
+}
+
+let uploading = false;
+// manual = przycisk „Wyślij zaległe” (też te z błędem); inaczej tylko nowe, jeszcze niewysyłane
+async function uploadPendingShots(manual) {
+  if (uploading) return;
+  if (!drive.connected) { if (manual) say('Google Drive niepołączony'); return; }
+  uploading = true;
+  let ok = 0, bad = 0, lastErr = '';
+  try {
+    const list = (await shotStore.list()).filter((r) => r.cloud !== 'ok' && (manual || r.cloud !== 'error'));
+    if (!list.length && manual) say('Brak zaległych zrzutów');
+    if (list.length) {
+      const folder = await shotsFolderId();
+      for (const r of list) {
+        try { const f = await drive.upload(r.blob, r.name, folder, 'image/jpeg'); r.cloud = 'ok'; r.cloudId = f.id; ok++; }
+        catch (e) { r.cloud = 'error'; bad++; lastErr = e.message; }
+        await shotStore.put(r);
+        if (!drive.connected) break;
+      }
+    }
+  } catch (e) { bad++; lastErr = e.message; shotsFolderCache.key = ''; }
+  uploading = false;
+  if (ok || bad) say(bad ? `Chmura: wysłano ${ok}, błąd: ${lastErr}` : `Wysłano do chmury (${ok}): ${shotsTargetText()}`);
+  await refreshShots();
+}
+
+// Przeglądanie folderów Google Drive (ten sam stan na PC i w goglach)
+const browser = { stack: [{ id: 'root', name: 'Mój dysk' }], items: [], loading: false, error: '' };
+
+async function browserList() {
+  const cur = browser.stack[browser.stack.length - 1];
+  browser.loading = true; browser.error = '';
+  renderCloudFiles();
+  try {
+    const files = await drive.list(cur.id);
+    browser.items = files.map((f) => ({ id: f.id, name: f.name, size: Number(f.size) || 0, folder: f.mimeType === FOLDER_MIME,
+                                        native: CONFIG.NATIVE_EXT.includes(extOf(f.name)), open: CONFIG.OPEN_EXT.includes(extOf(f.name)) }))
+                         .filter((f) => f.folder || f.native || f.open);
+  } catch (e) { browser.error = e.message; browser.items = []; }
+  browser.loading = false;
+  pal.listScroll = 0;
+  renderCloudFiles();
+}
+const browserPathText = () => browser.stack.map((f) => f.name).join(' › ');
+function browserUp() { if (browser.stack.length > 1) { browser.stack.pop(); browserList(); } }
+function browserReset() { browser.stack = [browser.stack[0]]; browserList(); }
+function browserOpenItem(i) {
+  const it = browser.items[i];
+  if (!it) return;
+  if (it.folder) { browser.stack.push({ id: it.id, name: it.name }); browserList(); }
+  else if (it.native) say('Plik SolidWorks — zapisz go jako STEP (Plik → Zapisz jako → STEP AP214)');
+  else openFromDrive(it);
+}
+function setProjectFolder(idx) {
+  const st = browser.stack;
+  settings.project = { id: st[idx].id, name: st[idx].name, path: st.slice(0, idx + 1).map((f) => f.name).join('/') };
+  saveSettings(); syncCloudUI();
+}
+function setProjectFromBrowser() {
+  setProjectFolder(browser.stack.length - 1);
+  say('Folder projektu: ' + settings.project.path);
+}
+
+async function openFromDrive(it) {
+  try {
+    say(`Pobieranie „${it.name}” z Google Drive…`);
+    setStatus(`Pobieranie „${it.name}” z Google Drive (${fmtMB(it.size)})…`);
+    const buf = await drive.download(it.id);
+    // <projekt>/cad/plik.step → folder projektu = <projekt>; inaczej folder, w którym leży plik
+    const st = browser.stack, cur = st[st.length - 1];
+    setProjectFolder(cur.name.toLowerCase() === CONFIG.DRIVE_CAD_FOLDER && st.length > 1 ? st.length - 2 : st.length - 1);
+    await loadBuffer(buf, it.name, { source: 'drive', driveId: it.id });
+  } catch (e) {
+    setStatus('Błąd pobierania z Google Drive: ' + e.message);
+    say('Błąd: ' + e.message);
+  }
+}
+
+function renderCloudFiles() {
+  ui.cloudPath.textContent = drive.connected ? 'Folder: ' + browserPathText() : '';
+  ui.cloudFiles.innerHTML = '';
+  if (!drive.connected) return;
+  if (browser.loading) { ui.cloudFiles.textContent = 'Wczytywanie listy…'; return; }
+  if (browser.error) { ui.cloudFiles.textContent = 'Błąd: ' + browser.error; return; }
+  if (!browser.items.length) { ui.cloudFiles.textContent = 'Brak folderów i plików STEP/IGES w tym folderze.'; return; }
+  browser.items.forEach((it, i) => {
+    const d = document.createElement('div');
+    d.className = 'f' + (it.native ? ' dis' : '');
+    const a = document.createElement('span'), b = document.createElement('span');
+    a.textContent = (it.folder ? '📁 ' : '') + it.name;
+    b.className = 'small';
+    b.textContent = it.folder ? '' : it.native ? 'SolidWorks — zapisz jako STEP' : fmtMB(it.size);
+    d.append(a, b);
+    d.onclick = () => browserOpenItem(i);
+    ui.cloudFiles.appendChild(d);
+  });
+}
+
+function syncCloudUI() {
+  ui.cloudState.textContent = drive.connected ? `połączony (${drive.minutesLeft()} min)` : 'niepołączony';
+  ui.cloudConnect.textContent = drive.connected ? 'Odnów połączenie' : 'Połącz z Google Drive';
+  ui.cloudAuto.checked = !!settings.autoUpload;
+  ui.cloudFolder.textContent = 'Zrzuty trafiają do: ' + shotsTargetText() + (drive.connected ? '' : ' (po połączeniu)');
+  for (const b of [ui.cloudDisconnect, ui.cloudBrowse, ui.cloudUp, ui.cloudSetFolder, ui.cloudPending]) b.disabled = !drive.connected;
+}
+
+async function connectDrive() {
+  try {
+    setStatus('Łączenie z Google Drive… (okno logowania Google)');
+    await drive.connect();
+    setStatus('Połączono z Google Drive. Połączenie ważne 1 godzinę — potem kliknij „Odnów połączenie”.');
+    syncCloudUI();
+    ui.cloudBox.open = true;
+    browserList();
+    if (settings.autoUpload && cloudPendingCount) uploadPendingShots(true);
+  } catch (e) {
+    setStatus('Nie udało się połączyć z Google Drive: ' + e.message);
+  }
+  syncCloudUI();
+}
+
+// ----------------------------------------------------------------------------
+// OSTATNIO OTWIERANE PLIKI (pamięć przeglądarki — do wyboru z menu w goglach)
+// ----------------------------------------------------------------------------
+let recentList = [], lastFile = null;
+
+async function refreshRecent() {
+  recentList = (await modelStore.list()).sort((a, b) => b.time - a.time);
+  ui.recentCount.textContent = recentList.length;
+  ui.recent.innerHTML = '';
+  recentList.forEach((r, i) => {
+    const d = document.createElement('div');
+    d.className = 'row';
+    const b = document.createElement('button');
+    b.textContent = `${r.name} (${fmtMB(r.size)})`;
+    b.onclick = () => openRecent(i);
+    d.append(b);
+    ui.recent.appendChild(d);
+  });
+}
+
+async function rememberFile(blob, name, meta) {
+  try {
+    for (const r of await modelStore.list()) if (r.name === name) await modelStore.remove(r.id);
+    await modelStore.add({ name, size: blob.size, time: Date.now(), blob, ...meta });
+    const all = (await modelStore.list()).sort((a, b) => b.time - a.time);
+    for (const r of all.slice(CONFIG.RECENT_MAX)) await modelStore.remove(r.id);
+  } catch { /* brak miejsca w pamięci — trudno, plik i tak się otworzy */ }
+  refreshRecent();
+}
+
+async function openRecent(i) {
+  const r = recentList[i];
+  if (r) await loadBuffer(new Uint8Array(await r.blob.arrayBuffer()), r.name, false);
+}
+
+async function reloadCurrent() {
+  if (lastFile) await loadBuffer(new Uint8Array(await lastFile.blob.arrayBuffer()), lastFile.name, false);
+}
+
+// ============================================================================
+// GŁOS: dyktowanie komentarzy (Gemini z kluczem użytkownika albo rozpoznawanie mowy przeglądarki)
+// ============================================================================
+const GEMINI_PROMPT = 'Przepisz dokładnie, po polsku, to co mówi osoba na nagraniu. To krótki komentarz techniczny do modelu 3D maszyny ' +
+  '(konstrukcja, automatyka, nazwy części). Zwróć wyłącznie sam tekst, bez cudzysłowów i bez dodatkowych uwag. Jeśli nic nie słychać, zwróć pusty tekst.';
+
+function blobToBase64(blob) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result).split(',')[1] || '');
+    fr.onerror = () => rej(fr.error);
+    fr.readAsDataURL(blob);
+  });
+}
+
+async function geminiTranscribe(blob) {
+  const r = await fetch(`${CONFIG.GEMINI_URL}${encodeURIComponent(geminiModel())}:generateContent`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.geminiKey },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: GEMINI_PROMPT }, { inline_data: { mime_type: (blob.type || 'audio/webm').split(';')[0], data: await blobToBase64(blob) } }] }],
+      generationConfig: { temperature: 0 },
+    }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((j.error && j.error.message) || 'HTTP ' + r.status);
+  const c = j.candidates && j.candidates[0];
+  return ((c && c.content && c.content.parts) || []).map((p) => p.text || '').join('').trim();
+}
+
+const voice = {
+  active: false, busy: false, recorder: null, stream: null, rec: null, timer: 0, cancelled: false,
+  hasWeb() { return !!(window.SpeechRecognition || window.webkitSpeechRecognition); },
+  mode() { return settings.geminiKey ? 'gemini' : this.hasWeb() ? 'web' : ''; },
+  statusText() {
+    const m = this.mode();
+    return m === 'gemini' ? `Gemini (${geminiModel()}) — klucz ustawiony` : m === 'web' ? 'Rozpoznawanie mowy przeglądarki' : 'Brak — wpisz klucz Gemini w Ustawieniach na PC';
+  },
+  async start(onText, onStatus) {
+    if (this.active || this.busy) return;
+    const m = this.mode();
+    this.cancelled = false;
+    if (!m) { onStatus('Brak dyktowania: wpisz klucz Gemini w Ustawieniach (na PC)'); return; }
+    if (m === 'web') {
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      const rec = new SR();
+      rec.lang = CONFIG.VOICE_LANG; rec.interimResults = false; rec.maxAlternatives = 1;
+      rec.onresult = (e) => { const t = Array.from(e.results).map((r) => r[0].transcript).join(' ').trim(); if (t && !this.cancelled) onText(t); };
+      rec.onerror = (e) => onStatus('Błąd rozpoznawania mowy: ' + e.error);
+      rec.onend = () => { this.active = false; this.rec = null; onStatus(''); };
+      this.rec = rec; this.active = true;
+      onStatus('Słucham… mów teraz');
+      rec.start();
+      return;
+    }
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) { onStatus('Brak dostępu do mikrofonu: ' + e.message); return; }
+    const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'].find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+    const chunks = [];
+    this.recorder = new MediaRecorder(this.stream, mime ? { mimeType: mime } : undefined);
+    this.recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    this.recorder.onstop = async () => {
+      this.stream.getTracks().forEach((t) => t.stop());
+      this.active = false; clearTimeout(this.timer);
+      if (this.cancelled) return;
+      this.busy = true;
+      onStatus('Rozpoznaję tekst…');
+      try {
+        const t = await geminiTranscribe(new Blob(chunks, { type: this.recorder.mimeType || mime || 'audio/webm' }));
+        if (t && !this.cancelled) onText(t);
+        onStatus(t ? '' : 'Nic nie usłyszałem — spróbuj jeszcze raz');
+      } catch (e) { onStatus('Błąd Gemini: ' + e.message); }
+      this.busy = false;
+    };
+    this.recorder.start();
+    this.active = true;
+    onStatus(`Słucham… mów, potem naciśnij „Stop” (max ${CONFIG.VOICE_MAX_SECONDS} s)`);
+    this.timer = setTimeout(() => this.stop(), CONFIG.VOICE_MAX_SECONDS * 1000);
+  },
+  stop() {
+    if (this.rec) this.rec.stop();
+    else if (this.recorder && this.recorder.state === 'recording') this.recorder.stop();
+  },
+  cancel() { if (this.active) { this.cancelled = true; this.stop(); } },
+};
+
+function toggleVoice() {
+  if (!edit) return;
+  if (voice.active) { voice.stop(); return; }
+  const status = (st) => { if (edit) edit.voice = st; ui.noteStatus.textContent = st; ui.noteVoice.textContent = voice.active ? 'Stop' : 'Dyktuj'; };
+  voice.start((t) => {
+    if (!edit) return;
+    const base = edit.text;
+    editSetText(base + (base && !/\s$/.test(base) ? ' ' : '') + t);
+    edit.note.setText(edit.text);
+  }, status).then(() => { ui.noteVoice.textContent = voice.active ? 'Stop' : 'Dyktuj'; });
 }
 
 // ============================================================================
@@ -1698,7 +2867,73 @@ function setupUI() {
     await shotStore.clear(); refreshShots();
   });
   window.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
+    const typing = e.target && (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT');
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); undo(); return; }
+    // fizyczna klawiatura (np. Bluetooth) podczas pisania komentarza w goglach
+    if (edit && renderer.xr.isPresenting && !typing) {
+      const map = { Backspace: 'backspace', Enter: 'enter', ' ': 'space' };
+      if (map[e.key]) editKey(map[e.key]);
+      else if (e.key.length === 1) { edit.shift = false; editKey(e.key); }
+      else if (e.key === 'Escape') closeNoteEditor(false);
+      e.preventDefault();
+    }
+  });
+
+  // Komentarze na PC
+  ui.btnNote.addEventListener('click', () => {
+    if (!cadRoot) { say('Najpierw otwórz model'); return; }
+    pcMode = pcMode === 'komentarz' ? 'wybor' : 'komentarz';
+    ui.btnNote.classList.toggle('primary', pcMode === 'komentarz');
+    say(pcMode === 'komentarz' ? 'Kliknij miejsce na modelu, do którego ma wskazywać strzałka' : '');
+  });
+  ui.noteText.addEventListener('input', () => { if (edit) { edit.text = ui.noteText.value; edit.note.setText(edit.text); } });
+  ui.noteSave.addEventListener('click', () => closeNoteEditor(true));
+  ui.noteCancel.addEventListener('click', () => closeNoteEditor(false));
+  ui.noteDelete.addEventListener('click', deleteEditedNote);
+  ui.noteVoice.addEventListener('click', toggleVoice);
+  ui.xrKb.addEventListener('input', () => { if (edit) { edit.text = ui.xrKb.value; ui.noteText.value = edit.text; edit.note.setText(edit.text); } });
+
+  // Drzewo
+  ui.treeAll.addEventListener('click', () => treeCommand('all'));
+  ui.treeOnly.addEventListener('click', () => treeCommand('only'));
+  ui.treeHide.addEventListener('click', () => treeCommand('hide'));
+
+  // Przekrój
+  ui.secOn.addEventListener('click', () => { setSectionOn(!section.on); if (section.on) ui.sectionBox.open = true; });
+  for (const a of ['X', 'Y', 'Z']) ui['sec' + a].addEventListener('click', () => setSectionAxis(a, 0));
+  ui.secFlip.addEventListener('click', () => { flipSection(); syncSectionUI(); });
+  ui.secPos.addEventListener('input', () => {
+    if (!section.on) setSectionOn(true);
+    setSectionOffset(Number(ui.secPos.value) / 100 * sectionHalfRange());
+    syncSectionUI();
+  });
+
+  // Chmura
+  ui.cloudConnect.addEventListener('click', connectDrive);
+  ui.cloudDisconnect.addEventListener('click', () => { drive.disconnect(); browser.items = []; renderCloudFiles(); syncCloudUI(); setStatus('Rozłączono z Google Drive.'); });
+  ui.cloudAuto.addEventListener('change', () => { settings.autoUpload = ui.cloudAuto.checked; saveSettings(); syncCloudUI(); if (settings.autoUpload) uploadPendingShots(false); });
+  ui.cloudBrowse.addEventListener('click', () => browserList());
+  ui.cloudUp.addEventListener('click', browserUp);
+  ui.cloudSetFolder.addEventListener('click', setProjectFromBrowser);
+  ui.cloudPending.addEventListener('click', () => uploadPendingShots(true));
+
+  // Ustawienia
+  ui.setClientId.value = settings.clientId || CONFIG.GOOGLE_CLIENT_ID;
+  ui.setGeminiKey.value = settings.geminiKey;
+  ui.setGeminiModel.value = geminiModel();
+  ui.setSave.addEventListener('click', () => {
+    settings.clientId = ui.setClientId.value.trim();
+    settings.geminiKey = ui.setGeminiKey.value.trim();
+    settings.geminiModel = ui.setGeminiModel.value.trim() === CONFIG.GEMINI_MODEL ? '' : ui.setGeminiModel.value.trim();
+    saveSettings(); syncCloudUI();
+    ui.setInfo.textContent = 'Zapisano w tej przeglądarce. Dyktowanie: ' + voice.statusText();
+  });
+  ui.setMic.addEventListener('click', async () => {
+    try {
+      const st = await navigator.mediaDevices.getUserMedia({ audio: true });
+      st.getTracks().forEach((t) => t.stop());
+      ui.setInfo.textContent = 'Mikrofon działa (zgoda zapamiętana). Dyktowanie: ' + voice.statusText();
+    } catch (e) { ui.setInfo.textContent = 'Brak dostępu do mikrofonu: ' + e.message; }
   });
 
   // Przeciągnij i upuść
@@ -1720,7 +2955,15 @@ function setupUI() {
     down = null;
     const ndc = new THREE.Vector2((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
     raycaster.setFromCamera(ndc, camera);
+    const nh = rayNotes();
     const hit = pickRay();
+    if (nh && (!hit || nh.distance < hit.distance)) { openNoteEditor(nh.note, false); return; }
+    if (pcMode === 'komentarz') {
+      if (!hit) { say('Kliknij w model'); return; }
+      pcMode = 'wybor'; ui.btnNote.classList.remove('primary');
+      openNoteEditor(createNote(hit.point, null, hit.object), true);
+      return;
+    }
     setSelected(hit ? hit.object : null);
     showPicked(hit ? hit.object : null);
   });
@@ -1730,8 +2973,12 @@ function exposeDebug() {                      // do testów automatycznych i dia
   window.__viewer = {
     get parts() { return parts; }, get strokes() { return strokes; }, get measures() { return measures; },
     get undoStack() { return undoStack; }, get cadRoot() { return cadRoot; }, get twoHand() { return twoHand; },
-    scene, modelSize, pivot, S, pal, controllers, renderer, THREE,
-    requestScreenshot, shotStore, undo, paletteAction,
+    get notes() { return notes; }, get edit() { return edit; }, get treeRows() { return treeRows; }, get selectedObj() { return selectedObj; },
+    get recentList() { return recentList; },
+    scene, modelSize, pivot, S, pal, PAL, controllers, renderer, THREE, section, cadBox, settings, drive, browser, voice,
+    pick(o, d) { raycaster.set(o, d.clone().normalize()); return pickRay(); },
+    requestScreenshot, shotStore, modelStore, undo, paletteAction, layoutPalette, refreshPaletteTexture, editKey, openNoteEditor, closeNoteEditor, createNote,
+    setSectionAxis, setSectionOn, sectionOffset, uploadPendingShots, saveSettings, syncCloudUI, browserList,
   };
 }
 
@@ -1750,6 +2997,7 @@ function tick() {
   }
   if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toast.sprite.visible = false; }
   updateHighlights();
+  updateSection();
   updateMeasureLabels();
   renderer.render(scene, camera);
   if (shotPending) { shotPending = false; captureScreenshot(); }

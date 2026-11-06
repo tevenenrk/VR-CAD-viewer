@@ -9,7 +9,7 @@ Uruchom z folderu projektu:  python test/run_headless.py
 Wymaga: pip install playwright   oraz
         npm install --no-save three@0.187.0 occt-import-js@0.0.23 three-mesh-bvh@0.9.16 iwer@2.6.0
 """
-import base64, pathlib, re, subprocess, sys, time
+import base64, json, os, pathlib, re, subprocess, sys, time, urllib.parse
 from playwright.sync_api import sync_playwright
 
 sys.stdout.reconfigure(encoding="utf-8")   # polskie znaki w konsoli Windows
@@ -26,7 +26,8 @@ CHROME_PATHS = [
     "/usr/bin/google-chrome",
 ]
 CHROME = next((c for c in CHROME_PATHS if pathlib.Path(c).exists()), None)
-CHROME_ARGS = ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"]
+CHROME_ARGS = ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist",
+               "--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]   # sztuczny mikrofon do testu dyktowania
 
 # Kopia viewera z bibliotekami z node_modules zamiast z internetu
 src = (ROOT / "index.html").read_text(encoding="utf-8")
@@ -47,13 +48,92 @@ def check(name, ok, detail=""):
     checks.append((name, bool(ok), detail))
     print(("  OK   " if ok else "  BŁĄD ") + name + (f"  [{detail}]" if detail else ""))
 
+# ---------------------------------------------------------------------------
+# Atrapy usług Google (test nie loguje się do prawdziwego konta):
+#  - logowanie Google (GIS) od razu zwraca token,
+#  - Google Drive: mały „dysk” w pamięci: Mój dysk / Projekt_A / cad / test_zlozenie.step + Rama.SLDASM,
+#  - Gemini: zwraca stały tekst „dyktowania”.
+FAKE_GIS = """window.google = { accounts: { oauth2: {
+  initTokenClient: (cfg) => ({ requestAccessToken: () => setTimeout(() => cfg.callback({ access_token: 'tok-test', expires_in: 3599 }), 20) }),
+  revoke: (t, cb) => cb && cb() } } };"""
+GEMINI_TEXT = "sprawdzić luz na prowadnicy"
+FOLDER = "application/vnd.google-apps.folder"
+CORS = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Allow-Methods": "GET,POST,OPTIONS"}
+
+class GoogleMock:
+    def __init__(self):
+        self.files = {
+            "fA": {"id": "fA", "name": "Projekt_A", "mimeType": FOLDER, "parents": ["root"]},
+            "fC": {"id": "fC", "name": "cad", "mimeType": FOLDER, "parents": ["fA"]},
+            "s1": {"id": "s1", "name": "test_zlozenie.step", "mimeType": "application/octet-stream", "parents": ["fC"], "size": str(STEP.stat().st_size)},
+            "s2": {"id": "s2", "name": "Rama.SLDASM", "mimeType": "application/octet-stream", "parents": ["fC"], "size": "123456"},
+            "x1": {"id": "x1", "name": "notatki.txt", "mimeType": "text/plain", "parents": ["fC"], "size": "10"},
+        }
+        self.uploads, self.gemini, self.n = [], [], 0
+
+    def path_of(self, fid):
+        names = []
+        while fid in self.files:
+            names.insert(0, self.files[fid]["name"]); fid = self.files[fid]["parents"][0]
+        return "/".join(names)
+
+    def install(self, target):
+        target.route("https://accounts.google.com/gsi/client", lambda r: r.fulfill(body=FAKE_GIS, content_type="text/javascript"))
+        target.route("https://www.googleapis.com/**", self.drive)
+        target.route("https://generativelanguage.googleapis.com/**", self.gem)
+
+    def ok(self, route, data, ctype="application/json"):
+        body = data if isinstance(data, (bytes, str)) else json.dumps(data)
+        route.fulfill(status=200, body=body, content_type=ctype, headers=CORS)
+
+    def drive(self, route):
+        req = route.request
+        if req.method == "OPTIONS": return route.fulfill(status=204, headers=CORS)
+        if req.headers.get("authorization") != "Bearer tok-test": return route.fulfill(status=401, body="{}", headers=CORS)
+        u = urllib.parse.urlparse(req.url); qs = urllib.parse.parse_qs(u.query)
+        if "/upload/drive/v3/files" in u.path:
+            raw = req.post_data_buffer
+            meta = json.loads(re.search(rb"\r\n\r\n(\{.*?\})\r\n--", raw, re.S).group(1))
+            self.n += 1; fid = f"u{self.n}"
+            self.files[fid] = {"id": fid, "name": meta["name"], "mimeType": meta.get("mimeType", ""), "parents": meta["parents"]}
+            self.uploads.append({"name": meta["name"], "path": self.path_of(fid), "jpeg": b"\xff\xd8" in raw})
+            return self.ok(route, {"id": fid, "name": meta["name"]})
+        m = re.match(r"/drive/v3/files/([^/]+)$", u.path)
+        if m and qs.get("alt") == ["media"]:
+            return self.ok(route, STEP.read_bytes(), "application/octet-stream")
+        if u.path == "/drive/v3/files" and req.method == "POST":
+            meta = json.loads(req.post_data)
+            self.n += 1; fid = f"d{self.n}"
+            self.files[fid] = {"id": fid, "name": meta["name"], "mimeType": meta["mimeType"], "parents": meta["parents"]}
+            return self.ok(route, {"id": fid})
+        if u.path == "/drive/v3/files":
+            q = qs.get("q", [""])[0]
+            parent = re.search(r"'([^']+)' in parents", q).group(1)
+            name = re.search(r"name='((?:[^'\\]|\\.)*)'", q)
+            res = [f for f in self.files.values() if f["parents"][0] == parent
+                   and (not name or f["name"] == name.group(1)) and ("mimeType=" not in q or f["mimeType"] == FOLDER)]
+            res.sort(key=lambda f: (f["mimeType"] != FOLDER, f["name"]))
+            return self.ok(route, {"files": res})
+        route.fulfill(status=404, body="{}", headers=CORS)
+
+    def gem(self, route):
+        req = route.request
+        if req.method == "OPTIONS": return route.fulfill(status=204, headers=CORS)
+        body = json.loads(req.post_data)
+        part = body["contents"][0]["parts"][1]["inline_data"]
+        self.gemini.append({"key": req.headers.get("x-goog-api-key"), "mime": part["mime_type"], "len": len(part["data"]), "url": req.url})
+        self.ok(route, {"candidates": [{"content": {"parts": [{"text": GEMINI_TEXT}]}}]})
+
 # Ostrzeżenia znane i nieszkodliwe: odczyt pikseli przy zrzucie (Chrome bez GPU) oraz brak animacji
 # przycisku menu w modelu kontrolera z emulatora.
 HARMLESS = [r"GPU stall due to ReadPixels", r"Could not find \w+ in the model"]
+# Środowisko w chmurze bez dostępu do CDN modeli kontrolerów (na PC Roberta nie dotyczy)
+if os.environ.get("HTTPS_PROXY"):
+    HARMLESS += [r"ERR_TUNNEL_CONNECTION_FAILED", r"fetchProfile"]
 
 def watch(page, errors):
     def on_console(m):
-        if m.type == "error" or (m.type == "warning" and not any(re.search(h, m.text) for h in HARMLESS)):
+        if m.type in ("error", "warning") and not any(re.search(h, m.text) for h in HARMLESS):
             errors.append(f"{m.type}: {m.text}")
     page.on("console", on_console)
     page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
@@ -80,7 +160,10 @@ def save_last_shot(page, path):
 def test_pc(browser):
     print("\n=== CZĘŚĆ 1: PC ===")
     errors = []
-    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    ctx = browser.new_context(viewport={"width": 1280, "height": 800})
+    ctx.grant_permissions(["microphone"], origin=f"http://localhost:{PORT}")
+    page = ctx.new_page()
+    gm = GoogleMock(); gm.install(page)
     watch(page, errors)
     page.goto(f"http://localhost:{PORT}/test/index_local.html")
     page.select_option("#upAxis", "Z")
@@ -113,9 +196,99 @@ def test_pc(browser):
     # tło #1d2026 = (29, 32, 38); JPG może przesunąć o kilka jednostek
     check("kolory zrzutu jak na ekranie (tło)", all(abs(a - b) <= 6 for a, b in zip(shot["px"], (29, 32, 38))), str(shot["px"]))
 
+    # --- drzewo złożenia ---
+    r = page.evaluate("""(() => { const V = window.__viewer;
+        const rows = V.treeRows.map(r => r.name);
+        document.querySelector('#tree .node:nth-child(3) span').click();     // wybór w drzewie
+        const sel = V.selectedObj && V.selectedObj.name;
+        document.getElementById('treeOnly').click();
+        const vis = V.parts.filter(p => { for (let o = p.mesh; o; o = o.parent) if (!o.visible) return false; return true; }).map(p => p.name);
+        document.getElementById('treeAll').click();
+        const all = V.parts.every(p => p.mesh.visible);
+        return { rows, sel, vis, all }; })()""")
+    check("drzewo złożenia: grupy i części", len(r["rows"]) >= 5 and "Modul_chwytaka" in r["rows"], ", ".join(r["rows"]))
+    check("drzewo: „Tylko wybrana” zostawia jedną część", len(r["vis"]) == 1 and r["vis"][0] == r["sel"], f"{r['sel']} → {r['vis']}")
+    check("drzewo: „Pokaż wszystko”", r["all"])
+
+    # --- przekrój: płaszczyzna X przez środek; promień w odciętą połowę płyty nie trafia ---
+    r = page.evaluate("""(() => { const V = window.__viewer, T3 = V.THREE;
+        V.cadRoot.updateMatrixWorld(true);
+        const p = V.cadRoot.localToWorld(new T3.Vector3(-0.15, -0.10, 0.0075));
+        const o = p.clone().add(new T3.Vector3(0, 0.5, 0)), d = new T3.Vector3(0, -1, 0);
+        const before = V.pick(o, d);
+        document.getElementById('sectionBox').open = true;
+        document.getElementById('secX').click();
+        const after = V.pick(o, d);
+        const p2 = V.cadRoot.localToWorld(new T3.Vector3(0.15, -0.10, 0.0075));
+        const keep = V.pick(p2.clone().add(new T3.Vector3(0, 0.5, 0)), d);
+        return { before: before && before.object.name, after: after && after.object.name, keep: keep && keep.object.name, on: V.section.on, axis: V.section.axis }; })()""")
+    check("przekrój X włączony z panelu", r["on"] and r["axis"] == "X", str(r))
+    check("przekrój: odcięta połowa nie da się wskazać, druga tak",
+          r["before"] == "Plyta_bazowa" and r["after"] is None and r["keep"] == "Plyta_bazowa", str(r))
+    page.evaluate("(() => { const s = document.getElementById('secPos'); s.value = '40'; s.dispatchEvent(new Event('input')); })()")
+    off = page.evaluate("window.__viewer.sectionOffset()")
+    check("suwak przesuwa przekrój (+40% połowy szerokości 400 mm z zapasem 2%)", abs(off - 0.0816) < 0.001, f"{off * 1000:.1f} mm")
+    time.sleep(0.3)
+    page.screenshot(path=str(OUT / "screenshot_przekroj.png"))
+    page.evaluate("document.getElementById('secOn').click(); document.getElementById('sectionBox').open = false")
+
+    # --- komentarz na PC: przycisk, klik w model, tekst, zapis ---
+    page.click("#btnNote")
+    page.mouse.click(820, 660)
+    time.sleep(0.2)
+    box = page.is_visible("#noteBox")
+    page.fill("#noteText", "Tu dodać czujnik indukcyjny")
+    page.click("#noteSave")
+    r = page.evaluate("(() => { const n = window.__viewer.notes; return { n: n.length, text: n[0] && n[0].text, part: n[0] && n[0].part && n[0].part.name }; })()")
+    check("PC: komentarz przyczepiony do części", box and r["n"] == 1 and r["text"] == "Tu dodać czujnik indukcyjny" and r["part"] == "Plyta_bazowa", str(r))
+    page.keyboard.press("Control+z")
+    check("Ctrl+Z cofa komentarz", page.evaluate("window.__viewer.notes.length") == 0)
+
+    # --- Google Drive (atrapa): połączenie, przeglądanie, otwarcie STEP, zrzut wysłany do <projekt>/vr/screeny ---
+    page.evaluate("document.getElementById('settingsBox').open = true; document.getElementById('cloudBox').open = true")
+    page.fill("#setClientId", "test-client.apps.googleusercontent.com")
+    page.fill("#setGeminiKey", "AIza-test")
+    page.click("#setSave")
+    page.click("#cloudConnect")
+    page.wait_for_function("window.__viewer.drive.connected && window.__viewer.browser.items.length > 0", timeout=10000)
+    check("Google Drive: połączenie i lista folderów", page.inner_text("#cloudFiles").startswith("📁 Projekt_A"), page.inner_text("#cloudFiles"))
+    page.click("#cloudFiles .f >> text=Projekt_A")
+    page.wait_for_function("document.getElementById('cloudFiles').textContent.includes('cad')")
+    page.click("#cloudFiles .f >> text=cad")
+    page.wait_for_function("document.getElementById('cloudFiles').textContent.includes('test_zlozenie')")
+    listing = page.inner_text("#cloudFiles")
+    check("lista pokazuje STEP i SolidWorks, ukrywa inne pliki",
+          "test_zlozenie.step" in listing and "SolidWorks" in listing and "notatki" not in listing, listing.replace("\n", " | "))
+    page.click("#cloudFiles .f >> text=test_zlozenie.step")
+    page.wait_for_function("document.getElementById('status').textContent.startsWith('Wczytano')", timeout=60000)
+    proj = page.evaluate("window.__viewer.settings.project")
+    check("plik z <projekt>/cad → folder projektu = Projekt_A", proj and proj["path"] == "Mój dysk/Projekt_A", str(proj))
+    page.click("#btnShot")
+    page.wait_for_function("document.getElementById('shotCount').textContent === '2'", timeout=20000)
+    for _ in range(100):
+        if len(gm.uploads) >= 2: break
+        page.wait_for_timeout(100)
+    paths = [x["path"] for x in gm.uploads]
+    check("po połączeniu starszy zrzut dosłany sam (folder domyślny)", len(paths) >= 1 and paths[0].startswith("CAD VR Viewer/vr/screeny/zrzut_"), str(paths))
+    check("nowy zrzut od razu w Projekt_A/vr/screeny", len(paths) == 2 and paths[1].startswith("Projekt_A/vr/screeny/zrzut_") and gm.uploads[1]["jpeg"], str(paths))
+    page.wait_for_function("document.getElementById('cloudPending').textContent.includes('(0)')", timeout=10000)
+    check("brak zaległych zrzutów", True)
+    check("ostatnio otwierane: zapamiętany plik", page.evaluate("window.__viewer.recentList.map(r => r.name)") == ["test_zlozenie.step"])
+
+    # --- dyktowanie (sztuczny mikrofon + atrapa Gemini) ---
+    page.mouse.click(820, 660)
+    page.click("#btnNote"); page.mouse.click(820, 660)
+    page.click("#noteVoice"); time.sleep(1.2); page.click("#noteVoice")
+    page.wait_for_function(f"document.getElementById('noteText').value.includes('{GEMINI_TEXT}')", timeout=10000)
+    check("dyktowanie głosem przez Gemini", gm.gemini and gm.gemini[0]["key"] == "AIza-test" and gm.gemini[0]["mime"].startswith("audio/"),
+          str(gm.gemini[:1]))
+    page.click("#noteSave")
+    check("komentarz z dyktowania zapisany", page.evaluate("window.__viewer.notes.length && window.__viewer.notes[0].text") == GEMINI_TEXT)
+
     page.evaluate("document.querySelector('#treeBox').open = true; document.querySelector('#shotsBox').open = true")
     page.screenshot(path=str(OUT / "screenshot.png"))
     page.close()
+    ctx.close()
     check("PC: brak błędów w konsoli", not errors, "; ".join(errors[:5]))
 
 # ---------------------------------------------------------------------------
@@ -148,7 +321,7 @@ window.T = (() => {
     // środek przycisku panelu w świecie
     palPoint(id) {
       const b = V.pal.buttons.find(b => b.id === id);
-      const W = 1024, H = 1110;
+      const W = V.PAL.W, H = V.PAL.H;
       const g = V.pal.mesh.geometry.parameters;
       const lx = ((b.x + b.w / 2) / W - 0.5) * g.width, ly = (0.5 - (b.y + b.h / 2) / H) * g.height;
       V.pal.mesh.updateMatrixWorld(true);
@@ -177,6 +350,8 @@ def test_xr(browser):
     errors = []
     ctx = browser.new_context(viewport={"width": 1280, "height": 800})
     ctx.add_init_script(script=IWER_INIT)
+    ctx.grant_permissions(["microphone"], origin=f"http://localhost:{PORT}")
+    GoogleMock().install(ctx)
     page = ctx.new_page()
     watch(page, errors)
     page.goto(f"http://localhost:{PORT}/test/index_local.html?model=test_zlozenie.step")
@@ -314,6 +489,82 @@ def test_xr(browser):
              return names;""")
     check("tryb Grupa chwyta części w sferze", "Silownik_DSNU" in r and "Wspornik_L" in r and "Plyta_bazowa" not in r, str(r))
 
+    # --- zakładka Drzewo: pokaż/ukryj i wybór części promieniem ---
+    r = E("""V.paletteAction('tool:wskaz'); V.paletteAction('grab:czesc'); await T.frames(2);
+             const h1 = await T.palClick('page:drzewo');
+             const i = V.treeRows.findIndex(r => r.name === 'Slup');
+             const h2 = await T.palClick('tvis:' + i);
+             const hidden = !T.part('Slup').visible;
+             await T.palClick('tvis:' + i);
+             await T.palClick('tsel:' + V.treeRows.findIndex(r => r.name === 'Wspornik_L'));
+             return { h1, h2, page: V.pal.page, hidden, shown: T.part('Slup').visible, sel: V.selectedObj && V.selectedObj.name };""")
+    check("zakładka Drzewo w goglach", r["page"] == "drzewo" and r["h1"] == "page:drzewo", str(r))
+    check("drzewo w goglach: ukryj / pokaż część", r["hidden"] and r["shown"], str(r))
+    check("drzewo w goglach: wybór części", r["sel"] == "Wspornik_L", str(r))
+
+    # --- Menu → Ostatnie pliki → otwarcie modelu w goglach ---
+    r = E("""await T.palClick('page:menu');
+             const h = await T.palClick('menu:recent');
+             const old = V.cadRoot;
+             const n = V.recentList.length;
+             await T.palClick('rec:0');
+             for (let k = 0; k < 400 && V.cadRoot === old; k++) await new Promise(r => setTimeout(r, 50));
+             await T.frames(3);
+             return { h, n, reloaded: V.cadRoot !== old, parts: V.parts.length, page: V.pal.page };""")
+    check("menu w goglach: ostatnie pliki → wczytanie modelu", r["reloaded"] and r["parts"] == 4 and r["page"] == "narzedzia", str(r))
+
+    # --- Komentarz w goglach: spust na płycie, przeciągnięcie, klawiatura w panelu ---
+    r = E("""await T.palClick('tool:komentarz');
+             const a = T.cad(0.15, 0.10, 0.0075);
+             T.pose('right', [a.x, a.y + 0.3, a.z], a.toArray()); await T.frames(4);
+             T.btn('right', 'trigger', 1); await T.frames(4);
+             T.pose('right', [a.x, a.y + 0.3, a.z], [a.x + 0.12, a.y + 0.15, a.z]); await T.frames(5);
+             T.btn('right', 'trigger', 0); await T.frames(4);
+             const page = V.pal.page, n = V.notes.length;
+             const nt = V.notes[0];
+             const drag = nt ? nt.pos.distanceTo(nt.anchor) : 0;
+             for (const k of ['t', 'e', 's', 't', 'space', 'shift', 'ą']) await T.palClick('kb:' + k);
+             const typed = V.edit && V.edit.text;
+             await T.palClick('kb:done');
+             return { page, n, drag, typed, text: nt && nt.text, part: nt && nt.part && nt.part.name, page2: V.pal.page, undo: V.undoStack.length };""")
+    check("komentarz: spust na części otwiera klawiaturę", r["page"] == "klawiatura" and r["n"] == 1, str(r))
+    check("komentarz: płytka przeciągnięta od punktu (strzałka)", r["drag"] > 0.05, f"{r['drag']:.3f} m (CAD)")
+    check("klawiatura w goglach: „test Ą”", r["text"] == "test Ą" and r["part"] == "Plyta_bazowa" and r["page2"] == "narzedzia", str(r))
+
+    # klik w płytkę = edycja, „Mów” (sztuczny mikrofon + atrapa Gemini)
+    r = E("""V.settings.geminiKey = 'AIza-test';
+             const nt = V.notes[0];
+             const p = nt.plate.getWorldPosition(new V.THREE.Vector3());
+             T.pose('right', [p.x + 0.05, p.y + 0.02, p.z + 0.3], p.toArray()); await T.frames(4);
+             const hit = T.ctrl('right').userData.noteHit && T.ctrl('right').userData.noteHit.note.num;
+             await T.click('right', 'trigger');
+             const editing = V.edit && !V.edit.isNew && V.edit.note === nt;
+             await T.palClick('kb:voice');
+             await new Promise(r => setTimeout(r, 1200));
+             await T.palClick('kb:voice');
+             for (let k = 0; k < 200 && !(V.edit && V.edit.text.includes('luz')); k++) await new Promise(r => setTimeout(r, 50));
+             await T.palClick('kb:done');
+             return { hit, editing, text: nt.text };""")
+    check("klik promieniem w płytkę = edycja komentarza", r["hit"] == 1 and r["editing"], str(r))
+    check("„Mów” w goglach dopisuje podyktowany tekst", r["text"] == "test Ą " + GEMINI_TEXT, r["text"])
+
+    # --- Przekrój: „nóż” w ręce (przyciąga do osi X), przyciski osi ---
+    r = E("""await T.palClick('tool:przekroj');
+             const c = T.centerOf('Plyta_bazowa');
+             const tip = [c.x + 0.05, c.y + 0.1, c.z];
+             T.tipAt('right', tip, [0, 0, -1]); await T.frames(3);
+             T.btn('right', 'trigger', 1); await T.frames(4); T.btn('right', 'trigger', 0); await T.frames(3);
+             V.cadRoot.updateMatrixWorld(true);
+             const exp = V.cadRoot.worldToLocal(new V.THREE.Vector3(...tip)).x - V.cadBox.getCenter(new V.THREE.Vector3()).x;
+             const res = { on: V.section.on, axis: V.section.axis, off: V.sectionOffset(), exp, vis: V.section.vis.visible };
+             await T.palClick('sec:Z');
+             res.axis2 = V.section.axis;
+             return res;""")
+    check("narzędzie Przekrój: płaszczyzna z kontrolera, przyciągnięta do osi X",
+          r["on"] and r["axis"] == "X" and abs(r["off"] - r["exp"]) < 0.002 and r["vis"], str(r))
+    check("przycisk osi Z w panelu", r["axis2"] == "Z", str(r))
+    E("V.paletteAction('sec:X'); V.paletteAction('tool:wskaz'); await T.frames(2);")
+
     # widok z „gogli”: panel narzędzi i model
     E("""V.paletteAction('grab:czesc'); V.paletteAction('tool:rysuj');
          T.pose('left', [-0.12, 1.32, -0.35], [-0.12, 1.25, -0.9]); T.pose('right', [0.15, 1.3, -0.4], [-0.1, 1.35, -0.4]);
@@ -324,13 +575,62 @@ def test_xr(browser):
     check("VR: brak błędów w konsoli", not errors, "; ".join(errors[:5]))
 
 # ---------------------------------------------------------------------------
+def test_xr_menu(browser):
+    print("\n=== CZĘŚĆ 3: GOGLE BEZ MODELU — menu, plik z Google Drive, zrzut do chmury ===")
+    errors = []
+    ctx = browser.new_context(viewport={"width": 1280, "height": 800})
+    ctx.add_init_script(script=IWER_INIT + """
+      localStorage.setItem('cad-vr-viewer-token', JSON.stringify({ token: 'tok-test', expires: Date.now() + 3600e3 }));
+      localStorage.setItem('cad-vr-viewer-ustawienia', JSON.stringify({ clientId: 'test-client', autoUpload: true }));""")
+    gm = GoogleMock(); gm.install(ctx)
+    page = ctx.new_page()
+    watch(page, errors)
+    page.goto(f"http://localhost:{PORT}/test/index_local.html")
+    page.wait_for_function("!document.getElementById('btnVR').disabled", timeout=10000)
+    page.click("#btnVR")
+    page.wait_for_function("window.__viewer.renderer.xr.isPresenting", timeout=20000)
+    page.evaluate(HELPERS)
+    page.wait_for_function("window.__viewer.controllers.filter(c => c.userData.inputSource).length === 2", timeout=10000)
+    E = lambda js: page.evaluate(f"(async () => {{ const V = window.__viewer, T = window.T; {js} }})()")
+    E("T.pose('left', [-0.25, 1.1, -0.25]); T.pose('right', [0.3, 1.1, -0.3]); await T.frames(5);")
+    check("VR bez modelu: panel otwiera się na Menu", E("return V.pal.page === 'menu' && V.pal.mesh.visible;"))
+
+    wait_items = "for (let k = 0; k < 200 && (V.browser.loading || !V.browser.items.length); k++) await new Promise(r => setTimeout(r, 50)); await T.frames(3);"
+    r = E(f"""const h = await T.palClick('menu:drive'); {wait_items}
+              const top = V.browser.items.map(i => i.name);
+              await T.palClick('drvi:0'); {wait_items}
+              await T.palClick('drvi:0'); {wait_items}
+              const names = V.browser.items.map(i => i.name);
+              const sw = names.indexOf('Rama.SLDASM');
+              const swHover = await T.palClick('drvi:' + sw);
+              return {{ h, top, names, swHover, path: V.browser.stack.map(s => s.name).join('/') }};""")
+    check("menu → Google Drive: lista folderów w goglach", r["top"] == ["Projekt_A"] and r["path"] == "Mój dysk/Projekt_A/cad", str(r))
+    check("plik SolidWorks wyszarzony (nie da się kliknąć)", r["swHover"] is None and "Rama.SLDASM" in r["names"], str(r))
+    r = E("""const i = V.browser.items.findIndex(x => x.name === 'test_zlozenie.step');
+             await T.palClick('drvi:' + i);
+             for (let k = 0; k < 600 && !V.cadRoot; k++) await new Promise(r => setTimeout(r, 50));
+             await T.frames(3);
+             return { parts: V.parts.length, page: V.pal.page, proj: V.settings.project && V.settings.project.path };""")
+    check("otwarcie STEP z Google Drive w goglach", r["parts"] == 4 and r["page"] == "narzedzia" and r["proj"] == "Mój dysk/Projekt_A", str(r))
+    E("await T.click('right', 'a-button');")
+    for _ in range(150):                 # page.wait_for_timeout: w tym czasie działają atrapy Google
+        if gm.uploads: break
+        page.wait_for_timeout(100)
+    check("zrzut z gogli (A) od razu w Projekt_A/vr/screeny", len(gm.uploads) == 1 and gm.uploads[0]["path"].startswith("Projekt_A/vr/screeny/"), str(gm.uploads))
+    E("V.paletteAction('page:menu'); await T.frames(3);")
+    page.screenshot(path=str(OUT / "screenshot_vr_menu.png"))
+    page.close()
+    ctx.close()
+    check("VR menu: brak błędów w konsoli", not errors, "; ".join(errors[:5]))
+
+# ---------------------------------------------------------------------------
 server = subprocess.Popen([sys.executable, "-m", "http.server", str(PORT)], cwd=ROOT,
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 time.sleep(1)
 try:
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=CHROME, args=CHROME_ARGS)
-        for t in (test_pc, test_xr):
+        for t in (test_pc, test_xr, test_xr_menu):
             try:
                 t(browser)
             except Exception as e:
