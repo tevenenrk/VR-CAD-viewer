@@ -85,6 +85,9 @@
     <button id="btnShot">Zrzut ekranu</button>
     <button id="btnNote" title="Kliknij potem miejsce na modelu">Dodaj komentarz</button>
   </div>
+  <div class="row">
+    <button id="btnSzk" title="Tryb do szybkiego tworzenia brył zastępczych (gabarytów) z eksportem do STEP">Szkicownik brył</button>
+  </div>
   <div id="status">Wybierz plik .step / .stp (eksport z SolidWorksa).</div>
   <div id="msg"></div>
   <div id="picked">
@@ -297,7 +300,7 @@ for (const id of ['fileInput', 'quality', 'upAxis', 'btnVR', 'btnAR', 'btnShot',
   'noteBox', 'noteTitle', 'noteText', 'noteVoice', 'noteSave', 'noteDelete', 'noteCancel', 'noteStatus',
   'secOn', 'secX', 'secY', 'secZ', 'secFlip', 'secPos', 'secInfo', 'sectionBox',
   'cloudBox', 'cloudState', 'cloudConnect', 'cloudDisconnect', 'cloudAuto', 'cloudFolder', 'cloudBrowse', 'cloudUp', 'cloudSetFolder', 'cloudPending',
-  'cloudPath', 'cloudFiles', 'recent', 'recentCount', 'setClientId', 'setGeminiKey', 'setGeminiModel', 'setSave', 'setMic', 'setInfo', 'xrKb'])
+  'cloudPath', 'cloudFiles', 'recent', 'recentCount', 'setClientId', 'setGeminiKey', 'setGeminiModel', 'setSave', 'setMic', 'setInfo', 'xrKb', 'btnSzk'])
   ui[id] = $(id);
 Object.assign(ui, { file: ui.fileInput, vr: ui.btnVR, ar: ui.btnAR, shot: ui.btnShot });
 
@@ -1614,7 +1617,8 @@ function layoutPalette() {
     info(830, 'Zrzuty trafiają do: ' + shotsTargetText(), 48);
     label(898, 'Dyktowanie głosem');
     info(936, voice.statusText(), 48);
-    info(1000, 'Plik SolidWorks (.sldprt/.sldasm) trzeba zapisać jako STEP.', 48, 'left', '#9aa0a6');
+    info(996, 'Plik SolidWorks (.sldprt/.sldasm) trzeba zapisać jako STEP.', 44, 'left', '#9aa0a6');
+    row(1058, 86, [{ id: 'tryb:szkicownik', text: 'Szkicownik brył ▸' }]);
   } else if (pal.page === 'menu' && pal.menuView === 'drive') {
     if (!drive.connected) {
       info(116, 'Google Drive nie jest połączony.', 48, 'left', '#ffd27a');
@@ -1796,6 +1800,7 @@ function paletteAction(id) {
   else if (k === 'up') { ui.upAxis.value = v; applyUpAxis(); say('Góra: ' + v); }
   else if (k === 'qual') { ui.quality.value = v; say('Siatka: ' + v + ' — działa po „Wczytaj ponownie”'); }
   else if (k === 'xr') xrAction(v);
+  else if (k === 'tryb') przelaczSzkicownik(v === 'szkicownik');
   else if (k === 'cloud') {
     if (v === 'auto') { settings.autoUpload = !settings.autoUpload; saveSettings(); syncCloudUI(); say('Zrzuty do chmury: ' + (settings.autoUpload ? 'TAK' : 'NIE')); }
     else if (v === 'pending') uploadPendingShots(true);
@@ -2867,6 +2872,7 @@ function setupUI() {
     await shotStore.clear(); refreshShots();
   });
   window.addEventListener('keydown', (e) => {
+    if (szkicownikAktywny()) return;                            // w Szkicowniku klawisze obsługuje szkicownik
     const typing = e.target && (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT');
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); undo(); return; }
     // fizyczna klawiatura (np. Bluetooth) podczas pisania komentarza w goglach
@@ -2886,6 +2892,7 @@ function setupUI() {
     ui.btnNote.classList.toggle('primary', pcMode === 'komentarz');
     say(pcMode === 'komentarz' ? 'Kliknij miejsce na modelu, do którego ma wskazywać strzałka' : '');
   });
+  ui.btnSzk.addEventListener('click', () => przelaczSzkicownik(!szkicownikAktywny()));
   ui.noteText.addEventListener('input', () => { if (edit) { edit.text = ui.noteText.value; edit.note.setText(edit.text); } });
   ui.noteSave.addEventListener('click', () => closeNoteEditor(true));
   ui.noteCancel.addEventListener('click', () => closeNoteEditor(false));
@@ -2951,6 +2958,7 @@ function setupUI() {
   let down = null;
   renderer.domElement.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY }; });
   renderer.domElement.addEventListener('pointerup', (e) => {
+    if (szkicownikAktywny()) { down = null; return; }          // w Szkicowniku klik obsługuje szkicownik
     if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) { down = null; return; }
     down = null;
     const ndc = new THREE.Vector2((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
@@ -2969,12 +2977,52 @@ function setupUI() {
   });
 }
 
+// ============================================================================
+// TRYB „SZKICOWNIK BRYŁ” (osobny moduł szkicownik/, ładowany dopiero przy pierwszym wejściu)
+// ============================================================================
+let szkicownik = null;
+const szkicownikAktywny = () => !!(szkicownik && szkicownik.aktywny);
+
+function szkicownikApi() {                     // to, czego szkicownik potrzebuje od viewera
+  return {
+    scene, camera, renderer, controls, controllers, CONFIG,
+    get cadRoot() { return cadRoot; }, get pivot() { return pivot; }, get parts() { return parts; },
+    get lastFile() { return lastFile; }, get modelName() { return modelName; }, get upAxis() { return ui.upAxis.value; },
+    say, requestScreenshot, resetModelPose, offHand, isMain, buttonPressedEdge, pulse, viewCamera,
+    wyjdz: () => przelaczSzkicownik(false),
+  };
+}
+
+async function przelaczSzkicownik(wlacz) {
+  try {
+    if (wlacz) {
+      if (!szkicownik) {
+        say('Wczytywanie Szkicownika…');
+        const { Szkicownik } = await import('./szkicownik/szkicownik.js');
+        szkicownik = new Szkicownik(szkicownikApi());
+      }
+      releaseAll();
+      for (const c of controllers) { endHold(c); toolEnd(c); }
+      setSelected(null); showPicked(null);
+      await szkicownik.wejdz();
+    } else if (szkicownik) {
+      szkicownik.wyjdz();
+      if (renderer.xr.isPresenting) S.paletteVisible = true;
+    }
+  } catch (e) {
+    console.error(e);
+    say('Błąd Szkicownika: ' + e.message);
+  }
+  ui.btnSzk.textContent = szkicownikAktywny() ? 'Wróć do podglądu' : 'Szkicownik brył';
+  ui.btnSzk.classList.toggle('primary', szkicownikAktywny());
+}
+
 function exposeDebug() {                      // do testów automatycznych i diagnostyki
   window.__viewer = {
     get parts() { return parts; }, get strokes() { return strokes; }, get measures() { return measures; },
     get undoStack() { return undoStack; }, get cadRoot() { return cadRoot; }, get twoHand() { return twoHand; },
     get notes() { return notes; }, get edit() { return edit; }, get treeRows() { return treeRows; }, get selectedObj() { return selectedObj; },
-    get recentList() { return recentList; },
+    get recentList() { return recentList; }, get szkicownik() { return szkicownik; }, przelaczSzkicownik,
     scene, modelSize, pivot, S, pal, PAL, controllers, renderer, THREE, section, cadBox, settings, drive, browser, voice,
     pick(o, d) { raycaster.set(o, d.clone().normalize()); return pickRay(); },
     requestScreenshot, shotStore, modelStore, undo, paletteAction, layoutPalette, refreshPaletteTexture, editKey, openNoteEditor, closeNoteEditor, createNote,
@@ -2989,9 +3037,11 @@ function tick() {
   const now = performance.now();
   const dt = Math.min((now - lastFrameTime) / 1000, 0.1);
   lastFrameTime = now;
+  const szk = szkicownikAktywny();
   if (renderer.xr.isPresenting) {
     scene.updateMatrixWorld();
-    handleXRInput(dt);
+    if (szk) { pal.mesh.visible = false; szkicownik.wejscieXR(dt); }   // tryb Szkicownik przejmuje kontrolery
+    else handleXRInput(dt);
   } else {
     controls.update();
   }
@@ -2999,6 +3049,7 @@ function tick() {
   updateHighlights();
   updateSection();
   updateMeasureLabels();
+  if (szk) szkicownik.klatka(dt);
   renderer.render(scene, camera);
   if (shotPending) { shotPending = false; captureScreenshot(); }
 }

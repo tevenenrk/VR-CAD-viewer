@@ -34,6 +34,7 @@ src = (ROOT / "index.html").read_text(encoding="utf-8")
 src = src.replace("https://cdn.jsdelivr.net/npm/three@0.187.0/", f"http://localhost:{PORT}/node_modules/three/")
 src = re.sub(r"https://cdn\.jsdelivr\.net/npm/occt-import-js@[\d.]+/", f"http://localhost:{PORT}/node_modules/occt-import-js/", src)
 src = re.sub(r"https://cdn\.jsdelivr\.net/npm/three-mesh-bvh@[\d.]+/", f"http://localhost:{PORT}/node_modules/three-mesh-bvh/", src)
+src = src.replace("import('./szkicownik/szkicownik.js')", "import('../szkicownik/szkicownik.js')")   # kopia strony leży w test/
 (OUT / "index_local.html").write_text(src, encoding="utf-8")
 
 IWER_JS = (ROOT / "node_modules" / "iwer" / "build" / "iwer.min.js").read_text(encoding="utf-8")
@@ -624,13 +625,311 @@ def test_xr_menu(browser):
     check("VR menu: brak błędów w konsoli", not errors, "; ".join(errors[:5]))
 
 # ---------------------------------------------------------------------------
+def test_szkicownik_browser(browser):
+    print("\n=== CZĘŚĆ 4: SZKICOWNIK — wątek geometrii w przeglądarce (OpenCascade WASM z repozytorium) ===")
+    errors = []
+    page = browser.new_page(viewport={"width": 800, "height": 600})
+    watch(page, errors)
+    page.goto(f"http://localhost:{PORT}/test/index_local.html")
+    r = page.evaluate("""async () => {
+        const { SilnikGeometrii, BladGeometrii } = await import('/szkicownik/klient.js');
+        const { Projekt } = await import('/szkicownik/projekt.js');
+        const s = new SilnikGeometrii({ limity: { BOOLEAN_TIMEOUT_MS: 800 } });
+        const p = new Projekt(s);
+        let t0 = performance.now(); await s.start(); const startMs = performance.now() - t0;
+        const b = await p.dodaj({ typ: 'prostopadloscian', dx: 100, dy: 50, dz: 20 });
+        const c = await p.dodaj({ typ: 'walec', r: 10, h: 40 }, { poz: [20, 0, 0], obr: [90, 0, 0] });
+        const d = await p.boolean(b.id, c.id, 'roznica');
+        const step = await p.eksportSTEP({});
+        const N = 600, pkt = [];
+        for (let i = 0; i < N; i++) { const a = 2 * Math.PI * i / N, r = i % 2 ? 90 : 100; pkt.push([r * Math.cos(a), r * Math.sin(a)]); }
+        const g = { typ: 'wyciagniecie', plaszczyzna: 'XY', obrys: pkt.map((q, i) => ({ typ: 'linia', a: q, b: pkt[(i + 1) % N] })), h: 50 };
+        const g1 = await p.dodaj(g), g2 = await p.dodaj(g, { obr: [0, 0, 0.21], poz: [0, 0, 10] });
+        let kod = null; t0 = performance.now();
+        try { await p.boolean(g1.id, g2.id, 'suma'); } catch (e) { kod = e.kod; }
+        const timeoutMs = performance.now() - t0;
+        const stan = await s.wykonaj('stan');
+        s.zakoncz();
+        return { startMs, vol: d.objetosc, tris: d.def ? 1 : 0, stepLen: step.length, stepHead: new TextDecoder().decode(step.slice(0, 12)),
+                 kod, timeoutMs, restarty: s.restarty, odtworzone: p.bryly.every((x) => stan.ids.includes(x.id)), n: p.bryly.length };
+    }""")
+    print(f"  start OpenCascade w przeglądarce: {r['startMs']:.0f} ms")
+    check("szkicownik: geometria działa w wątku przeglądarki (różnica)", abs(r["vol"] - (100000 - 3.14159265 * 100 * 20)) < 0.1, f"{r['vol']:.2f} mm³")
+    check("szkicownik: eksport STEP w przeglądarce", r["stepHead"] == "ISO-10303-21" and r["stepLen"] > 5000, f"{r['stepLen']} B")
+    check("szkicownik: ciężki boolean przerwany w przeglądarce, stan odtworzony",
+          r["kod"] == "TIMEOUT" and r["restarty"] == 1 and r["odtworzone"] and r["n"] == 3, f"{r['kod']} po {r['timeoutMs'] / 1000:.1f} s, brył {r['n']}")
+    page.close()
+    check("szkicownik: brak błędów w konsoli", not errors, "; ".join(errors[:5]))
+
+# ---------------------------------------------------------------------------
+# Szkicownik: pomocnicze funkcje w przeglądarce (PC i gogle)
+SZ_HELPERS = """
+window.SZ = (() => {
+  const V = window.__viewer, THREE = V.THREE;
+  const S = () => V.szkicownik;
+  const frame = () => V.renderer.info.render.frame;
+  const Z = {
+    async frames(n = 3) { const f0 = frame(); while (frame() < f0 + n) await new Promise(r => setTimeout(r, 10)); },
+    async czekaj() { await Z.frames(2); while (S().zajety) await new Promise(r => setTimeout(r, 30)); await Z.frames(3); },
+    ekran(p) {                                   // punkt świata → piksele okna (PC)
+      const v = p.clone().project(S().api.camera);
+      return [(v.x + 1) / 2 * innerWidth, (1 - v.y) / 2 * innerHeight];
+    },
+    przycisk(id) { const p = S().panel.punktPrzycisku(id, THREE); return p ? Z.ekran(p) : null; },
+    srodekBryly(id) {
+      const w = S().wezly.get(id); const b = new THREE.Box3().setFromObject(w.holder);
+      return b.getCenter(new THREE.Vector3());
+    },
+    ekranBryly(id) { return Z.ekran(Z.srodekBryly(id)); },
+    bryla(nazwa) { return S().projekt.bryly.find(b => b.nazwa === nazwa); },
+    // gogle: promień prawego kontrolera na przycisk panelu szkicownika i spust
+    async klik(id) {
+      const T = window.T;
+      await Z.frames(2);
+      const p = S().panel.punktPrzycisku(id, THREE);
+      if (!p) return 'brak:' + id;
+      const n = new THREE.Vector3(0, 0, 1).transformDirection(S().panel.mesh.matrixWorld);
+      T.pose('right', p.clone().addScaledVector(n, 0.25).toArray(), p.toArray());
+      await Z.frames(4);
+      const hover = T.ctrl('right').userData.szk.hover;
+      await T.click('right', 'trigger');
+      return hover;
+    },
+  };
+  return Z;
+})();
+"""
+
+def test_szkicownik_pc(browser):
+    print("\n=== CZĘŚĆ 5: SZKICOWNIK NA PC (mysz = promień, klawiatura) ===")
+    errors = []
+    page = browser.new_page(viewport={"width": 1280, "height": 800}, accept_downloads=True)
+    watch(page, errors)
+    page.goto(f"http://localhost:{PORT}/test/index_local.html?model=test_zlozenie.step")
+    wait_loaded(page)
+    page.select_option("#upAxis", "Z")
+    page.click("#btnSzk")
+    page.wait_for_function("window.__viewer.szkicownik && window.__viewer.szkicownik.stanSilnika === 'gotowy'", timeout=90000)
+    page.evaluate(SZ_HELPERS)
+    E = lambda js: page.evaluate(f"(async () => {{ const V = window.__viewer, S = V.szkicownik, SZ = window.SZ; {js} }})()")
+    def klik(id):
+        E("await SZ.frames(3);")
+        xy = E(f"return SZ.przycisk('{id}');")
+        page.mouse.click(xy[0], xy[1])
+        E("await SZ.czekaj();")
+    check("szkicownik: tryb włączony, panel na ekranie, model jako tło",
+          E("return S.aktywny && S.panel.mesh.visible && V.parts[0].mesh.material.opacity < 0.5 && document.getElementById('btnSzk').textContent.includes('Wróć');"))
+
+    # nowa bryła: przycisk w panelu (mysz) + wymiary z klawiatury
+    klik("dodaj:prostopadloscian")
+    np = E("return !!S.numpad && S.numpad.pola.map(p => p.etykieta).join('|');")
+    for k in ["2", "0", "0", "Enter", "Enter", "Enter"]:
+        page.keyboard.press(k)
+    E("while (!S.projekt || S.projekt.bryly.length < 1 || S.zajety) await new Promise(r => setTimeout(r, 30)); await SZ.frames(3);")
+    r = E("const b = S.projekt.bryly[0]; return { def: b.def, vol: b.objetosc, poz: b.poz, zazn: S.zazn.length, np: !!S.numpad };")
+    check("szkicownik PC: prostopadłościan 200×100×100 z panelu numerycznego", r["def"]["dx"] == 200 and r["def"]["dy"] == 100 and abs(r["vol"] - 2e6) < 1e-3 and not r["np"],
+          f"pola: {np}; poz {r['poz']}")
+    check("szkicownik PC: nowa bryła na siatce 10 mm", all(abs(v / 10 - round(v / 10)) < 1e-9 for v in r["poz"]), str(r["poz"]))
+
+    # wybór kliknięciem w bryłę, przesuw strzałką, obrót klawiszem Q
+    page.keyboard.press("Escape")
+    E("await SZ.frames(3);")
+    xy = E("return SZ.ekranBryly(S.projekt.bryly[0].id);")
+    page.mouse.click(xy[0], xy[1])
+    E("await SZ.frames(3);")
+    sel = E("return S.zazn.join() === S.projekt.bryly[0].id && !!S.pc.tc.object;")
+    p0 = E("return S.projekt.bryly[0].poz;")
+    page.keyboard.press("ArrowRight")
+    page.keyboard.press("q")
+    r = E("const b = S.projekt.bryly[0]; return { poz: b.poz, obr: b.obr };")
+    check("szkicownik PC: klik w bryłę = wybór (uchwyty przypięte)", sel)
+    check("szkicownik PC: strzałka = +10 mm, Q = obrót 15° wokół osi góry (Z)", abs(r["poz"][0] - p0[0] - 10) < 1e-9 and abs(r["obr"][2] - 15) < 1e-6, f"{r}")
+
+    # pole położenia w zakładce Edycja
+    klik("tab:edycja")
+    klik("poz:0")
+    for k in ["1", "2", "3", "Enter"]:
+        page.keyboard.press(k)
+    E("await SZ.frames(3);")
+    check("szkicownik PC: położenie X wpisane liczbą = 123 mm", E("return S.projekt.bryly[0].poz[0];") == 123)
+
+    # kopia (Ctrl+D), walec, różnica przez wskazanie bryły B na liście
+    page.keyboard.press("Control+d")
+    E("await SZ.czekaj();")
+    r = E("return { n: S.projekt.bryly.length, x: S.projekt.bryly[1].poz[0], nazwa: S.projekt.bryly[1].nazwa };")
+    check("szkicownik PC: Ctrl+D kopiuje bryłę obok (+50 mm)", r["n"] == 2 and r["x"] == 173 and "kopia" in r["nazwa"], str(r))
+    klik("tab:bryly")
+    klik("dodaj:walec")
+    page.keyboard.press("Enter"); page.keyboard.press("Enter")
+    E("while (S.projekt.bryly.length < 3 || S.zajety) await new Promise(r => setTimeout(r, 30)); await SZ.frames(3);")
+    w = E("const b = S.projekt.bryly[2]; return { obr: b.obr, id: b.id };")
+    check("szkicownik PC: walec stoi pionowo w pliku z osią Z w górę", w["obr"] == [90, 0, 0], str(w["obr"]))
+    E("S.projekt.ustawTransformacje(S.projekt.bryly[2].id, { poz: [...S.projekt.bryly[0].poz] }); await SZ.frames(2);")
+    a_id = E("return S.projekt.bryly[0].id;")
+    vA = E("return S.projekt.bryly[0].objetosc;")
+    klik(f"sel:{a_id}")
+    klik("tab:edycja")
+    klik("op:roznica")
+    czeka = E("return !!S.oczekujeB;")
+    klik("tab:bryly")
+    klik(f"sel:{w['id']}")
+    E("await SZ.czekaj();")
+    r = E("return { n: S.projekt.bryly.length, typ: S.projekt.bryly[0].def.typ, vol: S.projekt.bryly[0].objetosc, wyn: S.zazn.join() === S.projekt.bryly[0].id };")
+    check("szkicownik PC: różnica (A z listy, „Różnica”, B z listy)", czeka and r["n"] == 2 and r["typ"] == "boolean" and 0 < r["vol"] < vA - 1000 and r["wyn"],
+          f"{r['vol']:.0f} < {vA:.0f} mm³")
+
+    # przejęcie oryginału, grupa, przesuw grupy
+    klik("oryginal")
+    r = E("return { n: S.projekt.bryly.length, ukryte: V.parts.filter(p => !p.mesh.visible).length, nazwy: S.projekt.bryly.filter(b => b.zrodlo === 'oryginal').map(b => b.nazwa).join(',') };")
+    check("szkicownik PC: „Przejmij oryginał” — 4 części z nazwami, tło ukryte", r["n"] == 6 and r["ukryte"] == 4, f"{r['nazwy']}")
+    page.keyboard.press("Escape")             # nic nie zaznaczone przed zaznaczaniem wielu
+    klik("wiele")
+    ids = E("return ['Slup', 'Wspornik_L'].map(n => SZ.bryla(n).id);")
+    for i in ids:
+        klik(f"sel:{i}")
+    klik("grupuj")
+    klik("wiele")
+    page.keyboard.press("Escape")
+    klik(f"sel:{ids[0]}")
+    px = E("return [SZ.bryla('Slup').poz[0], SZ.bryla('Wspornik_L').poz[0]];")
+    page.keyboard.press("Shift+ArrowRight")
+    r = E("return { g: S.projekt.grupy.length, zazn: S.zazn.length, x: [SZ.bryla('Slup').poz[0], SZ.bryla('Wspornik_L').poz[0]] };")
+    check("szkicownik PC: grupa z dwóch części, klik zaznacza całą grupę", r["g"] == 1 and r["zazn"] == 2, str(r))
+    check("szkicownik PC: Shift+strzałka przesuwa grupę o 100 mm", abs(r["x"][0] - px[0] - 100) < 1e-6 and abs(r["x"][1] - px[1] - 100) < 1e-6, f"{px} → {r['x']}")
+
+    # eksport STEP: prawdziwe pobranie pliku
+    klik("tab:plik")
+    pobrane = {}
+    for zakres in ["oryginal", "wszystko"]:
+        with page.expect_download(timeout=30000) as d:
+            klik(f"eksport:{zakres}")
+        path = OUT / f"szkicownik_pc_{zakres}.step"
+        d.value.save_as(str(path))
+        pobrane[zakres] = path.read_bytes()
+    t_or, t_all = pobrane["oryginal"].decode("latin-1"), pobrane["wszystko"].decode("latin-1")
+    check("szkicownik PC: eksport „Oryginał” pobrany (STEP, części + grupa)", t_or.startswith("ISO-10303-21") and "'Slup'" in t_or and "'Grupa 1'" in t_or and "kopia" not in t_or,
+          f"{len(pobrane['oryginal'])} B")
+    check("szkicownik PC: eksport „Wszystko” zawiera nowe bryły", "kopia" in t_all and "'Plyta_bazowa'" in t_all and "'Szkicownik'" in t_all, f"{len(pobrane['wszystko'])} B")
+
+    page.screenshot(path=str(OUT / "screenshot_szk_pc.png"))
+    klik("wroc")
+    r = E("""await SZ.frames(3);
+             return { akt: S.aktywny, op: V.parts.every(p => p.mesh.material.opacity === 1), vis: V.parts.every(p => p.mesh.visible),
+                      nowe: [...S.wezly.entries()].filter(([id, w]) => w.holder.visible).length, panel: !!S.panel.mesh.parent };""")
+    check("szkicownik PC: „Wróć do podglądu” przywraca model, nowe bryły zostają widoczne",
+          not r["akt"] and r["op"] and r["vis"] and r["nowe"] == 2 and not r["panel"], str(r))
+    page.mouse.click(820, 660)
+    check("po powrocie: klik w model znów wybiera część (viewer działa)", page.is_visible("#picked"))
+    page.close()
+    check("szkicownik PC: brak błędów w konsoli", not errors, "; ".join(errors[:5]))
+
+
+def test_szkicownik_vr(browser):
+    print("\n=== CZĘŚĆ 6: SZKICOWNIK W GOGLACH (emulator Meta Quest 3) ===")
+    errors = []
+    ctx = browser.new_context(viewport={"width": 1280, "height": 800}, accept_downloads=True)
+    ctx.add_init_script(script=IWER_INIT)
+    page = ctx.new_page()
+    watch(page, errors)
+    page.goto(f"http://localhost:{PORT}/test/index_local.html?model=test_zlozenie.step")
+    wait_loaded(page)
+    page.select_option("#upAxis", "Z")
+    page.click("#btnVR")
+    page.wait_for_function("window.__viewer.renderer.xr.isPresenting", timeout=20000)
+    page.evaluate(HELPERS)
+    page.evaluate(SZ_HELPERS)
+    page.wait_for_function("window.__viewer.controllers.filter(c => c.userData.inputSource).length === 2", timeout=10000)
+    E = lambda js: page.evaluate(f"(async () => {{ const V = window.__viewer, T = window.T, SZ = window.SZ; const S = V.szkicownik; {js} }})()")
+    E("T.pose('left', [-0.25, 1.1, -0.25]); T.pose('right', [0.3, 1.1, -0.3]); await T.frames(5);")
+    E("await T.palClick('page:menu'); await T.frames(3);")
+    h = E("return await T.palClick('tryb:szkicownik');")
+    page.wait_for_function("window.__viewer.szkicownik && window.__viewer.szkicownik.stanSilnika === 'gotowy'", timeout=90000)
+    E("await SZ.frames(5);")
+    check("szkicownik VR: wejście z Menu, panel szkicownika na lewym kontrolerze",
+          E("return S.aktywny && S.panel.mesh.visible && S.panel.mesh.parent === T.ctrl('left') && !V.pal.mesh.visible;"), f"hover={h}")
+
+    # nowa bryła z panelu numerycznego (klik promieniem w klawisze)
+    hs = [E(f"return await SZ.klik('{k}');") for k in ["dodaj:prostopadloscian", "np:1", "np:5", "np:0", "np:ok", "np:ok", "np:ok"]]
+    E("while (S.projekt.bryly.length < 1 || S.zajety) await new Promise(r => setTimeout(r, 30)); await SZ.frames(3);")
+    r = E("const b = S.projekt.bryly[0]; return { dx: b.def.dx, vol: b.objetosc, poz: b.poz };")
+    check("szkicownik VR: prostopadłościan 150×100×100 wpisany klawiszami panelu", r["dx"] == 150 and abs(r["vol"] - 1.5e6) < 1e-3, f"klik: {hs[:3]}…, poz {r['poz']}")
+
+    # grip na bryle: przesuw ręką o 10 cm, snap 10 mm
+    r = E("""const id = S.projekt.bryly[0].id;
+             const c = SZ.srodekBryly(id), p0 = [...S.projekt.bryly[0].poz];
+             T.pose('right', [c.x + 0.05, c.y + 0.25, c.z + 0.25], c.toArray()); await T.frames(4);
+             const traf = T.ctrl('right').userData.szk.traf && T.ctrl('right').userData.szk.traf.id;
+             T.btn('right', 'squeeze', 1); await T.frames(4);
+             T.pose('right', [c.x + 0.15, c.y + 0.25, c.z + 0.25], [c.x + 0.1, c.y, c.z]); await T.frames(5);
+             const pd = S.projekt.bryly[0].poz.map((v, i) => v - p0[i]);
+             T.btn('right', 'squeeze', 0); await T.frames(3);
+             return { traf: traf === id, pd, skala: V.pivot.scale.x };""")
+    oczek = 100 / r["skala"]
+    check("szkicownik VR: grip chwyta bryłę pod promieniem", r["traf"])
+    check("szkicownik VR: przesuw ręką 10 cm → bryła na siatce 10 mm", all(abs(v / 10 - round(v / 10)) < 1e-6 for v in r["pd"]) and abs(r["pd"][0] - oczek) <= 5.001,
+          f"Δ {[round(v, 2) for v in r['pd']]} mm (bez snapu {oczek:.1f})")
+
+    # dwie ręce: skala 2×
+    r = E("""const id = S.projekt.bryly[0].id;
+             const c = SZ.srodekBryly(id);
+             T.pose('right', [c.x + 0.05, c.y + 0.25, c.z + 0.25], c.toArray()); await T.frames(3);
+             T.btn('right', 'squeeze', 1); await T.frames(3);
+             T.pose('left', [c.x - 0.15, c.y + 0.25, c.z + 0.25]); await T.frames(3);
+             T.btn('left', 'squeeze', 1); await T.frames(4);
+             const two = !!S.dwieRece;
+             const rp = T.ctrl('right').getWorldPosition(new V.THREE.Vector3()), lp = T.ctrl('left').getWorldPosition(new V.THREE.Vector3());
+             T.pose('left', rp.clone().addScaledVector(lp.clone().sub(rp), 2).toArray()); await T.frames(5);
+             const s = S.projekt.bryly[0].skala;
+             T.btn('left', 'squeeze', 0); T.btn('right', 'squeeze', 0); await T.frames(4);
+             T.pose('left', [-0.25, 1.1, -0.25]); await T.frames(3);
+             return { two, s };""")
+    check("szkicownik VR: dwa gripy = skala bryły 2× (snap 0,05)", r["two"] and abs(r["s"] - 2) < 1e-9, f"×{r['s']}")
+
+    # kula + różnica (A i B z listy), kopia
+    E("for (const k of ['tab:bryly', 'dodaj:kula', 'np:ok']) await SZ.klik(k); while (S.projekt.bryly.length < 2 || S.zajety) await new Promise(r => setTimeout(r, 30));")
+    ids = E("return S.projekt.bryly.map(b => b.id);")
+    vA = E("return S.projekt.bryly[0].objetosc * S.projekt.bryly[0].skala ** 3;")
+    E("S.projekt.ustawTransformacje(S.projekt.bryly[1].id, { poz: [...S.projekt.bryly[0].poz] }); await SZ.frames(2);")
+    for k in [f"sel:{ids[0]}", "tab:edycja", "op:roznica", "tab:bryly", f"sel:{ids[1]}"]:
+        E(f"await SZ.klik('{k}');")
+    E("await SZ.czekaj();")
+    r = E("return { n: S.projekt.bryly.length, typ: S.projekt.bryly[0].def.typ, vol: S.projekt.bryly[0].objetosc };")
+    check("szkicownik VR: różnica prostopadłościan − kula", r["n"] == 1 and r["typ"] == "boolean" and 0 < r["vol"] < vA - 1000, f"{r['vol']:.0f} < {vA:.0f} mm³")
+    E("await SZ.klik('kopiuj'); await SZ.czekaj();")
+    check("szkicownik VR: kopia z panelu", E("return S.projekt.bryly.length;") == 2)
+
+    # spust w pustym miejscu = odznacz, B = komunikat o cofaniu
+    E("T.pose('right', [0.6, 1.6, 0.3], [1.5, 2.5, 0.5]); await T.frames(3); await T.click('right', 'trigger'); await T.click('right', 'b-button');")
+    check("szkicownik VR: spust w pustym miejscu odznacza", E("return S.zazn.length;") == 0)
+
+    # eksport z gogli (pobranie)
+    E("await SZ.klik('tab:plik');")
+    with page.expect_download(timeout=30000) as d:
+        E("await SZ.klik('eksport:wszystko'); await SZ.czekaj();")
+    path = OUT / "szkicownik_vr_wszystko.step"
+    d.value.save_as(str(path))
+    check("szkicownik VR: eksport STEP z gogli", path.read_bytes().startswith(b"ISO-10303-21"), f"{path.stat().st_size} B")
+    E("await SZ.klik('tab:bryly'); T.pose('left', [-0.12, 1.32, -0.35], [-0.12, 1.25, -0.9]); T.pose('right', [0.15, 1.3, -0.4], [-0.1, 1.35, -0.4]); await T.frames(8);")
+    page.screenshot(path=str(OUT / "screenshot_szk_vr.png"))
+
+    # powrót do podglądu
+    E("T.pose('left', [-0.25, 1.1, -0.25]); await T.frames(3); await SZ.klik('tab:plik'); await SZ.klik('wroc'); await T.frames(5);")
+    r = E("return { akt: S.aktywny, pal: V.pal.mesh.visible, op: V.parts.every(p => p.mesh.material.opacity === 1) };")
+    check("szkicownik VR: „Wróć do podglądu” — panel viewera wraca", not r["akt"] and r["pal"] and r["op"], str(r))
+    hv = E("await T.palClick('page:narzedzia'); return await T.palClick('tool:miarka');")
+    check("po powrocie: panel viewera działa (klik w narzędzie)", E("return V.S.tool;") == "miarka", f"hover={hv}")
+    page.close()
+    ctx.close()
+    check("szkicownik VR: brak błędów w konsoli", not errors, "; ".join(errors[:5]))
+
+# ---------------------------------------------------------------------------
 server = subprocess.Popen([sys.executable, "-m", "http.server", str(PORT)], cwd=ROOT,
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 time.sleep(1)
 try:
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=CHROME, args=CHROME_ARGS)
-        for t in (test_pc, test_xr, test_xr_menu):
+        for t in (test_pc, test_xr, test_xr_menu, test_szkicownik_browser, test_szkicownik_pc, test_szkicownik_vr):
             try:
                 t(browser)
             except Exception as e:
