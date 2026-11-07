@@ -36,7 +36,7 @@ Program do oglądania modeli CAD z SolidWorksa (przez STEP) w goglach Meta Quest
 v0.1: wczytanie STEP, drzewo części, kolory, kliknięcie myszą w część, wymiary.
 v0.2: panel narzędzi, rysowanie (rurka, grubość od nacisku spustu), gumka, miarka (punkty na powierzchni przez raycast, wynik w mm CAD), malowanie części (VR + PC), chwyt części / grupy w sferze / modelu, dwie ręce = skala+obrót, zrzut (A i przycisk PC), cofnij (B, Ctrl+Z), reset części/kolorów.
 v0.3: drzewo złożenia w goglach, przekrój, komentarze (płytka + strzałka, klawiatura w panelu, klawiatura Quest, dyktowanie Gemini), menu główne w goglach (plik z Drive / ostatnie, oś, siatka, VR↔AR, wyjście), Google Drive (otwieranie STEP, automatyczny upload zrzutów), ostatnio otwierane pliki (IndexedDB), wejście w VR bez modelu.
-Test `test/run_headless.py`: 62 sprawdzenia w 3 częściach (PC, gogle, gogle bez modelu + Drive), w tym numery przycisków A/B/X/Y w emulatorze (zgodne z xr-standard: 4 = A/X, 5 = B/Y). Google (GIS, Drive, Gemini) symulowane klasą `GoogleMock` (Playwright route); mikrofon sztuczny (flagi Chrome). W środowisku z HTTPS_PROXY błędy pobierania modeli kontrolerów z CDN są ignorowane.
+Test `test/run_headless.py`: 66 sprawdzeń w 4 częściach (PC, gogle, gogle bez modelu + Drive, Szkicownik: wątek geometrii w przeglądarce + watchdog), w tym numery przycisków A/B/X/Y w emulatorze (zgodne z xr-standard: 4 = A/X, 5 = B/Y). Google (GIS, Drive, Gemini) symulowane klasą `GoogleMock` (Playwright route); mikrofon sztuczny (flagi Chrome). W środowisku z HTTPS_PROXY błędy pobierania modeli kontrolerów z CDN są ignorowane.
 Niezweryfikowane nigdzie: prawdziwe logowanie Google / Drive, prawdziwe Gemini, klawiatura systemowa Quest, przełączanie VR↔AR z menu (zależy od tego, czy Quest uznaje spust za gest użytkownika).
 NIE PRZETESTOWANE na prawdziwych goglach. Test na Quest robi Robert i raportuje.
 Znane ryzyka: duże złożenia (parsowanie na Quest może trwać ~minutę → w razie potrzeby przenieść konwersję STEP→GLB na PC),
@@ -44,6 +44,9 @@ wydajność renderu na Quest 3S (może wymagać uproszczenia siatki/LOD), wygoda
 
 ## Plan dalej
 - W TOKU: tryb „Szkicownik brył” (gabaryty w VR, replicad/OCCT w workerze, eksport STEP), osobny moduł `szkicownik/`. Plan i decyzje: `docs/szkicownik-plan.md`. Pracujemy etapami 1–5, po każdym commit i czekamy na „dalej” od Roberta.
+  Etap 2 GOTOWY (geometria bez interfejsu): `szkicownik/geometria.js` (rdzeń replicad), `worker.js` (wątek, moduł), `klient.js` (kolejka + watchdog: terminate → nowy wątek → `odtworzStan` → dopiero potem błąd), `projekt.js` (model brył w JSON, boolean zastępuje A i B, oryginał jako elementy złożenia, eksport nowe/oryginał/wszystko), `szkicownik/lib/` (replicad 1.1.0 + WASM 23 MB w repo).
+  WAŻNE: w replicad translate/rotate/scale kasują bryłę wejściową → `przeksztalc()` zawsze klonuje. Booleany nie kasują. Brak `STEPCAFControl_Reader` → nazwy oryginału z viewera przez `dopasujCzesci` (ramki).
+  Następny: etap 3 (bryły w scenie, lista, przesuw/obrót/skala, snap, panel numeryczny, tryb PC, kopiowanie i grupy oryginału).
 - Następnie: zapis/odczyt `projekt/vr/adnotacje.json` na Drive (komentarze, rysunki, miary — teraz znikają po zamknięciu), samodzielne strzałki bez płytki, komenda głosowa „zrób zdjęcie”.
 - v0.4 (zmiana planu Roberta): zamiast asystenta patrzącego na stream — Gemini czyta zrzuty z folderu `projekt/vr/screeny` na Drive (+ `kontekst.md`, `adnotacje.json`) i się do nich odnosi. Szczegóły później.
 - v0.5: integracja z systemem zarządzania projektami.
@@ -57,6 +60,7 @@ wydajność renderu na Quest 3S (może wymagać uproszczenia siatki/LOD), wygoda
 ## Pliki
 - `index.html` — cały viewer (v0.3).
 - `test/test_zlozenie.step` — małe złożenie testowe (użyć z ustawieniem „Góra: Z”). Generator: `test/make_test_step.py` (CadQuery).
+- `szkicownik/` — Szkicownik brył (w budowie, patrz Plan dalej). `test/szkicownik_test.mjs` — testy geometrii w Node (29 sprawdzeń, `node test/szkicownik_test.mjs`, wątek przez `test/szkicownik_worker_node.mjs`); zapisuje `test/szkicownik_*.step` do obejrzenia (w .gitignore).
 - `test/run_headless.py` — automatyczny test w headless Chrome przez Playwright (sam znajduje Chrome na Windowsie lub Linuksie, lista `CHROME_PATHS`). Część 1: PC. Część 2: emulator Meta Quest 3 (IWER, `installRuntime({forceInstall: true})`, `stereoEnabled = false`) — steruje kontrolerami (`T.pose`, `T.tipAt`, `T.btn`, `T.palClick`) i sprawdza wszystkie narzędzia. Wymaga `pip install playwright` i `npm install --no-save three@0.187.0 occt-import-js@0.0.23 three-mesh-bvh@0.9.16 iwer@2.6.0` w folderze projektu. Uruchamiać z folderu projektu: `python test/run_headless.py` (kod wyjścia 1 = błąd). Wyniki obrazowe: `test/screenshot.png`, `test/screenshot_vr.png`, `test/zrzut_pc.jpg`, `test/zrzut_vr.jpg` (w .gitignore). Na PC Roberta (Windows) zainstalowane i działa.
 
 ## Zasady pracy

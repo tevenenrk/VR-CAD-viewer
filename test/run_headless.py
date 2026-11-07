@@ -624,13 +624,50 @@ def test_xr_menu(browser):
     check("VR menu: brak błędów w konsoli", not errors, "; ".join(errors[:5]))
 
 # ---------------------------------------------------------------------------
+def test_szkicownik_browser(browser):
+    print("\n=== CZĘŚĆ 4: SZKICOWNIK — wątek geometrii w przeglądarce (OpenCascade WASM z repozytorium) ===")
+    errors = []
+    page = browser.new_page(viewport={"width": 800, "height": 600})
+    watch(page, errors)
+    page.goto(f"http://localhost:{PORT}/test/index_local.html")
+    r = page.evaluate("""async () => {
+        const { SilnikGeometrii, BladGeometrii } = await import('/szkicownik/klient.js');
+        const { Projekt } = await import('/szkicownik/projekt.js');
+        const s = new SilnikGeometrii({ limity: { BOOLEAN_TIMEOUT_MS: 800 } });
+        const p = new Projekt(s);
+        let t0 = performance.now(); await s.start(); const startMs = performance.now() - t0;
+        const b = await p.dodaj({ typ: 'prostopadloscian', dx: 100, dy: 50, dz: 20 });
+        const c = await p.dodaj({ typ: 'walec', r: 10, h: 40 }, { poz: [20, 0, 0], obr: [90, 0, 0] });
+        const d = await p.boolean(b.id, c.id, 'roznica');
+        const step = await p.eksportSTEP({});
+        const N = 600, pkt = [];
+        for (let i = 0; i < N; i++) { const a = 2 * Math.PI * i / N, r = i % 2 ? 90 : 100; pkt.push([r * Math.cos(a), r * Math.sin(a)]); }
+        const g = { typ: 'wyciagniecie', plaszczyzna: 'XY', obrys: pkt.map((q, i) => ({ typ: 'linia', a: q, b: pkt[(i + 1) % N] })), h: 50 };
+        const g1 = await p.dodaj(g), g2 = await p.dodaj(g, { obr: [0, 0, 0.21], poz: [0, 0, 10] });
+        let kod = null; t0 = performance.now();
+        try { await p.boolean(g1.id, g2.id, 'suma'); } catch (e) { kod = e.kod; }
+        const timeoutMs = performance.now() - t0;
+        const stan = await s.wykonaj('stan');
+        s.zakoncz();
+        return { startMs, vol: d.objetosc, tris: d.def ? 1 : 0, stepLen: step.length, stepHead: new TextDecoder().decode(step.slice(0, 12)),
+                 kod, timeoutMs, restarty: s.restarty, odtworzone: p.bryly.every((x) => stan.ids.includes(x.id)), n: p.bryly.length };
+    }""")
+    print(f"  start OpenCascade w przeglądarce: {r['startMs']:.0f} ms")
+    check("szkicownik: geometria działa w wątku przeglądarki (różnica)", abs(r["vol"] - (100000 - 3.14159265 * 100 * 20)) < 0.1, f"{r['vol']:.2f} mm³")
+    check("szkicownik: eksport STEP w przeglądarce", r["stepHead"] == "ISO-10303-21" and r["stepLen"] > 5000, f"{r['stepLen']} B")
+    check("szkicownik: ciężki boolean przerwany w przeglądarce, stan odtworzony",
+          r["kod"] == "TIMEOUT" and r["restarty"] == 1 and r["odtworzone"] and r["n"] == 3, f"{r['kod']} po {r['timeoutMs'] / 1000:.1f} s, brył {r['n']}")
+    page.close()
+    check("szkicownik: brak błędów w konsoli", not errors, "; ".join(errors[:5]))
+
+# ---------------------------------------------------------------------------
 server = subprocess.Popen([sys.executable, "-m", "http.server", str(PORT)], cwd=ROOT,
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 time.sleep(1)
 try:
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=CHROME, args=CHROME_ARGS)
-        for t in (test_pc, test_xr, test_xr_menu):
+        for t in (test_pc, test_xr, test_xr_menu, test_szkicownik_browser):
             try:
                 t(browser)
             except Exception as e:

@@ -38,6 +38,20 @@ szczegóły dopracowuje się potem w SolidWorksie.
 
 **Wniosek: replicad nadaje się, alternatywa nie jest potrzebna.**
 
+## Decyzje Roberta po etapie 1 (7.11.2026)
+- Oś góry przy eksporcie: **Y** (jak domyślny SolidWorks). Gdy wczytany jest model, Szkicownik pracuje w układzie tego pliku.
+- Oryginalny CAD półprzezroczysty jako tło. Oryginalne części można **zatwierdzić jako elementy złożenia Szkicownika**:
+  przesuwać, obracać, skalować, kopiować i grupować (kopiowanie i grupy — etap 3).
+- Eksport STEP do wyboru: **tylko nowe bryły / oryginał + nowe / sam oryginał** (z przesunięciami i skalą), albo tylko zaznaczone.
+- Plik WASM (23 MB) w repozytorium: `szkicownik/lib/` (replicad 1.1.0, wersja sprzed 2 miesięcy, sprawdzona).
+
+### Jak oryginał trafia do eksportu (sprawdzone w etapie 2)
+OpenCascade w replicad nie ma czytnika STEP ze strukturą złożenia (`STEPCAFControl_Reader`), ale ma zwykły czytnik brył
+i pełny zapis złożeń (XCAF). Dlatego: wątek geometrii czyta bryły oryginału (B-rep, dokładne), a nazwy, ścieżki w drzewie
+i kolory bierze z viewera — dopasowanie po ramkach (na złożeniu testowym zgodność do 0.1 mm). Eksport to **nowy plik STEP**
+z tymi samymi częściami (prawdziwe bryły), strukturą podzłożeń, nazwami i kolorami. Nie jest to kopia 1:1 starego pliku:
+przepadają np. właściwości niestandardowe i konfiguracje, a powtórzone wystąpienia tej samej części zapisują się jako osobne bryły.
+
 ## 3. Architektura (osobny moduł, viewer nietknięty)
 
 Nowe pliki w folderze `szkicownik/` (ES moduły, bez bundlera). W `index.html` tylko import i przełącznik trybu
@@ -45,7 +59,9 @@ Nowe pliki w folderze `szkicownik/` (ES moduły, bez bundlera). W `index.html` t
 
 | Plik | Zadanie | Wątek |
 |---|---|---|
-| `szkicownik/geometria.js` | budowa brył z parametrów, boolean, sprawdzenie poprawności i objętości, siatka do wyświetlania, eksport STEP, przeliczenie układów | worker i testy Node |
+| `szkicownik/geometria.js` | budowa brył z parametrów, boolean, sprawdzenie poprawności i objętości, siatka do wyświetlania, odczyt brył STEP, zapis STEP ze strukturą złożenia, przeliczenie układów, dopasowanie części | worker i testy Node |
+| `szkicownik/projekt.js` | model projektu: lista brył (parametry), boolean zastępujący 2 bryły wynikiem, oryginał jako elementy złożenia, drzewo eksportu, stan JSON, odtworzenie po restarcie | główny i testy Node |
+| `szkicownik/lib/` | replicad 1.1.0 + OpenCascade WASM (kopie bez zmian, licencje) | worker |
 | `szkicownik/worker.js` | wątek geometrii: wczytanie WASM, polecenia, bryły w pamięci (BREP) | Web Worker |
 | `szkicownik/klient.js` | kolejka poleceń, **strażnik czasu (watchdog)**, restart wątku, odtworzenie stanu | główny |
 | `szkicownik/szkic2d.js` | szkic: linie, łuki z 3 punktów, snap, domykanie, wykrywanie samoprzecięć (czysty JS) | główny i testy Node |
@@ -66,8 +82,10 @@ Nowe pliki w folderze `szkicownik/` (ES moduły, bez bundlera). W `index.html` t
                         "b": { "typ": "walec", "r": 15, "h": 40, "poz": [100,50,-10], "obr": [0,0,0], "skala": 1 } },
                "poz": [0,0,0], "obr": [0,0,0], "skala": 1 } ] }
 ```
-Typy: `prostopadloscian {dx,dy,dz}`, `walec {r,h}`, `kula {r}`, `wyciagniecie {plaszczyzna, obrys: [linie i łuki], h}`,
-`boolean {op: suma|roznica|wspolna, a, b}`. Boolean zastępuje dwie bryły wynikiem, a ich pełne definicje zostają
+Typy: `prostopadloscian {dx,dy,dz}`, `walec {r,h}` (oś = Y), `kula {r}` — wyśrodkowane w swoim początku układu;
+`wyciagniecie {plaszczyzna, odsuniecie, obrys: [{typ:'linia',a,b} | {typ:'luk',a,m,b}], h}`, `boolean {op: suma|roznica|wspolna, a, b}`,
+`oryginal {indeksy: [bryły z pliku]}`. Każda bryła ma też `lok` (przesunięcie geometrii, żeby środek był w początku układu — obrót
+i skala działają wokół środka bryły), `zrodlo` ('nowa' / 'oryginal') i `sciezka` (podzłożenia w eksporcie). Boolean zastępuje dwie bryły wynikiem, a ich pełne definicje zostają
 w środku — kolejność operacji jest zachowana. Obrót w stopniach, skala jednolita (jedna liczba; zmiana wymiarów prymitywu — panelem numerycznym).
 
 ### Strażnik czasu (watchdog)

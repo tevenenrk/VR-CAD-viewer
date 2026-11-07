@@ -73,12 +73,24 @@ Klucz zostaje tylko w tej przeglądarce (ustawienia są osobne na PC i na Quest)
 
 Sprawdzone automatycznie w Chrome i w emulatorze Meta Quest 3 (IWER). Na prawdziwych goglach czeka na test.
 
+## Szkicownik brył (w budowie)
+
+Nowy tryb do szybkiego tworzenia brył zastępczych (gabarytów) w goglach, z eksportem do STEP (prawdziwe bryły, nie siatka).
+Plan: `docs/szkicownik-plan.md`. Gotowy jest silnik geometrii (bez interfejsu w goglach): prostopadłościan, walec, kula,
+wyciągnięcie szkicu z linii i łuków, suma / różnica / część wspólna, oryginalne części STEP jako elementy złożenia,
+eksport STEP (tylko nowe / oryginał + nowe / sam oryginał), przerwanie zbyt długiej operacji po 5 s z odtworzeniem brył.
+
+Test silnika (w folderze projektu, wymaga Node.js — tego samego, którym instalowałeś biblioteki do testu viewera):
+`node test/szkicownik_test.mjs`. Zapisuje do folderu `test/` dwa pliki STEP do obejrzenia w SolidWorksie.
+
 ## Pliki
 
 - `index.html` – cały program.
 - `test/test_zlozenie.step` – małe złożenie testowe (własne, wygenerowane skryptem).
 - `test/make_test_step.py` – generator złożenia testowego (CadQuery).
-- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (62 sprawdzenia; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
+- `szkicownik/` – Szkicownik brył (silnik geometrii, biblioteki w `szkicownik/lib/`).
+- `test/szkicownik_test.mjs` – testy geometrii Szkicownika w Node.
+- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (66 sprawdzeń; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
   `pip install playwright` oraz w folderze projektu
   `npm install --no-save three@0.187.0 occt-import-js@0.0.23 three-mesh-bvh@0.9.16 iwer@2.6.0`.
 
