@@ -189,6 +189,21 @@ try {
   sprawdz('eksport „wszystko”: oryginał + nowe w jednym złożeniu', wszystko.length === 9 && czesc(wszystko, 'Oslona').sciezka.join('/').endsWith('Stanowisko_testowe/Szkicownik'),
           `${wszystko.length} brył, „Oslona” w ${czesc(wszystko, 'Oslona').sciezka.join('/')}`);
 
+  // 8b. Zmiana wymiarów, kopia (bez liczenia od nowa), grupa = podzłożenie w STEP
+  const kol = await projekt.dodaj({ typ: 'walec', r: 20, h: 100 }, { nazwa: 'Kolumna', poz: [300, 0, 0] });
+  await projekt.zmienDef(kol.id, { typ: 'walec', r: 30, h: 100 });
+  sprawdz('zmiana wymiarów bryły (Ø40 → Ø60)', blisko(projekt.bryla(kol.id).objetosc, Math.PI * 900 * 100, 0.01) && projekt.bryla(kol.id).poz[0] === 300);
+  const [kop] = await projekt.kopiuj([kol.id], [50, 0, 0]);
+  const stanK = await silnik.wykonaj('stan');
+  sprawdz('kopia bryły: nowa nazwa, przesunięta, jest w wątku', kop.nazwa === 'Kolumna (kopia)' && kop.poz[0] === 350 && stanK.ids.includes(kop.id));
+  const grupa = projekt.grupuj([kol.id, kop.id]);
+  const zGrupa = await czytajSTEP(await projekt.eksportSTEP({ zakres: 'nowe', ids: [kol.id, kop.id] }));
+  sprawdz('grupa → podzłożenie w STEP', zGrupa.length === 2 && zGrupa.every((c) => c.sciezka[c.sciezka.length - 1] === grupa.nazwa),
+          zGrupa.map((c) => c.sciezka.join('/') + '/' + c.nazwa).join(', '));
+  projekt.rozgrupuj([kol.id]);
+  sprawdz('rozgrupowanie: grupa z jedną bryłą znika', projekt.grupy.length === 0 && !projekt.bryla(kop.id).grupa);
+  await projekt.usun([kol.id, kop.id]);
+
   // 9. Strażnik czasu: ciężki boolean przerwany, wątek odtworzony, bryły nietknięte
   const N = TEST.CIEZKI_BOOLEAN_RAMION, pkt = [];
   for (let i = 0; i < N; i++) { const a = 2 * Math.PI * i / N, r = i % 2 ? 90 : 100; pkt.push([r * Math.cos(a), r * Math.sin(a)]); }

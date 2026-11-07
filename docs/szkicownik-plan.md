@@ -122,8 +122,9 @@ przeliczenie układów (punkt mm CAD → m sceny → mm CAD); boolean przerwany 
 z odtworzeniem stanu; szkic: domykanie i wykrywanie samoprzecięć. Istniejący test viewera (`test/run_headless.py`) musi dalej przechodzić.
 
 ## 5. Etapy
-1. Opis i plan (ten plik).
-2. Worker z geometrią, prymitywy, boolean, watchdog, eksport STEP, testy w Node.
-3. Bryły w VR, lista, przesuw/obrót/skala, snap, panel numeryczny, tryb PC.
+1. Opis i plan (ten plik). ✔
+2. Worker z geometrią, prymitywy, boolean, watchdog, eksport STEP, testy w Node. ✔
+3. Bryły w VR, lista, przesuw/obrót/skala, snap, panel numeryczny, tryb PC, kopiowanie i grupy (także części oryginału). ✔
+   Decyzja robocza: po „Wróć do podglądu” nowe bryły zostają widoczne z modelem; przesunięte części oryginału widać tylko w Szkicowniku i w eksporcie (viewer pokazuje plik bez zmian).
 4. Szkic 2D (linie, łuki) i wyciągnięcie.
 5. Cofanie, zapis/odczyt JSON, zapis STEP na Drive.

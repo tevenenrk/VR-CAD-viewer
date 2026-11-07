@@ -111,6 +111,12 @@ const KOMENDY = {
     return { wynik: { ...w, id: idWyniku, lok, srodek, brep }, transfer };
   },
 
+  // kopia gotowej bryły (bez liczenia od nowa)
+  kopiuj({ id, zrodlo }) {
+    zapamietaj(id, lokalna(zrodlo).clone());
+    return { wynik: { id } };
+  },
+
   usun({ ids }) {
     for (const id of ids) { const s = bryly.get(id); if (s) { try { s.delete(); } catch { /* już zwolniony */ } } bryly.delete(id); }
     return { wynik: { liczba: bryly.size } };

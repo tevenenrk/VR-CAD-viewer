@@ -29,6 +29,7 @@ test/screenshot.png
 test/screenshot_vr.png
 test/screenshot_vr_menu.png
 test/screenshot_przekroj.png
+test/screenshot_szk_*.png
 test/index_cap.html
 test/zrzut_*.jpg
 __pycache__/

@@ -73,15 +73,43 @@ Klucz zostaje tylko w tej przeglądarce (ustawienia są osobne na PC i na Quest)
 
 Sprawdzone automatycznie w Chrome i w emulatorze Meta Quest 3 (IWER). Na prawdziwych goglach czeka na test.
 
-## Szkicownik brył (w budowie)
+## Szkicownik brył (w budowie — etap 3 z 5)
 
-Nowy tryb do szybkiego tworzenia brył zastępczych (gabarytów) w goglach, z eksportem do STEP (prawdziwe bryły, nie siatka).
-Plan: `docs/szkicownik-plan.md`. Gotowy jest silnik geometrii (bez interfejsu w goglach): prostopadłościan, walec, kula,
-wyciągnięcie szkicu z linii i łuków, suma / różnica / część wspólna, oryginalne części STEP jako elementy złożenia,
-eksport STEP (tylko nowe / oryginał + nowe / sam oryginał), przerwanie zbyt długiej operacji po 5 s z odtworzeniem brył.
+Tryb do szybkiego tworzenia brył zastępczych (gabarytów) w goglach, z eksportem do STEP (prawdziwe bryły, nie siatka).
+Plan: `docs/szkicownik-plan.md`. Wejście: przycisk **„Szkicownik brył”** w panelu na PC albo w goglach **X → Menu → „Szkicownik brył ▸”**.
+Pierwsze wejście ładuje OpenCascade (23 MB), potem przeglądarka trzyma go w pamięci.
 
-Test silnika (w folderze projektu, wymaga Node.js — tego samego, którym instalowałeś biblioteki do testu viewera):
-`node test/szkicownik_test.mjs`. Zapisuje do folderu `test/` dwa pliki STEP do obejrzenia w SolidWorksie.
+Co już działa: prostopadłościan, walec, kula (wymiary wpisywane liczbą), lista brył (pokaż/ukryj, wybór),
+przesuwanie / obracanie / skalowanie ze snapem (domyślnie 10 mm i 15°), położenie, obrót i skala wpisywane liczbą,
+suma / różnica / część wspólna, kopiowanie, grupy, **przejęcie oryginalnego modelu** jako elementów złożenia
+(można je przesuwać, kopiować i grupować), eksport STEP: wszystko / tylko nowe / sam oryginał / zaznaczone.
+Wczytany model jest półprzezroczystym tłem i Szkicownik pracuje w jego współrzędnych — gabaryty trafią w SolidWorksie na swoje miejsce.
+Zbyt długa operacja (ponad 5 s) jest przerywana, bryły zostają bez zmian.
+
+**Gogle:**
+
+| Przycisk | Działanie |
+|---|---|
+| Spust na bryle | wybierz (bryła w grupie → cała grupa) |
+| Spust w pustym miejscu | odznacz |
+| Grip na bryle (promień) | chwyć i przesuń / obróć ręką — snap po siatce |
+| Grip w pustym miejscu | przesuń całą scenę |
+| Oba gripy | obrót + skala trzymanej bryły (albo sceny) |
+| Prawa gałka ↑↓ | skala całej sceny |
+| A | zrzut ekranu · **X** panel · **Y** reset widoku · **B** (cofanie — etap 5) |
+
+Panel (lewy kontroler): **Bryły** (dodaj, przejmij oryginał, kopiuj, usuń, lista, grupy) · **Edycja** (wymiary, położenie,
+obrót, skala — klik w pole otwiera klawiaturę numeryczną; Suma / Różnica / Część wspólna: wybrana bryła = A, potem wskaż B;
+snap; kolor) · **Plik** (eksport STEP, powrót do podglądu).
+
+**PC (test bez gogli):** panel 3D po prawej stronie ekranu klikasz myszą (klik = spust). Klik w bryłę = wybór, uchwyty
+przesuwu/obrotu/skali (W / E / R), strzałki i PageUp/PageDown = krok siatki (Shift ×10), Q / Shift+Q = obrót o kąt snapu,
++ / − = skala, Del = usuń, Ctrl+D = kopiuj, Ctrl+G = grupuj (Ctrl+Shift+G rozgrupuj), Ctrl+A = zaznacz wszystko,
+Esc = odznacz, cyfry + Enter w klawiaturze numerycznej.
+
+Po „Wróć do podglądu” nowe bryły zostają widoczne razem z modelem; przesunięcia części oryginału widać tylko w Szkicowniku i w eksporcie.
+
+Test silnika (w folderze projektu, Node.js): `node test/szkicownik_test.mjs` — zapisuje do `test/` pliki STEP do obejrzenia w SolidWorksie.
 
 ## Pliki
 
@@ -90,7 +118,7 @@ Test silnika (w folderze projektu, wymaga Node.js — tego samego, którym insta
 - `test/make_test_step.py` – generator złożenia testowego (CadQuery).
 - `szkicownik/` – Szkicownik brył (silnik geometrii, biblioteki w `szkicownik/lib/`).
 - `test/szkicownik_test.mjs` – testy geometrii Szkicownika w Node.
-- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (66 sprawdzeń; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
+- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (95 sprawdzeń, w tym Szkicownik na PC i w emulatorze gogli; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
   `pip install playwright` oraz w folderze projektu
   `npm install --no-save three@0.187.0 occt-import-js@0.0.23 three-mesh-bvh@0.9.16 iwer@2.6.0`.
 

@@ -2,8 +2,9 @@
 // SZKICOWNIK BRYŁ — MODEL PROJEKTU (główny wątek, bez three.js)
 // Lista brył zapisana parametrami (JSON). Wątek geometrii trzyma tylko kopie robocze — po restarcie
 // wątku wszystko jest odtwarzane stąd (odtworzWWatku).
-// Bryła: { id, nazwa, kolor, widoczna, zrodlo: 'nowa'|'oryginal', sciezka: [nazwy podzłożeń],
+// Bryła: { id, nazwa, kolor, widoczna, zrodlo: 'nowa'|'oryginal', sciezka: [nazwy podzłożeń], grupa: id grupy | null,
 //          def, lok, poz, obr, skala, objetosc, ramka }   — mm, stopnie, układ CAD
+// Grupy: [{ id, nazwa }] — w eksporcie STEP grupa = podzłożenie.
 // ============================================================================
 
 // ---------------------------------------------------------------------------
@@ -15,6 +16,8 @@ export const PROJEKT = {
   NAZWY: { prostopadloscian: 'Prostopadłościan', walec: 'Walec', kula: 'Kula', wyciagniecie: 'Wyciągnięcie', boolean: 'Bryła' },
   NAZWA_NOWYCH: 'Szkicownik',     // podzłożenie z nowymi bryłami w eksporcie STEP
   NAZWA_PROJEKTU: 'Szkicownik',   // nazwa złożenia, gdy nie ma oryginału
+  NAZWA_GRUPY: 'Grupa',           // „Grupa 1”, „Grupa 2”…
+  DOPISEK_KOPII: ' (kopia)',
   ZNAK_OPERACJI: { suma: '+', roznica: '−', wspolna: '∩' },
 };
 
@@ -29,6 +32,8 @@ export class Projekt {
     this.silnik = silnik;
     this.przyZmianie = przyZmianie;
     this.bryly = [];
+    this.grupy = [];
+    this.licznikGrup = 0;
     this.oryginal = null;          // { nazwa, bajty, czesci: [{ nazwa, sciezka, kolor, min, max }] }
     this.licznik = 0;
     silnik.odtworzStan = (s) => this.odtworzWWatku(s);
@@ -46,7 +51,7 @@ export class Projekt {
     const b = {
       id, nazwa: opcje.nazwa || `${PROJEKT.NAZWY[def.typ] || 'Bryła'} ${nr}`,
       kolor: opcje.kolor || PROJEKT.KOLORY[(this.licznik - 1) % PROJEKT.KOLORY.length],
-      widoczna: true, zrodlo: 'nowa', sciezka: opcje.sciezka || [PROJEKT.NAZWA_NOWYCH],
+      widoczna: true, zrodlo: 'nowa', sciezka: opcje.sciezka || [PROJEKT.NAZWA_NOWYCH], grupa: null,
       def: kopia(def), lok: w.lok,
       poz: opcje.poz ? [...opcje.poz] : w.srodek, obr: opcje.obr ? [...opcje.obr] : [0, 0, 0], skala: opcje.skala ?? 1,
       objetosc: w.objetosc, ramka: w.ramka,
@@ -65,7 +70,7 @@ export class Projekt {
     const w = await this.silnik.wykonaj('boolean', { idWyniku: id, op, a: { id: A.id, ...transformacja(A) }, b: { id: B.id, ...transformacja(B) } });
     const operand = (x) => ({ nazwa: x.nazwa, def: kopia(x.def), lok: [...x.lok], ...transformacja(x) });
     const wynik = {
-      id, nazwa: A.nazwa, kolor: A.kolor, widoczna: true, zrodlo: A.zrodlo, sciezka: [...A.sciezka],
+      id, nazwa: A.nazwa, kolor: A.kolor, widoczna: true, zrodlo: A.zrodlo, sciezka: [...A.sciezka], grupa: A.grupa || null,
       def: { typ: 'boolean', op, a: operand(A), b: operand(B) },
       lok: w.lok, poz: w.srodek, obr: [0, 0, 0], skala: 1,
       objetosc: w.objetosc, ramka: w.ramka, brep: w.brep,
@@ -74,9 +79,81 @@ export class Projekt {
     this.bryly = this.bryly.filter((b) => b !== A && b !== B);
     this.bryly.splice(Math.min(i, this.bryly.length), 0, wynik);
     await this.silnik.wykonaj('usun', { ids: [A.id, B.id] });
+    this.sprzatnijGrupy();
     this.przyZmianie('usunieto', { ids: [A.id, B.id] });
     this.przyZmianie('dodano', { bryla: wynik, siatka: w.siatka });
     return wynik;
+  }
+
+  // ---- zmiana wymiarów (nowa definicja tej samej bryły; położenie, obrót i skala zostają) ----
+  async zmienDef(id, def) {
+    const b = this.bryla(id);
+    if (!b) throw new Error('Brak bryły');
+    const w = await this.silnik.wykonaj('zbuduj', { id, def, wysrodkuj: true });
+    b.def = kopia(def); b.lok = w.lok; b.objetosc = w.objetosc; b.ramka = w.ramka; delete b.brep;
+    this.przyZmianie('przebudowano', { bryla: b, siatka: w.siatka });
+    return b;
+  }
+
+  // ---- kopie (w wątku: kopia gotowej bryły, bez liczenia od nowa) ----
+  async kopiuj(ids, przesuniecie = [0, 0, 0]) {
+    const zrodla = [].concat(ids).map((id) => this.bryla(id)).filter(Boolean);
+    if (!zrodla.length) throw new Error('Wybierz bryłę do skopiowania');
+    const grupyZrodel = new Set(zrodla.map((b) => b.grupa));
+    const nowaGrupa = grupyZrodel.size === 1 && zrodla[0].grupa && zrodla.length > 1 ? this.nowaGrupa() : null;
+    const kopie = [];
+    for (const z of zrodla) {
+      const id = this.nowyId();
+      await this.silnik.wykonaj('kopiuj', { id, zrodlo: z.id });
+      const b = { ...kopia({ ...z, brep: undefined }), id, nazwa: z.nazwa + PROJEKT.DOPISEK_KOPII,
+                  poz: z.poz.map((v, i) => v + przesuniecie[i]), grupa: nowaGrupa ? nowaGrupa.id : null };
+      if (z.brep) b.brep = z.brep;
+      this.bryly.push(b);
+      kopie.push(b);
+      this.przyZmianie('skopiowano', { bryla: b, zrodloId: z.id });
+    }
+    return kopie;
+  }
+
+  // ---- grupy ----
+  nowaGrupa(nazwa) {
+    const g = { id: 'g' + (++this.licznikGrup), nazwa: nazwa || `${PROJEKT.NAZWA_GRUPY} ${this.licznikGrup}` };
+    this.grupy.push(g);
+    return g;
+  }
+  grupa(id) { return this.grupy.find((g) => g.id === id) || null; }
+  czlonkowie(idGrupy) { return this.bryly.filter((b) => b.grupa === idGrupy); }
+
+  grupuj(ids, nazwa) {
+    const lista = [].concat(ids).map((id) => this.bryla(id)).filter(Boolean);
+    if (lista.length < 2) throw new Error('Do grupy wybierz co najmniej dwie bryły');
+    const g = this.nowaGrupa(nazwa);
+    lista.forEach((b) => { b.grupa = g.id; });
+    this.sprzatnijGrupy();
+    this.przyZmianie('grupy', {});
+    return g;
+  }
+
+  rozgrupuj(ids) {
+    [].concat(ids).map((id) => this.bryla(id)).filter(Boolean).forEach((b) => { b.grupa = null; });
+    this.sprzatnijGrupy();
+    this.przyZmianie('grupy', {});
+  }
+
+  sprzatnijGrupy() {                       // grupa z mniej niż dwiema bryłami przestaje istnieć
+    for (const g of [...this.grupy]) {
+      const cz = this.czlonkowie(g.id);
+      if (cz.length < 2) { cz.forEach((b) => { b.grupa = null; }); this.grupy = this.grupy.filter((x) => x !== g); }
+    }
+  }
+
+  ustawWlasciwosci(id, { nazwa, kolor, widoczna }) {
+    const b = this.bryla(id);
+    if (!b) return;
+    if (nazwa !== undefined) b.nazwa = nazwa;
+    if (kolor !== undefined) b.kolor = kolor;
+    if (widoczna !== undefined) b.widoczna = widoczna;
+    this.przyZmianie('zmieniono', { bryla: b });
   }
 
   // ---- zmiany bez udziału wątku geometrii ----
@@ -93,6 +170,7 @@ export class Projekt {
     const lista = [].concat(ids);
     this.bryly = this.bryly.filter((b) => !lista.includes(b.id));
     await this.silnik.wykonaj('usun', { ids: lista });
+    this.sprzatnijGrupy();
     this.przyZmianie('usunieto', { ids: lista });
   }
 
@@ -121,7 +199,7 @@ export class Projekt {
       const w = wyniki[k];
       const b = {
         id: n.id, nazwa: n.nazwa, kolor: (n.g.czesc && n.g.czesc.kolor) || PROJEKT.KOLORY[0], widoczna: true,
-        zrodlo: 'oryginal', sciezka: n.g.czesc ? [...n.g.czesc.sciezka] : [], indeksCzesci: n.g.indeksCzesci,
+        zrodlo: 'oryginal', sciezka: n.g.czesc ? [...n.g.czesc.sciezka] : [], indeksCzesci: n.g.indeksCzesci, grupa: null,
         def: { typ: 'oryginal', indeksy: n.g.indeksy }, lok: w.lok, poz: w.srodek, obr: [0, 0, 0], skala: 1,
         objetosc: w.objetosc, ramka: w.ramka,
       };
@@ -147,6 +225,8 @@ export class Projekt {
     for (const b of lista) {
       let sciezka = b.zrodlo === 'oryginal' ? b.sciezka.slice(obetnij) : b.sciezka;
       if (!oryg.length && sciezka[0] === PROJEKT.NAZWA_NOWYCH) sciezka = sciezka.slice(1);   // bez oryginału: nowe bryły od razu w złożeniu
+      const g = b.grupa && this.grupa(b.grupa);
+      if (g) sciezka = [...sciezka, g.nazwa];                                                 // grupa = podzłożenie
       let w = root;
       for (const n of sciezka) {
         let d = w.dzieci.find((x) => x.dzieci && x.nazwa === n);
@@ -168,6 +248,7 @@ export class Projekt {
     return {
       wersja: PROJEKT.WERSJA_PLIKU, jednostki: 'mm',
       oryginal: this.oryginal ? { nazwa: this.oryginal.nazwa } : null,
+      grupy: kopia(this.grupy),
       bryly: this.bryly.map(({ brep, objetosc, ramka, ...b }) => kopia(b)),
     };
   }
