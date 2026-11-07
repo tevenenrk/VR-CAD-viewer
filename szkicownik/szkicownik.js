@@ -22,13 +22,12 @@ export const SZK = {
   KATY_DEG: [5, 15, 45, 90],
   SKALA_KROK: 0.05,               // snap skali
   SKALA_MIN: 0.05, SKALA_MAX: 50,
-  DOMYSLNE: {                     // wymiary nowych brył (mm) — potem pamiętane ostatnio wpisane
-    prostopadloscian: { dx: 100, dy: 100, dz: 100 },
-    walec: { d: 100, h: 100 },
-    kula: { d: 100 },
-  },
-  ODLEGLOSC_NOWEJ_M: 0.45,        // nowa bryła w goglach: tyle przed oczami
-  PRZESUNIECIE_KOPII_MM: 50,      // kopia pojawia się obok oryginału (w X)
+  PRZESUNIECIE_KOPII_MM: 50,      // kopia z panelu / Ctrl+D pojawia się obok oryginału (w X); kopia prawym spustem — w miejscu
+  KOLOR_PODGLADU: 0x00c7be,       // rozciągana bryła i punkt na czubku kontrolera
+  KOLOR_PUNKTU: 0xffd60a,         // punkt na bryle pod promieniem (tu złapiesz)
+  KOLOR_CHWYTU: 0x34c759,         // punkt, za który trzymasz bryłę
+  ZNACZNIK_ROZMIAR: 0.011,        // promień znacznika jako ułamek odległości od oczu …
+  ZNACZNIK_MIN_M: 0.004, ZNACZNIK_MAX_M: 0.03, // … w granicach (m)
   TLO_PRZEZROCZYSTOSC: 0.22,      // przezroczystość modelu z viewera jako tła
   KOLOR_WYBRANEJ: 0xff7a00, JASNOSC_WYBRANEJ: 0.45,
   KOLOR_NAD: 0x1aa3ff, JASNOSC_NAD: 0.3,
@@ -97,7 +96,9 @@ export class Szkicownik {
     this.zajety = false;
     this.msg = ''; this.msgCzas = 0;
     this.ostatniEksport = null;
-    this.ostatnieWymiary = JSON.parse(JSON.stringify(SZK.DOMYSLNE));
+    this.narzedzie = 'wybierz';    // wybierz | prostopadloscian | walec | kula
+    this.tworzenie = null;         // rozciągana bryła: { typ, A, B, zrodlo, naPlaszczyznie, plaszczyzna, ksztalt }
+    this.podglad = null;
     this.hoverPanelu = null;
     this.ukryjPanelKlatek = 0;
     this.dwieRece = null;
@@ -115,6 +116,31 @@ export class Szkicownik {
 
     this.panel = new Panel3D(THREE);
     this.etykieta = this.utworzEtykiete();
+    this.znaczniki = [0, 1, 2, 3].map(() => this.utworzZnacznik());   // dla każdej ręki: punkt na bryle + czubek
+  }
+
+  // Wyraźny punkt: kolorowa kulka z ciemną obwódką, zawsze widoczna (także przez bryły)
+  utworzZnacznik() {
+    const g = new THREE.Group();
+    const geo = new THREE.SphereGeometry(1, 20, 12);
+    const wnetrze = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true }));
+    const obwodka = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x111111, side: THREE.BackSide, depthTest: false, transparent: true }));
+    obwodka.scale.setScalar(1.45);
+    wnetrze.renderOrder = 998; obwodka.renderOrder = 997;
+    g.add(obwodka, wnetrze);
+    g.visible = false;
+    g.userData.kolor = wnetrze.material.color;
+    return g;
+  }
+
+  ustawZnacznik(z, pW, kolor) {
+    if (!pW) { z.visible = false; return; }
+    if (z.parent !== this.api.scene) this.api.scene.add(z);
+    z.position.copy(pW);
+    const oko = this.api.viewCamera().getWorldPosition(new THREE.Vector3());
+    z.scale.setScalar(Math.min(SZK.ZNACZNIK_MAX_M, Math.max(SZK.ZNACZNIK_MIN_M, oko.distanceTo(pW) * SZK.ZNACZNIK_ROZMIAR)));
+    z.userData.kolor.setHex(kolor);
+    z.visible = true;
   }
 
   // ==========================================================================
@@ -146,6 +172,8 @@ export class Szkicownik {
     this.wylaczPC();
     this.panel.mesh.removeFromParent();
     this.etykieta.sprite.visible = false;
+    this.znaczniki.forEach((z) => { z.visible = false; });
+    this.przerwijTworzenie();
     for (const c of this.api.controllers) if (c.userData.szk) c.userData.szk.chwyt = null;
     this.dwieRece = null;
     // nowe bryły zostają widoczne w podglądzie; przejęte części oryginału pokazuje znów viewer
@@ -443,38 +471,138 @@ export class Szkicownik {
     finally { this.zajety = false; }
   }
 
-  dodajPrymityw(typ) {
-    const wym = this.ostatnieWymiary[typ];
-    this.otworzNumpad({
-      tytul: 'Nowa bryła: ' + PROJEKT.NAZWY[typ],
-      pola: polaTypu(typ, this.api.upAxis).map(([k, et]) => ({ klucz: k, etykieta: et, wartosc: wym[k], jednostka: 'mm', dodatnia: true })),
-      gotowe: (w) => {
-        this.ostatnieWymiary[typ] = { ...w };
-        // walec ma oś Y; w pliku z osią Z w górę obracamy go o 90°, żeby stał pionowo
-        const obr = typ === 'walec' && this.api.upAxis === 'Z' ? [90, 0, 0] : [0, 0, 0];
-        return this.zadanie('Tworzę bryłę…', async () => {
-          const b = await this.projekt.dodaj(defZPol(typ, w), { poz: this.punktNowej(), obr });
-          this.wiele = false; this.wybierz(b.id);
-          this.powiedz(`Dodano: ${b.nazwa}`);
-          return b;
-        });
-      },
+  // ==========================================================================
+  // TWORZENIE BRYŁ ROZCIĄGANIEM (jak w Gravity Sketch): spust w punkcie A, przeciągnij do B, puść
+  // ==========================================================================
+  ustawNarzedzie(n) {
+    this.narzedzie = n;
+    this.przerwijTworzenie();
+    this.przypnijUchwyty();
+    const vr = this.api.renderer.xr.isPresenting;
+    this.powiedz(n === 'wybierz' ? 'Narzędzie: wybierz / chwyć'
+      : `${PROJEKT.NAZWY[n]}: ` + (vr ? 'spust w punkcie początkowym, przeciągnij, puść' : 'przeciągnij myszą (Esc = wybierz)'));
+  }
+
+  osGoryIndeks() { return this.api.upAxis === 'Z' ? 2 : 1; }
+  krok() { return this.snap.wl ? this.snap.siatka : 1; }
+  naSiatke(p) { const g = this.krok(); return p.map((v) => Math.round(v / g) * g); }
+  swiatDoCad(pW) { this.root.updateMatrixWorld(true); return this.root.worldToLocal(pW.clone()).toArray(); }
+  cadDoSwiata(p) { this.root.updateMatrixWorld(true); return this.root.localToWorld(new THREE.Vector3(...p)); }
+  czubek(c) { const v = new THREE.Vector3(); return c.userData.tip ? c.userData.tip.getWorldPosition(v) : c.getWorldPosition(v); }
+
+  // Bryła z dwóch punktów (mm CAD, na siatce). naPlaszczyznie = PC: B leży na płaszczyźnie startu, wysokość dobierana sama
+  ksztaltZPunktow(typ, A, B, naPlaszczyznie) {
+    const g = this.krok();
+    const u = this.osGoryIndeks(), [h0, h1] = [0, 1, 2].filter((i) => i !== u);
+    const d = [0, 1, 2].map((i) => B[i] - A[i]);
+    if (Math.max(...d.map(Math.abs)) < g * 0.999) return null;     // jeszcze nie rozciągnięto
+    const zaokr = (v) => Math.max(g, Math.round(Math.abs(v) / g) * g);
+    if (typ === 'prostopadloscian') {
+      if (naPlaszczyznie) d[u] = Math.min(Math.abs(d[h0]) || g, Math.abs(d[h1]) || g);
+      const w = d.map(zaokr);
+      const poz = [0, 1, 2].map((i) => A[i] + Math.sign(d[i] || 1) * w[i] / 2);
+      return { def: { typ, dx: w[0], dy: w[1], dz: w[2] }, poz, obr: [0, 0, 0], opis: `${fmt(w[0])} × ${fmt(w[1])} × ${fmt(w[2])} mm` };
+    }
+    if (typ === 'walec') {                       // A = środek podstawy, odległość w poziomie = promień, w pionie = wysokość
+      const D = zaokr(2 * Math.hypot(d[h0], d[h1]));
+      const plaski = naPlaszczyznie || Math.abs(d[u]) < g;
+      const h = plaski ? D : zaokr(d[u]);
+      const poz = [...A]; poz[u] += (plaski ? 1 : Math.sign(d[u])) * h / 2;
+      return { def: { typ, r: D / 2, h }, poz, obr: u === 2 ? [90, 0, 0] : [0, 0, 0], opis: `Ø${fmt(D)} × ${fmt(h)} mm` };
+    }
+    const D = zaokr(2 * Math.hypot(...d));       // kula: A = środek, odległość = promień
+    const poz = [...A]; if (naPlaszczyznie) poz[u] += D / 2;
+    return { def: { typ: 'kula', r: D / 2 }, poz, obr: [0, 0, 0], opis: `Ø${fmt(D)} mm` };
+  }
+
+  zacznijTworzenie(A, zrodlo, naPlaszczyznie = false, plaszczyzna = null) {
+    this.tworzenie = { typ: this.narzedzie, A, B: [...A], zrodlo, naPlaszczyznie, plaszczyzna, ksztalt: null };
+    if (this.pc.tc) this.pc.tc.detach();
+    this.pokazPodglad();
+  }
+
+  ciagnijTworzenie(B) {
+    const t = this.tworzenie;
+    if (!t) return;
+    t.B = B;
+    t.ksztalt = this.ksztaltZPunktow(t.typ, t.A, B, t.naPlaszczyznie);
+    this.pokazPodglad();
+  }
+
+  zakonczTworzenie() {
+    const t = this.tworzenie;
+    this.tworzenie = null;
+    this.pokazPodglad();
+    if (!t) return null;
+    if (!t.ksztalt) { this.powiedz('Za krótko — przeciągnij dalej, żeby nadać wymiar'); this.przypnijUchwyty(); return null; }
+    const k = t.ksztalt;
+    return this.zadanie(null, async () => {
+      const b = await this.projekt.dodaj(k.def, { poz: k.poz, obr: k.obr });
+      this.wiele = false; this.zazn = [b.id]; this.prowadzaca = b.id; this.przypnijUchwyty();
+      this.powiedz(`Dodano: ${b.nazwa}  ${k.opis}`);
+      return b;
     });
   }
 
-  // Gdzie postawić nową bryłę: w goglach przed oczami, na PC w środku obrotu kamery (mm CAD, na siatce)
-  punktNowej() {
-    const a = this.api;
-    const p = new THREE.Vector3();
-    if (a.renderer.xr.isPresenting) {
-      const cam = a.renderer.xr.getCamera();
-      cam.getWorldPosition(p);
-      p.add(new THREE.Vector3(0, 0, -SZK.ODLEGLOSC_NOWEJ_M).applyQuaternion(cam.getWorldQuaternion(new THREE.Quaternion())));
-    } else p.copy(a.controls.target);
-    this.root.updateMatrixWorld(true);
-    this.root.worldToLocal(p);
-    const g = this.snap.siatka;
-    return p.toArray().map((v) => Math.round(v / g) * g);
+  przerwijTworzenie() { this.tworzenie = null; this.pokazPodglad(); }
+
+  pokazPodglad() {
+    if (!this.podglad) {
+      const mat = new THREE.MeshBasicMaterial({ color: SZK.KOLOR_PODGLADU, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
+      const geo = { prostopadloscian: new THREE.BoxGeometry(1, 1, 1), walec: new THREE.CylinderGeometry(1, 1, 1, 48), kula: new THREE.SphereGeometry(1, 32, 16) };
+      const kr = { prostopadloscian: new THREE.EdgesGeometry(geo.prostopadloscian), walec: new THREE.EdgesGeometry(geo.walec, 30), kula: null };
+      const mesh = new THREE.Mesh(geo.prostopadloscian, mat);
+      const lin = new THREE.LineSegments(kr.prostopadloscian, new THREE.LineBasicMaterial({ color: SZK.KOLOR_PODGLADU }));
+      const grupa = new THREE.Group();
+      grupa.add(mesh, lin);
+      grupa.visible = false;
+      this.podglad = { grupa, mesh, lin, geo, kr };
+    }
+    const P = this.podglad, k = this.tworzenie && this.tworzenie.ksztalt;
+    if (P.grupa.parent !== this.root) this.root.add(P.grupa);
+    P.grupa.visible = !!k;
+    if (!k) return;
+    const d = k.def;
+    P.mesh.geometry = P.geo[d.typ];
+    P.lin.visible = !!P.kr[d.typ];
+    if (P.kr[d.typ]) P.lin.geometry = P.kr[d.typ];
+    if (d.typ === 'prostopadloscian') P.grupa.scale.set(d.dx, d.dy, d.dz);
+    else if (d.typ === 'walec') P.grupa.scale.set(d.r, d.h, d.r);
+    else P.grupa.scale.setScalar(d.r);
+    P.grupa.position.fromArray(k.poz);
+    P.grupa.rotation.set(k.obr[0] * DEG, k.obr[1] * DEG, k.obr[2] * DEG);
+  }
+
+  // ==========================================================================
+  // TRZYMANA BRYŁA: prawy spust = kopia w miejscu, A = usuń
+  // ==========================================================================
+  trzymane() {
+    for (const c of this.api.controllers) { const cel = c.userData.szk && c.userData.szk.chwyt; if (cel && cel.typ === 'bryly') return cel; }
+    return null;
+  }
+
+  kopiujTrzymane() {
+    const cel = this.trzymane();
+    if (!cel) return null;
+    return this.zadanie(null, async () => {
+      const k = await this.projekt.kopiuj(cel.ids, [0, 0, 0]);
+      this.powiedz(`Kopia zostaje w miejscu: ${k.map((b) => b.nazwa).join(', ')}`);
+      return k;
+    });
+  }
+
+  usunTrzymane() {
+    const cel = this.trzymane();
+    if (!cel) return null;
+    for (const c of this.api.controllers) if (c.userData.szk && c.userData.szk.chwyt === cel) c.userData.szk.chwyt = null;
+    this.dwieRece = null;
+    const ids = cel.ids.filter((id) => this.bryla(id));
+    return this.zadanie(null, async () => {
+      await this.projekt.usun(ids);
+      this.zazn = this.zazn.filter((x) => !ids.includes(x));
+      this.przypnijUchwyty();
+      this.powiedz(`Usunięto: ${ids.length} (cofanie będzie w etapie 5)`);
+    });
   }
 
   zmienWymiar(b) {
@@ -571,25 +699,47 @@ export class Szkicownik {
     if (this.projekt && this.projekt.oryginal) { this.powiedz('Oryginał jest już przejęty'); return null; }
     return this.zadanie('Przejmuję oryginał (odczyt brył STEP)…', async () => {
       const bajty = new Uint8Array(await a.lastFile.blob.arrayBuffer());
+      const widoczna = (o) => { for (let x = o; x; x = x.parent) if (!x.visible) return false; return true; };
+      const widoczne = a.parts.map((p) => widoczna(p.mesh));
+      // kopie zrobione w podglądzie nie mają własnych brył w pliku — ramka „nigdzie”, dodane niżej jako kopie
       const czesci = a.parts.map((p) => {
         const bb = p.mesh.geometry.boundingBox;
+        const kopia = !!p.kopia;
         return { nazwa: p.name, sciezka: p.path.slice(0, -1), kolor: '#' + mats(p.mesh)[0].color.getHexString(),
-                 min: bb.min.toArray().map((v) => v * 1000), max: bb.max.toArray().map((v) => v * 1000) };
+                 min: kopia ? [Infinity, Infinity, Infinity] : bb.min.toArray().map((v) => v * 1000),
+                 max: kopia ? [-Infinity, -Infinity, -Infinity] : bb.max.toArray().map((v) => v * 1000) };
       });
       const w = await this.projekt.wczytajOryginal(bajty, czesci, a.modelName);
-      // części przesunięte wcześniej w podglądzie (chwyt) zachowują to położenie
+      // położenie z podglądu (część przesunięta chwytem): H = M[mm] · przesunięcie(−lok)
+      const S = new THREE.Matrix4().makeScale(1000, 1000, 1000), Si = new THREE.Matrix4().makeScale(0.001, 0.001, 0.001);
+      const zPodgladu = (b, mesh) => {
+        mesh.updateMatrix();
+        const H = S.clone().multiply(mesh.matrix).multiply(Si).multiply(new THREE.Matrix4().makeTranslation(-b.lok[0], -b.lok[1], -b.lok[2]));
+        this.projekt.ustawTransformacje(b.id, this.zMacierzy(H));
+      };
       const I = new THREE.Matrix4();
       for (const b of w.bryly) {
         const p = b.indeksCzesci >= 0 && a.parts[b.indeksCzesci];
         if (!p) continue;
         p.mesh.updateMatrix();
-        if (p.mesh.matrix.equals(I)) continue;
-        const S = new THREE.Matrix4().makeScale(1000, 1000, 1000), Si = new THREE.Matrix4().makeScale(0.001, 0.001, 0.001);
-        const Mmm = S.multiply(p.mesh.matrix).multiply(Si);
-        const H = Mmm.multiply(new THREE.Matrix4().makeTranslation(-b.lok[0], -b.lok[1], -b.lok[2]));
-        this.projekt.ustawTransformacje(b.id, this.zMacierzy(H));
+        if (!p.mesh.matrix.equals(I)) zPodgladu(b, p.mesh);
+        if (!widoczne[b.indeksCzesci]) this.projekt.ustawWlasciwosci(b.id, { widoczna: false });
       }
-      this.powiedz(`Przejęto ${w.bryly.length} części` + (w.niedopasowane ? ` (bez nazwy: ${w.niedopasowane})` : ''));
+      let kopii = 0;
+      for (let i = 0; i < a.parts.length; i++) {
+        const p = a.parts[i];
+        if (!p.kopia || !p.mesh.userData.kopiaZ) continue;
+        const iz = a.parts.findIndex((x) => x.mesh === p.mesh.userData.kopiaZ);
+        const zr = w.bryly.find((b) => b.indeksCzesci === iz) || this.projekt.bryly.find((b) => b.zrodlo === 'oryginal' && b.indeksCzesci === iz);
+        if (!zr) continue;
+        const [k] = await this.projekt.kopiuj([zr.id], [0, 0, 0]);
+        k.nazwa = p.name; k.indeksCzesci = i;
+        zPodgladu(k, p.mesh);
+        if (!widoczne[i]) this.projekt.ustawWlasciwosci(k.id, { widoczna: false });
+        kopii++;
+      }
+      this.ukryjPrzejete();
+      this.powiedz(`Przejęto ${w.bryly.length} części` + (kopii ? ` + ${kopii} kopii` : '') + (w.niedopasowane ? ` (bez nazwy: ${w.niedopasowane})` : ''));
       return w;
     });
   }
@@ -671,7 +821,9 @@ export class Szkicownik {
     if (!traf) return { typ: 'scena' };
     if (!this.zazn.includes(traf.id)) { const w = this.wiele; this.wiele = false; this.wybierz(traf.id); this.wiele = w; }
     const ids = [traf.id, ...this.zazn.filter((x) => x !== traf.id)];
-    return { typ: 'bryly', ids };
+    const w = this.wezly.get(traf.id);
+    w.holder.updateMatrixWorld(true);
+    return { typ: 'bryly', ids, punktLok: w.holder.worldToLocal(traf.point.clone()) };
   }
 
   migawka(cel) {
@@ -693,7 +845,8 @@ export class Szkicownik {
       const glowna = a.isMain(c);
 
       if (a.buttonPressedEdge(c, B.AX)) {
-        if (glowna) { this.ukryjPanelKlatek = 2; a.requestScreenshot(); }
+        if (glowna && this.trzymane()) { this.usunTrzymane(); a.pulse(c, 0.6, 40); }
+        else if (glowna) { this.ukryjPanelKlatek = 2; a.requestScreenshot(); }
         else { this.panelWidoczny = !this.panelWidoczny; }
       }
       if (a.buttonPressedEdge(c, B.BY)) {
@@ -733,10 +886,30 @@ export class Szkicownik {
           this.akcja(s.hover); a.pulse(c, 0.3, 20);
           if (!this.aktywny) return;             // „Wróć do podglądu” — dalej steruje viewer
         }
+        else if (glowna && this.trzymane()) { this.kopiujTrzymane(); a.pulse(c, 0.6, 40); }
+        else if (this.narzedzie !== 'wybierz' && !this.tworzenie && !this.numpad) {
+          if (this.gotowy()) this.zacznijTworzenie(this.naSiatke(this.swiatDoCad(this.czubek(c))), c);
+        }
         else if (s.traf) { this.wybierz(s.traf.id); a.pulse(c, 0.3, 20); }
         else if (!this.numpad) this.odznacz();
       }
+      if (this.tworzenie && this.tworzenie.zrodlo === c) {
+        if (u.selecting) this.ciagnijTworzenie(this.naSiatke(this.swiatDoCad(this.czubek(c))));
+        else this.zakonczTworzenie();
+      }
       s.trigPrev = u.selecting;
+
+      // znaczniki: punkt na bryle (pod promieniem / trzymany) i czubek kontrolera przy tworzeniu
+      const i = a.controllers.indexOf(c);
+      let pB = null, kB = SZK.KOLOR_PUNKTU;
+      if (s.chwyt && s.chwyt.typ === 'bryly' && s.chwyt.punktLok) {
+        const w = this.wezly.get(s.chwyt.ids[0]);
+        if (w) { w.holder.updateMatrixWorld(true); pB = w.holder.localToWorld(s.chwyt.punktLok.clone()); kB = SZK.KOLOR_CHWYTU; }
+      } else if (s.traf && !s.hover) pB = s.traf.point;
+      this.ustawZnacznik(this.znaczniki[i * 2], pB, kB);
+      const tworzy = this.narzedzie !== 'wybierz' && !s.hover && !s.chwyt;
+      const pT = !tworzy ? null : this.cadDoSwiata(this.tworzenie && this.tworzenie.zrodlo === c ? this.tworzenie.B : this.naSiatke(this.swiatDoCad(this.czubek(c))));
+      this.ustawZnacznik(this.znaczniki[i * 2 + 1], pT, SZK.KOLOR_PODGLADU);
     }
     this.hoverPanelu = a.controllers.map((c) => c.userData.szk && c.userData.szk.hover).find(Boolean) || null;
     this.nad = a.controllers.map((c) => c.userData.szk && c.userData.szk.traf && c.userData.szk.traf.id).find(Boolean) || null;
@@ -833,6 +1006,22 @@ export class Szkicownik {
       const h = this.rc.intersectObject(this.panel.mesh, false)[0];
       return h ? this.panel.idPodUV(h.uv) || 'panel' : null;
     };
+    // punkt promienia myszy na poziomej płaszczyźnie (układ CAD, oś góry u na wysokości h)
+    const naPlaszczyznie = (pl) => {
+      const o = this.swiatDoCad(this.rc.ray.origin), q = this.swiatDoCad(this.rc.ray.origin.clone().add(this.rc.ray.direction));
+      const d = q.map((v, i) => v - o[i]);
+      if (Math.abs(d[pl.u]) < 1e-9) return null;
+      const t = (pl.h - o[pl.u]) / d[pl.u];
+      if (t < 0) return null;
+      const p = this.naSiatke(o.map((v, i) => v + d[i] * t));
+      p[pl.u] = pl.h;
+      return p;
+    };
+    // płaszczyzna tworzenia: wierzch wskazanej bryły albo poziom środka obrotu kamery
+    const plaszczyznaPod = (traf) => {
+      const u = this.osGoryIndeks();
+      return { u, h: traf ? this.swiatDoCad(traf.point)[u] : this.naSiatke(this.swiatDoCad(a.controls.target))[u] };
+    };
     const n = {
       down: (e) => {
         promien(e);
@@ -841,21 +1030,44 @@ export class Szkicownik {
         if (id) {
           e.stopImmediatePropagation(); e.preventDefault();
           if (id !== 'panel') this.akcja(id);
+          return;
+        }
+        if (this.narzedzie !== 'wybierz' && e.button === 0 && !this.numpad && this.gotowy()) {
+          const pl = plaszczyznaPod(this.trafBryle(this.rc));
+          const A = naPlaszczyznie(pl);
+          if (A) { this.zacznijTworzenie(A, 'pc', true, pl); e.stopImmediatePropagation(); e.preventDefault(); }
         }
       },
       move: (e) => {
         promien(e);
+        if (this.tworzenie && this.tworzenie.zrodlo === 'pc') {
+          const B = naPlaszczyznie(this.tworzenie.plaszczyzna);
+          if (B) this.ciagnijTworzenie(B);
+          this.ustawZnacznik(this.znaczniki[1], this.cadDoSwiata(this.tworzenie.B), SZK.KOLOR_PODGLADU);
+          return;
+        }
         const id = panelPod();
         this.hoverPanelu = id && id !== 'panel' ? id : null;
         const t = id ? null : this.trafBryle(this.rc);
         this.nad = t ? t.id : null;
+        this.ustawZnacznik(this.znaczniki[0], t && this.narzedzie === 'wybierz' ? t.point : null, SZK.KOLOR_PUNKTU);
+        const p = !id && this.narzedzie !== 'wybierz' ? naPlaszczyznie(plaszczyznaPod(t)) : null;
+        this.ustawZnacznik(this.znaczniki[1], p ? this.cadDoSwiata(p) : null, SZK.KOLOR_PODGLADU);
       },
       up: (e) => {
+        if (this.tworzenie && this.tworzenie.zrodlo === 'pc') {
+          this.pc.mysz = null;
+          this.zakonczTworzenie();
+          this.ustawZnacznik(this.znaczniki[1], null);
+          return;
+        }
         const m = this.pc.mysz;
         this.pc.mysz = null;
+
         if (!m || m.panel || this.pc.przeciaganie || e.button !== 0) return;
         if (Math.hypot(e.clientX - m.x, e.clientY - m.y) > 5) return;
         if (this.pc.tc.axis) return;                // klik w uchwyt
+        if (this.narzedzie !== 'wybierz') return;
         promien(e);
         const t = this.trafBryle(this.rc);
         if (t) this.wybierz(t.id); else if (!this.numpad) this.odznacz();
@@ -882,6 +1094,8 @@ export class Szkicownik {
     if (this.pc.tc) { this.pc.tc.detach(); this.pc.helper.removeFromParent(); }
     a.controls.enabled = true;
     this.hoverPanelu = null; this.nad = null;
+    if (this.tworzenie && this.tworzenie.zrodlo === 'pc') this.przerwijTworzenie();
+    this.znaczniki.forEach((z) => { z.visible = false; });
   }
 
   ustawSnapUchwytow() {
@@ -895,7 +1109,7 @@ export class Szkicownik {
   przypnijUchwyty() {
     const tc = this.pc.tc;
     if (!tc || !this.pc.wlaczony) return;
-    const b = this.zazn.length === 1 ? this.bryla(this.zazn[0]) : null;
+    const b = this.zazn.length === 1 && this.narzedzie === 'wybierz' ? this.bryla(this.zazn[0]) : null;
     const w = b && this.wezly.get(b.id);
     if (w) tc.attach(w.holder); else tc.detach();
   }
@@ -948,7 +1162,7 @@ export class Szkicownik {
     else if (ctrl && (k === 'd' || k === 'D')) this.kopiuj();
     else if (ctrl && (k === 'g' || k === 'G')) { if (e.shiftKey) this.rozgrupuj(); else this.grupuj(); }
     else if (ctrl && (k === 'a' || k === 'A')) { this.zazn = this.projekt.bryly.filter((b) => b.widoczna).map((b) => b.id); this.przypnijUchwyty(); }
-    else if (k === 'Escape') this.odznacz();
+    else if (k === 'Escape') { if (this.tworzenie) this.przerwijTworzenie(); else if (this.narzedzie !== 'wybierz') this.ustawNarzedzie('wybierz'); else this.odznacz(); }
     else if (ctrl && (k === 'z' || k === 'Z')) this.powiedz('Cofanie będzie w etapie 5');
     else return;
     e.preventDefault(); e.stopImmediatePropagation();
@@ -1006,7 +1220,8 @@ export class Szkicownik {
     if (this.msg) return this.msg;
     if (this.oczekujeB) return `${NAZWY_OP[this.oczekujeB.op]}: wskaż bryłę B spustem`;
     if (this.zajety) return 'Liczę…';
-    return 'Spust: wybierz · Grip: chwyć · X: panel · A: zrzut';
+    if (this.narzedzie !== 'wybierz') return this.api.renderer.xr.isPresenting ? 'Spust w punkcie A → przeciągnij → puść' : 'Przeciągnij myszą po płaszczyźnie · Esc = wybierz';
+    return 'Spust: wybierz · Grip: chwyć (prawy spust = kopia, A = usuń)';
   }
 
   uklad() {
@@ -1023,8 +1238,9 @@ export class Szkicownik {
     const a = this.api, P = PANEL.PAD, W = PANEL.W;
     const lista = this.projekt ? this.projekt.bryly : [];
     const brak = !this.zazn.length;
-    U.etykieta(116, 'Dodaj bryłę (wymiary wpiszesz liczbą)');
-    U.rzad(154, 92, [{ id: 'dodaj:prostopadloscian', text: 'Prostopadłościan', flex: 1.4 }, { id: 'dodaj:walec', text: 'Walec' }, { id: 'dodaj:kula', text: 'Kula' }]);
+    U.etykieta(116, 'Narzędzie (spust): rozciągnij bryłę od punktu do punktu');
+    U.rzad(154, 92, [['wybierz', 'Wybierz'], ['prostopadloscian', 'Prostopadłościan'], ['walec', 'Walec'], ['kula', 'Kula']]
+      .map(([id, text]) => ({ id: 'narz:' + id, text, active: this.narzedzie === id, flex: id === 'prostopadloscian' ? 1.6 : 1 })));
     const moznaPrzejac = !!(a.cadRoot && a.lastFile && !(this.projekt && this.projekt.oryginal));
     U.rzad(258, 86, [{ id: 'oryginal', text: this.projekt && this.projekt.oryginal ? 'Oryginał przejęty' : 'Przejmij oryginał', disabled: !moznaPrzejac, flex: 1.4 },
                      { id: 'kopiuj', text: 'Kopiuj', disabled: brak }, { id: 'usun', text: 'Usuń', disabled: brak }]);
@@ -1091,17 +1307,18 @@ export class Szkicownik {
     U.info(610, `Stan: ${st}` + (this.silnik && this.silnik.restarty ? ` · restarty: ${this.silnik.restarty}` : ''), 48);
     if (this.api.renderer.xr.isPresenting) {
       U.etykieta(676, 'Sterowanie w goglach');
-      ['Spust na bryle: wybierz · na pustym: odznacz', 'Grip na bryle: chwyć · w pustym miejscu: całość',
+      ['Narzędzie bryły: spust w punkcie A, przeciągnij do B, puść', 'Spust na bryle: wybierz · na pustym: odznacz',
+       'Grip na bryle: chwyć (zielony punkt) · w pustym: całość', 'Trzymasz bryłę: prawy spust = kopia, A = usuń',
        'Dwa gripy: obrót + skala · prawa gałka: skala sceny', 'A: zrzut · X: panel · Y: reset widoku'].forEach((t, i) => U.info(714 + i * 44, t, 44));
     } else {
       U.etykieta(676, 'Sterowanie na PC (test bez gogli)');
-      ['Klik: wybierz (jak spust) · uchwyty: przesuń / obróć', 'W / E / R: uchwyt przesuwu / obrotu / skali',
+      ['Narzędzie bryły: przeciągnij myszą po płaszczyźnie', 'Klik: wybierz (jak spust) · uchwyty: przesuń / obróć', 'W / E / R: uchwyt przesuwu / obrotu / skali',
        'Strzałki, PageUp/PageDown: krok siatki (Shift ×10)', 'Q / Shift+Q: obrót o kąt snapu · + / −: skala',
        'Del: usuń · Ctrl+D: kopiuj · Ctrl+G: grupuj · Esc: odznacz'].forEach((t, i) => U.info(714 + i * 44, t, 44));
     }
-    U.etykieta(960, 'Wkrótce');
-    U.info(998, 'Etap 4: szkic 2D i wyciągnięcie', 44, 'left', PANEL.KOLORY.szary);
-    U.info(1042, 'Etap 5: cofanie, zapis projektu, zapis na Google Drive', 44, 'left', PANEL.KOLORY.szary);
+    U.etykieta(1000, 'Wkrótce');
+    U.info(1038, 'Etap 4: szkic 2D i wyciągnięcie', 44, 'left', PANEL.KOLORY.szary);
+    U.info(1082, 'Etap 5: cofanie, zapis projektu, zapis na Google Drive', 44, 'left', PANEL.KOLORY.szary);
   }
 
   ukladNumpada(U) {
@@ -1129,7 +1346,7 @@ export class Szkicownik {
     if (!this.projekt) { this.powiedz('Geometria się ładuje…'); return; }
     const b = this.wybrana();
     switch (k) {
-      case 'dodaj': if (this.gotowy()) this.dodajPrymityw(v); break;
+      case 'narz': case 'dodaj': this.ustawNarzedzie(v); break;
       case 'oryginal': this.przejmijOryginal(); break;
       case 'kopiuj': this.kopiuj(); break;
       case 'usun': this.usun(); break;
@@ -1176,9 +1393,11 @@ export class Szkicownik {
   }
 
   aktualizujEtykiete() {
-    const e = this.etykieta, b = this.wybrana(), w = b && this.wezly.get(b.id);
-    if (!w || !w.holder.visible) { e.sprite.visible = false; return; }
-    const tekst = this.opisBryly(b);
+    const e = this.etykieta, t = this.tworzenie && this.tworzenie.ksztalt;
+    const b = t ? null : this.wybrana(), w = b && this.wezly.get(b.id);
+    const obiekt = t ? this.podglad.grupa : w && w.holder;
+    if (!obiekt || !obiekt.visible) { e.sprite.visible = false; return; }
+    const tekst = t ? `${PROJEKT.NAZWY[t.def.typ]}  ${t.opis}` : this.opisBryly(b);
     if (tekst !== e.tekst) {
       e.tekst = tekst;
       const ctx = e.canvas.getContext('2d'), W = 1024, H = 128;
@@ -1191,7 +1410,7 @@ export class Szkicownik {
       ctx.fillText(tekst, W / 2, 66, W - 60);
       e.tex.needsUpdate = true;
     }
-    const box = new THREE.Box3().setFromObject(w.holder);
+    const box = new THREE.Box3().setFromObject(obiekt);
     if (box.isEmpty()) { e.sprite.visible = false; return; }
     const p = box.getCenter(new THREE.Vector3()); p.y = box.max.y;
     const cam = this.api.viewCamera();

@@ -102,11 +102,13 @@ export class Projekt {
     const grupyZrodel = new Set(zrodla.map((b) => b.grupa));
     const nowaGrupa = grupyZrodel.size === 1 && zrodla[0].grupa && zrodla.length > 1 ? this.nowaGrupa() : null;
     const kopie = [];
-    for (const z of zrodla) {
+    // stan źródeł z chwili wywołania (bryła może być w tym czasie dalej przesuwana ręką)
+    const migawki = zrodla.map((z) => ({ z, stan: kopia({ ...z, brep: undefined }) }));
+    for (const { z, stan } of migawki) {
       const id = this.nowyId();
       await this.silnik.wykonaj('kopiuj', { id, zrodlo: z.id });
-      const b = { ...kopia({ ...z, brep: undefined }), id, nazwa: z.nazwa + PROJEKT.DOPISEK_KOPII,
-                  poz: z.poz.map((v, i) => v + przesuniecie[i]), grupa: nowaGrupa ? nowaGrupa.id : null };
+      const b = { ...stan, id, nazwa: z.nazwa + PROJEKT.DOPISEK_KOPII,
+                  poz: stan.poz.map((v, i) => v + przesuniecie[i]), grupa: nowaGrupa ? nowaGrupa.id : null };
       if (z.brep) b.brep = z.brep;
       this.bryly.push(b);
       kopie.push(b);

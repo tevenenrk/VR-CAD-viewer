@@ -13,6 +13,9 @@ Przeglądarka modeli CAD (STEP / IGES, np. eksport z SolidWorksa) w przeglądarc
 |---|---|
 | Spust | wybrane narzędzie: **Wskaż** (nazwa i wybór części), **Rysuj** (linia w powietrzu, grubość zależy od siły nacisku), **Gumka**, **Miarka** (od punktu do punktu na powierzchni), **Kolor** (maluje część), **Komentarz** (płytka ze strzałką), **Przekrój** (płaszczyzna cięcia w ręce) |
 | Grip przy części | chwyć **część** albo **grupę części w sferze** (tryb w panelu) |
+| Trzymasz część + prawy spust | **kopia** części zostaje w tym miejscu, a Ty dalej trzymasz oryginał |
+| Trzymasz część + A | **ukryj** trzymaną część (B – cofnij) |
+| Wskaż + spust na części | w panelu otwiera się **strona części**: Ukryj, Półprzezroczysta, Tylko ta, kolory, Kolor oryginalny |
 | Grip w pustym miejscu | chwyć cały model |
 | Oba gripy | obracaj i powiększaj trzymany element albo cały model |
 | A | zrzut ekranu |
@@ -24,7 +27,7 @@ Przeglądarka modeli CAD (STEP / IGES, np. eksport z SolidWorksa) w przeglądarc
 
 Panel w goglach ma trzy zakładki:
 - **Narzędzia** – narzędzie, chwytanie, kolor, rozmiar, przekrój (Włącz / X / Y / Z / Odwróć), cofnij, usuń rysunki / miary / komentarze, zrzut, skala, resety.
-- **Drzewo** – drzewo złożenia: kwadrat = pokaż/ukryj, nazwa = wybierz część (świeci na pomarańczowo), „Pokaż wszystko”, „Tylko wybrana”, „Ukryj wybraną”.
+- **Drzewo** – drzewo złożenia: kwadrat = pokaż/ukryj, kółko = półprzezroczysta, nazwa = wybierz część (świeci na pomarańczowo), „Pokaż wszystko”, „Tylko wybrana”, „Ukryj wybraną”.
 - **Menu** – plik z Google Drive albo z „Ostatnich plików”, „Wczytaj ponownie”, oś góry Y/Z, „Na stół / Skala 1:1”, dokładność siatki, przełączenie VR ↔ AR, wyjście z gogli, stan chmury i wysyłanie zaległych zrzutów.
 
 Do gogli można wejść bez wczytanego modelu — panel otworzy się wtedy na zakładce Menu.
@@ -79,7 +82,8 @@ Tryb do szybkiego tworzenia brył zastępczych (gabarytów) w goglach, z eksport
 Plan: `docs/szkicownik-plan.md`. Wejście: przycisk **„Szkicownik brył”** w panelu na PC albo w goglach **X → Menu → „Szkicownik brył ▸”**.
 Pierwsze wejście ładuje OpenCascade (23 MB), potem przeglądarka trzyma go w pamięci.
 
-Co już działa: prostopadłościan, walec, kula (wymiary wpisywane liczbą), lista brył (pokaż/ukryj, wybór),
+Co już działa: prostopadłościan, walec, kula **tworzone rozciąganiem ręką** (jak w Gravity Sketch: narzędzie bryły, spust w punkcie A,
+przeciągnij do B, puść — podgląd z wymiarami na żywo, snap do siatki), lista brył (pokaż/ukryj, wybór),
 przesuwanie / obracanie / skalowanie ze snapem (domyślnie 10 mm i 15°), położenie, obrót i skala wpisywane liczbą,
 suma / różnica / część wspólna, kopiowanie, grupy, **przejęcie oryginalnego modelu** jako elementów złożenia
 (można je przesuwać, kopiować i grupować), eksport STEP: wszystko / tylko nowe / sam oryginał / zaznaczone.
@@ -90,19 +94,24 @@ Zbyt długa operacja (ponad 5 s) jest przerywana, bryły zostają bez zmian.
 
 | Przycisk | Działanie |
 |---|---|
-| Spust na bryle | wybierz (bryła w grupie → cała grupa) |
+| Narzędzie Prostopadłościan / Walec / Kula + spust | rozciągnij bryłę: prostopadłościan od narożnika do narożnika, walec od środka podstawy (w bok = promień, w górę = wysokość), kula od środka (promień) |
+| Spust na bryle | wybierz (bryła w grupie → cała grupa) — narzędzie Wybierz |
 | Spust w pustym miejscu | odznacz |
-| Grip na bryle (promień) | chwyć i przesuń / obróć ręką — snap po siatce |
+| Grip na bryle (promień) | chwyć i przesuń / obróć ręką — snap po siatce. Żółty punkt = tu złapiesz, zielony = tu trzymasz |
+| Trzymasz bryłę + prawy spust | kopia zostaje w miejscu, dalej trzymasz oryginał |
+| Trzymasz bryłę + A | usuń trzymaną bryłę (cofanie — etap 5) |
 | Grip w pustym miejscu | przesuń całą scenę |
 | Oba gripy | obrót + skala trzymanej bryły (albo sceny) |
 | Prawa gałka ↑↓ | skala całej sceny |
-| A | zrzut ekranu · **X** panel · **Y** reset widoku · **B** (cofanie — etap 5) |
+| A (nic nie trzymasz) | zrzut ekranu · **X** panel · **Y** reset widoku · **B** (cofanie — etap 5) |
 
-Panel (lewy kontroler): **Bryły** (dodaj, przejmij oryginał, kopiuj, usuń, lista, grupy) · **Edycja** (wymiary, położenie,
+Panel (lewy kontroler): **Bryły** (narzędzia Wybierz / Prostopadłościan / Walec / Kula, przejmij oryginał, kopiuj, usuń, lista, grupy) · **Edycja** (dokładne wymiary, położenie,
 obrót, skala — klik w pole otwiera klawiaturę numeryczną; Suma / Różnica / Część wspólna: wybrana bryła = A, potem wskaż B;
 snap; kolor) · **Plik** (eksport STEP, powrót do podglądu).
 
-**PC (test bez gogli):** panel 3D po prawej stronie ekranu klikasz myszą (klik = spust). Klik w bryłę = wybór, uchwyty
+**PC (test bez gogli):** panel 3D po prawej stronie ekranu klikasz myszą (klik = spust). Narzędzie bryły: przeciągnij myszą po płaszczyźnie
+(poziom środka obrotu kamery albo wierzch wskazanej bryły; wysokość prostopadłościanu = krótszy bok, potem można ją zmienić w Edycji),
+Esc = wróć do Wybierz. Klik w bryłę = wybór, uchwyty
 przesuwu/obrotu/skali (W / E / R), strzałki i PageUp/PageDown = krok siatki (Shift ×10), Q / Shift+Q = obrót o kąt snapu,
 + / − = skala, Del = usuń, Ctrl+D = kopiuj, Ctrl+G = grupuj (Ctrl+Shift+G rozgrupuj), Ctrl+A = zaznacz wszystko,
 Esc = odznacz, cyfry + Enter w klawiaturze numerycznej.
