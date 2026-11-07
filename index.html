@@ -42,6 +42,8 @@
   #tree { margin-top: 6px; font-size: 13px; }
   .node { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
   .node span { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node .ghost { min-height: 22px; padding: 0 6px; font-size: 13px; border-radius: 6px; flex: none; }
+  .node .ghost.on { background: var(--accent); color: #111; border-color: var(--accent); }
   .node span:hover { color: var(--accent); }
   .node.active span { color: var(--accent); font-weight: 600; }
   #shots { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
@@ -95,6 +97,10 @@
     <div class="row">
       <label>Kolor części <input type="color" id="partColor"></label>
       <button id="partColorReset">Kolor oryginalny</button>
+    </div>
+    <div class="row">
+      <button id="partHide">Ukryj</button>
+      <button id="partGhost">Półprzezroczysta</button>
     </div>
   </div>
   <div id="noteBox">
@@ -155,12 +161,13 @@
   </details>
   <details><summary>Sterowanie</summary>
     <div class="help">
-      <p><b>PC:</b> lewy przycisk – obrót, prawy – przesuw, kółko – zoom, klik – wybór części (kolor w panelu), klik w płytkę – edycja komentarza, Ctrl+Z – cofnij.</p>
+      <p><b>PC:</b> lewy przycisk – obrót, prawy – przesuw, kółko – zoom, klik – wybór części (kolor, ukryj, półprzezroczysta w panelu), ◐ w drzewie – półprzezroczysta, klik w płytkę – edycja komentarza, Ctrl+Z – cofnij.</p>
       <p><b>Quest:</b><br>
       <b>Spust</b> – wybrane narzędzie: Wskaż / Rysuj / Gumka / Miarka / Kolor / Komentarz / Przekrój<br>
       <b>Komentarz</b>: spust na części, przeciągnij w bok i puść = płytka ze strzałką, potem wpisz tekst (klawiatura w panelu albo „Mów”)<br>
       <b>Przekrój</b>: trzymaj spust – płaszczyzna cięcia idzie za kontrolerem jak nóż; prawa gałka – przesuw płaszczyzny<br>
-      <b>Grip</b> przy części – chwyć część albo grupę w sferze (wybór w panelu)<br>
+      <b>Grip</b> przy części – chwyć część albo grupę w sferze (wybór w panelu); trzymając: <b>prawy spust</b> = kopia w tym miejscu, <b>A</b> = ukryj<br>
+      <b>Wskaż + spust</b> na części – strona części w panelu: ukryj, półprzezroczysta, kolor<br>
       <b>Grip</b> w pustym miejscu – chwyć cały model<br>
       <b>Oba gripy</b> – obracaj i powiększaj trzymany element / model<br>
       <b>A</b> – zrzut ekranu &nbsp; <b>B</b> – cofnij<br>
@@ -232,6 +239,7 @@ const CONFIG = {
 
   // Chwytanie części
   PART_GRAB_RADIUS: 0.02,      // tryb „Część”: zasięg dotyku końcówki kontrolera (m)
+  GHOST_OPACITY: 0.3,          // część „półprzezroczysta” (0 = niewidoczna, 1 = pełna)
   SPHERE_DEFAULT: 0.08, SPHERE_MIN: 0.02, SPHERE_MAX: 0.6,       // tryb „Grupa”: promień sfery (m)
 
   // Miarka
@@ -296,7 +304,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;     // szybkie wskazywanie na
 const $ = (id) => document.getElementById(id);
 const ui = {};
 for (const id of ['fileInput', 'quality', 'upAxis', 'btnVR', 'btnAR', 'btnShot', 'btnNote', 'status', 'msg', 'picked', 'pickedText',
-  'partColor', 'partColorReset', 'tree', 'drop', 'shotCount', 'shots', 'shotsDownload', 'shotsClear', 'treeAll', 'treeOnly', 'treeHide',
+  'partColor', 'partColorReset', 'partHide', 'partGhost', 'tree', 'drop', 'shotCount', 'shots', 'shotsDownload', 'shotsClear', 'treeAll', 'treeOnly', 'treeHide',
   'noteBox', 'noteTitle', 'noteText', 'noteVoice', 'noteSave', 'noteDelete', 'noteCancel', 'noteStatus',
   'secOn', 'secX', 'secY', 'secZ', 'secFlip', 'secPos', 'secInfo', 'sectionBox',
   'cloudBox', 'cloudState', 'cloudConnect', 'cloudDisconnect', 'cloudAuto', 'cloudFolder', 'cloudBrowse', 'cloudUp', 'cloudSetFolder', 'cloudPending',
@@ -723,14 +731,128 @@ function addTreeRow(obj, name, depth, isPart) {
   cb.type = 'checkbox'; cb.checked = true; cb.title = 'Pokaż / ukryj';
   const tr = { obj, name, depth, isPart, cb, el: row };
   cb.onchange = () => setRowVisible(tr, cb.checked);
+  const gb = document.createElement('button');
+  gb.className = 'ghost'; gb.textContent = '◐'; gb.title = 'Półprzezroczysta';
+  gb.onclick = () => toggleGhost(obj);
+  tr.gb = gb;
   const span = document.createElement('span');
   span.textContent = (isPart ? '' : '▸ ') + name;
   span.title = name;
   span.onclick = () => selectObject(obj);
-  row.append(cb, span);
+  row.append(cb, gb, span);
   ui.tree.appendChild(row);
   treeRows.push(tr);
   return row;
+}
+
+// ----------------------------------------------------------------------------
+// UKRYWANIE, PÓŁPRZEZROCZYSTOŚĆ, KOPIE CZĘŚCI (z cofaniem)
+// ----------------------------------------------------------------------------
+function hideObjects(objs) {
+  const items = [];
+  for (const o of objs) {
+    if (!o || !o.visible) continue;
+    const tr = treeRows.find((r) => r.obj === o);
+    items.push({ obj: o, tr });
+    if (tr) setRowVisible(tr, false); else { o.visible = false; visibleCache = null; }
+  }
+  if (items.length) pushUndo({ type: 'vis', items });
+  return items.length;
+}
+
+const isGhost = (obj) => { const ms = meshesOf(obj); return ms.length > 0 && ms.every((m) => m.userData.ghost); };
+
+function setGhost(mesh, on) {
+  mesh.userData.ghost = on;
+  for (const m of mats(mesh)) {
+    if (on) {
+      if (!m.userData.ghostSaved) m.userData.ghostSaved = { transparent: m.transparent, opacity: m.opacity, depthWrite: m.depthWrite };
+      m.transparent = true; m.opacity = CONFIG.GHOST_OPACITY; m.depthWrite = false;
+    } else if (m.userData.ghostSaved) {
+      Object.assign(m, m.userData.ghostSaved);
+      delete m.userData.ghostSaved;
+    }
+    m.needsUpdate = true;
+  }
+}
+
+function syncGhostButtons() { treeRows.forEach((r) => { if (r.gb) r.gb.classList.toggle('on', isGhost(r.obj)); }); }
+
+function toggleGhost(obj) {
+  if (!obj) return;
+  const ms = meshesOf(obj), on = !isGhost(obj);
+  pushUndo({ type: 'ghost', items: ms.map((m) => ({ mesh: m, prev: !!m.userData.ghost })) });
+  ms.forEach((m) => setGhost(m, on));
+  syncGhostButtons();
+  say(`${obj.name}: ${on ? 'półprzezroczysta' : 'pełna'}`);
+}
+
+function cloneMaterial(src) {                  // nowy materiał tej samej części (kolor, przekrój, półprzezroczystość)
+  const m = newMaterial([0, 0, 0]);
+  m.color.copy(src.color);
+  m.userData.origColor = src.userData.origColor.clone();
+  m.transparent = src.transparent; m.opacity = src.opacity; m.depthWrite = src.depthWrite;
+  if (src.userData.ghostSaved) m.userData.ghostSaved = { ...src.userData.ghostSaved };
+  return m;
+}
+
+// Kopia części w miejscu, w którym teraz jest (oryginał można dalej trzymać i przesuwać)
+function copyParts(meshes) {
+  const copies = [];
+  for (const m of meshes) {
+    const src = m.userData.part;
+    if (!src) continue;
+    const ms = mats(m).map(cloneMaterial);
+    const c = new THREE.Mesh(m.geometry, Array.isArray(m.material) ? ms : ms[0]);
+    c.userData.sharedGeo = true;
+    c.position.copy(m.position); c.quaternion.copy(m.quaternion); c.scale.copy(m.scale);
+    c.name = src.name + ' (kopia)';
+    c.userData.ghost = !!m.userData.ghost;
+    c.userData.kopiaZ = m;
+    m.parent.add(c);
+    c.updateMatrix();
+    c.userData.origMatrix = c.matrix.clone();
+    const p = { mesh: c, name: c.name, path: [...src.path.slice(0, -1), c.name], kopia: true };
+    c.userData.part = p;
+    const i0 = treeRows.findIndex((r) => r.obj === m);
+    p.el = addTreeRow(c, c.name, i0 >= 0 ? treeRows[i0].depth : 0, true);
+    if (i0 >= 0) {                             // w drzewie zaraz pod oryginałem
+      const tr = treeRows.pop();
+      treeRows.splice(i0 + 1, 0, tr);
+      treeRows[i0].el.after(tr.el);
+    }
+    parts.push(p);
+    copies.push(c);
+  }
+  visibleCache = null;
+  syncGhostButtons();
+  if (copies.length) pushUndo({ type: 'kopia', meshes: copies });
+  return copies;
+}
+
+function removeCopies(meshes) {
+  releaseAll();
+  for (const c of meshes) {
+    c.removeFromParent();
+    mats(c).forEach((m) => m.dispose());
+    parts = parts.filter((p) => p.mesh !== c);
+    const i = treeRows.findIndex((r) => r.obj === c);
+    if (i >= 0) { treeRows[i].el.remove(); treeRows.splice(i, 1); }
+    if (selectedObj === c) { setSelected(null); showPicked(null); }
+  }
+  visibleCache = null;
+}
+
+// Część trzymana gripem (tryb Część / Grupa) — dla kopii prawym spustem i ukrycia przyciskiem A
+function heldPartsTarget() {
+  const c = controllers.find((o) => o.userData.held && o.userData.held.kind === 'parts');
+  return c ? c.userData.held : null;
+}
+
+function dropHeld(target) {                    // puść trzymane (zapamiętaj przesunięcie do cofania)
+  controllers.forEach((o) => { if (o.userData.held === target) o.userData.held = null; });
+  twoHand = null;
+  pushUndo({ type: 'move', items: target.undo });
 }
 
 function setRowVisible(tr, v) {
@@ -774,6 +896,7 @@ function showPicked(obj) {
   ui.pickedText.textContent = p ? `Część: ${p.name}\nŚcieżka: ${p.path.join(' › ')}` : `Grupa: ${obj.name}`;
   const first = meshesOf(obj)[0];
   if (first) ui.partColor.value = '#' + mats(first)[0].color.getHexString();
+  ui.partGhost.classList.toggle('primary', isGhost(obj));
   if (p && p.el) { p.el.classList.add('active'); p.el.scrollIntoView({ block: 'nearest' }); }
 }
 
@@ -1495,6 +1618,17 @@ function undo() {
   } else if (u.type === 'color') {
     u.items.forEach(({ mesh, prev }) => mats(mesh).forEach((m, i) => m.color.copy(prev[i])));
     say('Cofnięto zmianę koloru');
+  } else if (u.type === 'vis') {
+    u.items.forEach(({ obj, tr }) => { if (tr) setRowVisible(tr, true); else obj.visible = true; });
+    visibleCache = null;
+    say('Cofnięto ukrycie');
+  } else if (u.type === 'ghost') {
+    u.items.forEach(({ mesh, prev }) => setGhost(mesh, prev));
+    syncGhostButtons();
+    say('Cofnięto półprzezroczystość');
+  } else if (u.type === 'kopia') {
+    removeCopies(u.meshes);
+    say('Cofnięto kopię');
   }
   if (selectedObj) showPicked(selectedObj);
 }
@@ -1593,12 +1727,28 @@ function layoutPalette() {
         if (!r) break;
         const y = 172 + k * 78, x = P + Math.min(r.depth, 6) * 30;
         B.push({ kind: 'check', id: 'tvis:' + i, checked: r.obj.visible, x, y, w: 70, h: 70 });
+        B.push({ kind: 'button', id: 'tghost:' + i, text: '', icon: 'ghost', active: isGhost(r.obj), x: x + 78, y: y + 4, w: 70, h: 62 });
         B.push({ kind: 'item', id: 'tsel:' + i, text: (r.isPart ? '' : '▸ ') + r.name, active: selectedObj === r.obj,
-                 dim: !isVisibleDeep(r.obj), x: x + 84, y, w: W - P - x - 84, h: 70 });
+                 dim: !isVisibleDeep(r.obj), x: x + 162, y, w: W - P - x - 162, h: 70 });
       }
       listNav(964, 'treeScroll', treeRows.length, PAL.TREE_ROWS);
       row(1066, 84, [{ id: 'tree:all', text: 'Pokaż wszystko' }, { id: 'tree:only', text: 'Tylko wybrana' }, { id: 'tree:hide', text: 'Ukryj wybraną' }]);
     }
+  } else if (pal.page === 'czesc') {               // strona wskazanej części (Wskaż + spust)
+    const o = selectedObj;
+    if (!o) info(130, 'Wskaż część narzędziem „Wskaż” (spust)');
+    else {
+      const pp = o.userData.part;
+      info(116, (pp ? 'Część: ' : 'Grupa: ') + o.name, 48, 'left', '#ff8a1f');
+      info(166, pp ? pp.path.slice(0, -1).join(' › ') : '', 44, 'left', '#9aa0a6');
+      row(226, 100, [{ id: 'cz:hide', text: 'Ukryj' }, { id: 'cz:ghost', text: 'Półprzezroczysta', active: isGhost(o), flex: 1.5 }, { id: 'cz:only', text: 'Tylko ta' }]);
+      label(346, 'Kolor');
+      row(384, 86, CONFIG.COLORS.map((color, i) => ({ id: 'cz:color:' + i, kind: 'swatch', color })));
+      row(490, 92, [{ id: 'cz:origcolor', text: 'Kolor oryginalny' }, { id: 'tree:all', text: 'Pokaż wszystko' }]);
+      info(604, 'Trzymasz część gripem: prawy spust = kopia, A = ukryj', 44, 'left', '#9aa0a6');
+      info(648, 'B = cofnij', 44, 'left', '#9aa0a6');
+    }
+    row(1066, 84, [{ id: 'cz:back', text: '◀ Wróć' }, { id: 'page:drzewo', text: 'Drzewo' }]);
   } else if (pal.page === 'menu' && pal.menuView === 'glowne') {
     label(116, 'Plik');
     row(154, 92, [{ id: 'menu:drive', text: 'Google Drive' }, { id: 'menu:recent', text: 'Ostatnie pliki' },
@@ -1682,14 +1832,15 @@ function fitFont(ctx, text, maxW, size, weight) {
 function footerText() {
   if (pal.msg) return pal.msg;
   if (pal.page === 'klawiatura') return 'Gotowe – zapisz · Anuluj – bez zmian';
-  if (pal.page === 'drzewo') return 'Kwadrat – pokaż/ukryj · nazwa – wybierz część';
+  if (pal.page === 'drzewo') return 'Kwadrat – pokaż/ukryj · kółko – półprzezroczysta · nazwa – wybierz';
+  if (pal.page === 'czesc') return 'Spust na innej części – wybierz ją · B – cofnij';
   if (pal.page === 'menu') return 'X – ukryj panel · Y – reset pozycji modelu';
   return 'X – ukryj panel · A – zrzut · B – cofnij · Y – reset';
 }
 
 function paletteSignature(B) {
   return pal.page + '|' + pal.hover + '|' + footerText() + '|' +
-    JSON.stringify(B.map((b) => [b.id, b.text, b.active, b.disabled, b.checked, b.dim, b.kind === 'textbox' ? edit && edit.shift : 0]));
+    JSON.stringify(B.map((b) => [b.id, b.text, b.icon, b.active, b.disabled, b.checked, b.dim, b.kind === 'textbox' ? edit && edit.shift : 0]));
 }
 
 function drawPalette() {
@@ -1745,6 +1896,13 @@ function drawPalette() {
     rr(b.x, b.y, b.w, b.h, 20); ctx.fill();
     ctx.lineWidth = hov ? 6 : 3; ctx.strokeStyle = hov ? '#ffffff' : '#3a3f47'; ctx.stroke();
     ctx.fillStyle = b.disabled ? '#6b7079' : (b.active ? '#111111' : '#e8eaed'); ctx.textAlign = 'center';
+    if (b.icon === 'ghost') {                    // ikona półprzezroczystości: kółko do połowy wypełnione
+      const cx = b.x + b.w / 2, cy = b.y + b.h / 2, r = Math.min(b.w, b.h) * 0.36;
+      ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = 6;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI / 2, Math.PI * 1.5); ctx.closePath(); ctx.fill();
+      continue;
+    }
     fitFont(ctx, text, b.w - 18, b.tab ? 40 : 38, b.tab ? 700 : 600);
     ctx.fillText(text, b.x + b.w / 2, b.y + b.h / 2 + 2);
   }
@@ -1784,6 +1942,17 @@ function paletteAction(id) {
     else { setSectionAxis(v, 0); say('Przekrój ' + v); }
   }
   else if (k === 'tvis') { const r = treeRows[Number(v)]; if (r) setRowVisible(r, !r.obj.visible); }
+  else if (k === 'tghost') { const r = treeRows[Number(v)]; if (r) toggleGhost(r.obj); }
+  else if (k === 'cz') {
+    const o = selectedObj;
+    if (v === 'back') pal.page = pal.returnPage && pal.returnPage !== 'czesc' ? pal.returnPage : 'narzedzia';
+    else if (!o) say('Najpierw wskaż część');
+    else if (v === 'hide') { hideObjects([o]); say('Ukryto: ' + o.name + ' (B – cofnij)'); }
+    else if (v === 'ghost') toggleGhost(o);
+    else if (v === 'only') treeCommand('only');
+    else if (v === 'origcolor') { restoreColors(selectedMeshes); say('Kolor oryginalny'); }
+    else if (v.startsWith('color:')) { paintMeshes(selectedMeshes, CONFIG.COLORS[Number(v.split(':')[1])]); say('Zmieniono kolor (B – cofnij)'); }
+  }
   else if (k === 'tsel') { const r = treeRows[Number(v)]; if (r) selectObject(r.obj, true); }
   else if (k === 'tree') treeCommand(v);
   else if (k === 'scroll') {
@@ -2099,7 +2268,11 @@ function toolStart(c) {
   } else if (u.activeTool === 'kolor') {
     if (u.rayHit) { paintMeshes([u.rayHit.object], CONFIG.COLORS[S.colorIdx]); pulse(c, 0.3, 20); }
   } else if (u.activeTool === 'wskaz') {
-    if (u.rayHit) selectObject(u.rayHit.object, true);
+    if (u.rayHit) {
+      selectObject(u.rayHit.object, true);
+      if (pal.page !== 'czesc' && pal.page !== 'klawiatura') { pal.returnPage = pal.page; pal.page = 'czesc'; }
+      S.paletteVisible = true;
+    }
   } else if (u.activeTool === 'komentarz') {
     if (edit) closeNoteEditor(true);
     if (u.noteHit) {                            // istniejąca płytka: przeciągnij = przesuń, klik = edytuj tekst
@@ -2240,7 +2413,11 @@ function handleXRInput(dt) {
     const main = isMain(c);
 
     // Przyciski: prawa ręka A = zrzut, B = cofnij; lewa X = panel, Y = reset
-    if (buttonPressedEdge(c, CONFIG.BTN.AX)) { if (main) requestScreenshot(); else togglePalette(); }
+    if (buttonPressedEdge(c, CONFIG.BTN.AX)) {
+      const held = main && heldPartsTarget();
+      if (held) { dropHeld(held); hideObjects(held.meshes); say(`Ukryto: ${held.meshes.map((m) => m.name).join(', ')} (B – cofnij)`); pulse(c, 0.5, 40); }
+      else if (main) requestScreenshot(); else togglePalette();
+    }
     if (buttonPressedEdge(c, CONFIG.BTN.BY)) { if (main) undo(); else resetModelPose(); }
 
     // Gałki: prawa = rozmiar narzędzia / skala modelu, lewa = sfera chwytu
@@ -2289,6 +2466,11 @@ function handleXRInput(dt) {
     if (trig && !u.trigPrev) {
       if (u.gestureDone) { u.gestureDone = false; u.uiConsumed = true; }      // już obsłużone w zdarzeniu spustu
       else if (u.uiHover) { paletteAction(u.uiHover); u.uiConsumed = true; pulse(c, 0.3, 20); }
+      else if (main && heldPartsTarget()) {          // trzymasz część: prawy spust = kopia w tym miejscu
+        const cp = copyParts(heldPartsTarget().meshes);
+        u.uiConsumed = true; pulse(c, 0.6, 40);
+        say(`Kopia: ${cp.map((m) => m.name).join(', ')} (B – cofnij)`);
+      }
       else toolStart(c);
     } else if (trig && !u.uiConsumed) {
       toolHold(c);
@@ -2864,6 +3046,8 @@ function setupUI() {
   ui.shot.addEventListener('click', requestScreenshot);
   ui.partColor.addEventListener('change', () => { paintMeshes(selectedMeshes, ui.partColor.value); say('Zmieniono kolor (Ctrl+Z – cofnij)'); });
   ui.partColorReset.addEventListener('click', () => { restoreColors(selectedMeshes); showPicked(selectedObj); });
+  ui.partHide.addEventListener('click', () => { if (selectedObj) { hideObjects([selectedObj]); say('Ukryto: ' + selectedObj.name + ' (Ctrl+Z – cofnij)'); } });
+  ui.partGhost.addEventListener('click', () => { toggleGhost(selectedObj); showPicked(selectedObj); });
   ui.shotsDownload.addEventListener('click', () => {
     [...ui.shots.querySelectorAll('a[download]')].forEach((a, i) => setTimeout(() => a.click(), i * 400));
   });

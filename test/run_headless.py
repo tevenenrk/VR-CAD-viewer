@@ -190,6 +190,19 @@ def test_pc(browser):
     col2 = page.evaluate("window.__viewer.parts.find(p => p.name === 'Plyta_bazowa').mesh.material.color.getHexString()")
     check("Ctrl+Z przywraca kolor", col2 != "ff0000", col2)
 
+    page.evaluate("document.querySelector('#treeBox').open = true")
+    page.click("#tree .node:nth-child(2) .ghost")
+    op1 = page.evaluate("window.__viewer.parts.find(p => p.name === 'Plyta_bazowa').mesh.material.opacity")
+    page.click("#partGhost")
+    op2 = page.evaluate("window.__viewer.parts.find(p => p.name === 'Plyta_bazowa').mesh.material.opacity")
+    check("PC: przycisk ◐ w drzewie i „Półprzezroczysta” w panelu części", abs(op1 - 0.3) < 1e-6 and op2 == 1, f"{op1} → {op2}")
+    page.click("#partHide")
+    hid = page.evaluate("!window.__viewer.parts.find(p => p.name === 'Plyta_bazowa').mesh.visible")
+    page.keyboard.press("Control+z")
+    back = page.evaluate("window.__viewer.parts.find(p => p.name === 'Plyta_bazowa').mesh.visible")
+    check("PC: „Ukryj” w panelu części + Ctrl+Z", hid and back)
+    page.evaluate("document.querySelector('#treeBox').open = false")
+
     page.click("#btnShot")
     page.wait_for_function("document.getElementById('shotCount').textContent === '1'", timeout=20000)
     shot = save_last_shot(page, OUT / "zrzut_pc.jpg")
@@ -490,6 +503,58 @@ def test_xr(browser):
              return names;""")
     check("tryb Grupa chwyta części w sferze", "Silownik_DSNU" in r and "Wspornik_L" in r and "Plyta_bazowa" not in r, str(r))
 
+    # Wskaż + spust na części → strona części: półprzezroczysta, ukryj, cofanie (B)
+    r = E("""V.paletteAction('tool:wskaz'); V.paletteAction('grab:czesc'); await T.frames(2);
+             const p0 = T.centerOf('Slup');
+             T.pose('right', [p0.x, p0.y + 0.3, p0.z + 0.05], p0.toArray()); await T.frames(4);
+             await T.click('right', 'trigger');
+             const page = V.pal.page, sel = V.selectedObj && V.selectedObj.name;
+             const h1 = await T.palClick('cz:ghost');
+             const op = T.part('Slup').material.opacity;
+             await T.palClick('cz:hide');
+             const hid = !T.part('Slup').visible;
+             await T.click('right', 'b-button');
+             const back = T.part('Slup').visible;
+             await T.click('right', 'b-button');
+             const op2 = T.part('Slup').material.opacity;
+             await T.palClick('cz:back');
+             return { page, sel, h1, op, hid, back, op2, page2: V.pal.page };""")
+    check("Wskaż + spust na części otwiera stronę części", r["page"] == "czesc" and r["sel"] == "Slup", str(r))
+    check("strona części: półprzezroczysta, ukryj, B cofa oba", abs(r["op"] - 0.3) < 1e-6 and r["hid"] and r["back"] and r["op2"] == 1 and r["page2"] == "narzedzia", str(r))
+    r = E("""await T.palClick('page:drzewo');
+             const i = V.treeRows.findIndex(x => x.name === 'Wspornik_L');
+             const h = await T.palClick('tghost:' + i);
+             const op = T.part('Wspornik_L').material.opacity;
+             await T.palClick('tghost:' + i);
+             const op2 = T.part('Wspornik_L').material.opacity;
+             await T.palClick('page:narzedzia');
+             return { h, op, op2 };""")
+    check("drzewo w goglach: przycisk ◐ = półprzezroczysta", abs(r["op"] - 0.3) < 1e-6 and r["op2"] == 1, str(r))
+
+    # trzymasz część: prawy spust = kopia w tym miejscu (dalej trzymasz oryginał), A = ukryj; B cofa
+    shots0 = page.inner_text("#shotCount")
+    r = E("""const p0 = T.centerOf('Slup'), n0 = V.parts.length;
+             T.tipAt('right', p0.toArray()); await T.frames(4);
+             T.btn('right', 'squeeze', 1); await T.frames(4);
+             T.tipAt('right', [p0.x + 0.1, p0.y, p0.z]); await T.frames(4);
+             await T.click('right', 'trigger');
+             T.tipAt('right', [p0.x + 0.2, p0.y, p0.z]); await T.frames(4);
+             const kop = V.parts.find(p => p.name === 'Slup (kopia)');
+             const ck = kop ? new V.THREE.Box3().setFromObject(kop.mesh).getCenter(new V.THREE.Vector3()) : null;
+             const cs = T.centerOf('Slup');
+             const wDrzewie = V.treeRows.findIndex(x => x.name === 'Slup (kopia)') === V.treeRows.findIndex(x => x.name === 'Slup') + 1;
+             await T.click('right', 'a-button');
+             const hidden = !T.part('Slup').visible, held = !!T.ctrl('right').userData.held;
+             T.btn('right', 'squeeze', 0); await T.frames(3);
+             const n1 = V.parts.length - n0;
+             for (let k = 0; k < 3; k++) await T.click('right', 'b-button');
+             return { n1, dxKop: ck ? ck.x - p0.x : null, dxSlup: cs.x - p0.x, wDrzewie, hidden, held,
+                      n2: V.parts.length - n0, vis: T.part('Slup').visible, dxPo: T.centerOf('Slup').x - p0.x };""")
+    check("trzymana część + prawy spust = kopia w miejscu, oryginał dalej w ręce",
+          r["n1"] == 1 and r["dxKop"] is not None and abs(r["dxKop"] - 0.1) < 0.005 and abs(r["dxSlup"] - 0.2) < 0.005 and r["wDrzewie"], str(r))
+    check("trzymana część + A = ukryta (bez zrzutu ekranu)", r["hidden"] and not r["held"] and page.inner_text("#shotCount") == shots0, str(r))
+    check("B ×3 cofa: ukrycie, przesunięcie, kopię", r["n2"] == 0 and r["vis"] and abs(r["dxPo"]) < 0.005, str(r))
+
     # --- zakładka Drzewo: pokaż/ukryj i wybór części promieniem ---
     r = E("""V.paletteAction('tool:wskaz'); V.paletteAction('grab:czesc'); await T.frames(2);
              const h1 = await T.palClick('page:drzewo');
@@ -720,16 +785,26 @@ def test_szkicownik_pc(browser):
     check("szkicownik: tryb włączony, panel na ekranie, model jako tło",
           E("return S.aktywny && S.panel.mesh.visible && V.parts[0].mesh.material.opacity < 0.5 && document.getElementById('btnSzk').textContent.includes('Wróć');"))
 
-    # nowa bryła: przycisk w panelu (mysz) + wymiary z klawiatury
-    klik("dodaj:prostopadloscian")
-    np = E("return !!S.numpad && S.numpad.pola.map(p => p.etykieta).join('|');")
-    for k in ["2", "0", "0", "Enter", "Enter", "Enter"]:
-        page.keyboard.press(k)
+    # nowa bryła: narzędzie Prostopadłościan, przeciągnięcie myszą po płaszczyźnie (bez wpisywania wymiarów)
+    def przeciagnij(dx, dy):
+        st = E("await SZ.frames(2); return SZ.ekran(S.api.controls.target.clone());")
+        page.mouse.move(st[0], st[1]); page.mouse.down()
+        page.mouse.move(st[0] + dx, st[1] + dy, steps=10)
+        E("await SZ.frames(3);")
+        podglad = E("return { opis: S.tworzenie && S.tworzenie.ksztalt && S.tworzenie.ksztalt.opis, widac: !!(S.podglad && S.podglad.grupa.visible), et: S.etykieta.sprite.visible };")
+        page.mouse.up()
+        E("await SZ.czekaj();")
+        return podglad
+    klik("narz:prostopadloscian")
+    pg = przeciagnij(-220, 90)
     E("while (!S.projekt || S.projekt.bryly.length < 1 || S.zajety) await new Promise(r => setTimeout(r, 30)); await SZ.frames(3);")
-    r = E("const b = S.projekt.bryly[0]; return { def: b.def, vol: b.objetosc, poz: b.poz, zazn: S.zazn.length, np: !!S.numpad };")
-    check("szkicownik PC: prostopadłościan 200×100×100 z panelu numerycznego", r["def"]["dx"] == 200 and r["def"]["dy"] == 100 and abs(r["vol"] - 2e6) < 1e-3 and not r["np"],
-          f"pola: {np}; poz {r['poz']}")
-    check("szkicownik PC: nowa bryła na siatce 10 mm", all(abs(v / 10 - round(v / 10)) < 1e-9 for v in r["poz"]), str(r["poz"]))
+    r = E("const b = S.projekt.bryly[0]; return { def: b.def, vol: b.objetosc, poz: b.poz, np: !!S.numpad };")
+    d = r["def"]
+    check("szkicownik PC: rozciągnięcie myszą pokazuje podgląd z wymiarami", pg["widac"] and pg["opis"] and pg["et"], str(pg))
+    check("szkicownik PC: prostopadłościan z przeciągnięcia (wymiary na siatce 10 mm, wysokość = krótszy bok)",
+          all(d[k] >= 10 and abs(d[k] / 10 - round(d[k] / 10)) < 1e-9 for k in ("dx", "dy", "dz")) and d["dz"] == min(d["dx"], d["dy"])
+          and abs(r["vol"] - d["dx"] * d["dy"] * d["dz"]) < 1e-3 and not r["np"], f"{d['dx']}×{d['dy']}×{d['dz']} mm")
+    klik("narz:wybierz")
 
     # wybór kliknięciem w bryłę, przesuw strzałką, obrót klawiszem Q
     page.keyboard.press("Escape")
@@ -759,8 +834,9 @@ def test_szkicownik_pc(browser):
     r = E("return { n: S.projekt.bryly.length, x: S.projekt.bryly[1].poz[0], nazwa: S.projekt.bryly[1].nazwa };")
     check("szkicownik PC: Ctrl+D kopiuje bryłę obok (+50 mm)", r["n"] == 2 and r["x"] == 173 and "kopia" in r["nazwa"], str(r))
     klik("tab:bryly")
-    klik("dodaj:walec")
-    page.keyboard.press("Enter"); page.keyboard.press("Enter")
+    klik("narz:walec")
+    przeciagnij(70, 0)
+    klik("narz:wybierz")
     E("while (S.projekt.bryly.length < 3 || S.zajety) await new Promise(r => setTimeout(r, 30)); await SZ.frames(3);")
     w = E("const b = S.projekt.bryly[2]; return { obr: b.obr, id: b.id };")
     check("szkicownik PC: walec stoi pionowo w pliku z osią Z w górę", w["obr"] == [90, 0, 0], str(w["obr"]))
@@ -848,24 +924,41 @@ def test_szkicownik_vr(browser):
     check("szkicownik VR: wejście z Menu, panel szkicownika na lewym kontrolerze",
           E("return S.aktywny && S.panel.mesh.visible && S.panel.mesh.parent === T.ctrl('left') && !V.pal.mesh.visible;"), f"hover={h}")
 
-    # nowa bryła z panelu numerycznego (klik promieniem w klawisze)
-    hs = [E(f"return await SZ.klik('{k}');") for k in ["dodaj:prostopadloscian", "np:1", "np:5", "np:0", "np:ok", "np:ok", "np:ok"]]
-    E("while (S.projekt.bryly.length < 1 || S.zajety) await new Promise(r => setTimeout(r, 30)); await SZ.frames(3);")
-    r = E("const b = S.projekt.bryly[0]; return { dx: b.def.dx, vol: b.objetosc, poz: b.poz };")
-    check("szkicownik VR: prostopadłościan 150×100×100 wpisany klawiszami panelu", r["dx"] == 150 and abs(r["vol"] - 1.5e6) < 1e-3, f"klik: {hs[:3]}…, poz {r['poz']}")
+    # nowa bryła rozciąganiem: spust w punkcie A, przeciągnięcie czubkiem kontrolera do B, puszczenie
+    r = E("""const h = await SZ.klik('narz:prostopadloscian');
+             const A = [0.05, 1.35, -0.6];
+             T.tipAt('right', A); await T.frames(4);
+             const czubek = S.znaczniki.some(z => z.visible && z.userData.kolor.getHex() === 0x00c7be);
+             T.btn('right', 'trigger', 1); await T.frames(3);
+             T.tipAt('right', [A[0] + 0.15, A[1] + 0.10, A[2] - 0.06]); await T.frames(5);
+             const opis = S.tworzenie && S.tworzenie.ksztalt && S.tworzenie.ksztalt.opis;
+             T.btn('right', 'trigger', 0); await T.frames(3);
+             while (S.projekt.bryly.length < 1 || S.zajety) await new Promise(r => setTimeout(r, 30));
+             await SZ.klik('narz:wybierz');
+             const b = S.projekt.bryly[0];
+             return { h, czubek, opis, def: b.def, skala: V.pivot.scale.x };""")
+    d = r["def"]
+    oczek = [150 / r["skala"], 60 / r["skala"], 100 / r["skala"]]
+    check("szkicownik VR: punkt na czubku kontrolera przy narzędziu bryły", r["czubek"] and r["h"] == "narz:prostopadloscian", str(r["h"]))
+    check("szkicownik VR: prostopadłościan rozciągnięty ręką (wymiary z ruchu, na siatce)",
+          r["opis"] and all(abs(d[k] / 10 - round(d[k] / 10)) < 1e-9 for k in ("dx", "dy", "dz"))
+          and all(abs(d[k] - o) <= 10.001 for k, o in zip(("dx", "dy", "dz"), oczek)), f"{d['dx']}×{d['dy']}×{d['dz']} mm (ruch ≈ {[round(v) for v in oczek]}), podgląd: {r['opis']}")
 
     # grip na bryle: przesuw ręką o 10 cm, snap 10 mm
     r = E("""const id = S.projekt.bryly[0].id;
              const c = SZ.srodekBryly(id), p0 = [...S.projekt.bryly[0].poz];
              T.pose('right', [c.x + 0.05, c.y + 0.25, c.z + 0.25], c.toArray()); await T.frames(4);
              const traf = T.ctrl('right').userData.szk.traf && T.ctrl('right').userData.szk.traf.id;
+             const zolty = S.znaczniki.some(z => z.visible && z.userData.kolor.getHex() === 0xffd60a);
              T.btn('right', 'squeeze', 1); await T.frames(4);
+             const zielony = S.znaczniki.some(z => z.visible && z.userData.kolor.getHex() === 0x34c759);
              T.pose('right', [c.x + 0.15, c.y + 0.25, c.z + 0.25], [c.x + 0.1, c.y, c.z]); await T.frames(5);
              const pd = S.projekt.bryly[0].poz.map((v, i) => v - p0[i]);
              T.btn('right', 'squeeze', 0); await T.frames(3);
-             return { traf: traf === id, pd, skala: V.pivot.scale.x };""")
+             return { traf: traf === id, pd, skala: V.pivot.scale.x, zolty, zielony };""")
     oczek = 100 / r["skala"]
     check("szkicownik VR: grip chwyta bryłę pod promieniem", r["traf"])
+    check("szkicownik VR: wyraźny punkt na bryle (żółty pod promieniem, zielony w chwycie)", r["zolty"] and r["zielony"], str(r))
     check("szkicownik VR: przesuw ręką 10 cm → bryła na siatce 10 mm", all(abs(v / 10 - round(v / 10)) < 1e-6 for v in r["pd"]) and abs(r["pd"][0] - oczek) <= 5.001,
           f"Δ {[round(v, 2) for v in r['pd']]} mm (bez snapu {oczek:.1f})")
 
@@ -886,7 +979,11 @@ def test_szkicownik_vr(browser):
     check("szkicownik VR: dwa gripy = skala bryły 2× (snap 0,05)", r["two"] and abs(r["s"] - 2) < 1e-9, f"×{r['s']}")
 
     # kula + różnica (A i B z listy), kopia
-    E("for (const k of ['tab:bryly', 'dodaj:kula', 'np:ok']) await SZ.klik(k); while (S.projekt.bryly.length < 2 || S.zajety) await new Promise(r => setTimeout(r, 30));")
+    E("""await SZ.klik('narz:kula');
+         T.tipAt('right', [0.3, 1.4, -0.5]); await T.frames(3); T.btn('right', 'trigger', 1); await T.frames(3);
+         T.tipAt('right', [0.36, 1.4, -0.5]); await T.frames(4); T.btn('right', 'trigger', 0); await T.frames(3);
+         while (S.projekt.bryly.length < 2 || S.zajety) await new Promise(r => setTimeout(r, 30));
+         await SZ.klik('narz:wybierz');""")
     ids = E("return S.projekt.bryly.map(b => b.id);")
     vA = E("return S.projekt.bryly[0].objetosc * S.projekt.bryly[0].skala ** 3;")
     E("S.projekt.ustawTransformacje(S.projekt.bryly[1].id, { poz: [...S.projekt.bryly[0].poz] }); await SZ.frames(2);")
@@ -897,6 +994,26 @@ def test_szkicownik_vr(browser):
     check("szkicownik VR: różnica prostopadłościan − kula", r["n"] == 1 and r["typ"] == "boolean" and 0 < r["vol"] < vA - 1000, f"{r['vol']:.0f} < {vA:.0f} mm³")
     E("await SZ.klik('kopiuj'); await SZ.czekaj();")
     check("szkicownik VR: kopia z panelu", E("return S.projekt.bryly.length;") == 2)
+
+    # trzymasz bryłę: prawy spust = kopia zostaje w miejscu, A = usuwa trzymaną
+    r = E("""const b = S.projekt.bryly[0], id = b.id, n0 = S.projekt.bryly.length;
+             const c = SZ.srodekBryly(id);
+             T.pose('right', [c.x + 0.05, c.y + 0.25, c.z + 0.25], c.toArray()); await T.frames(4);
+             T.btn('right', 'squeeze', 1); await T.frames(4);
+             T.pose('right', [c.x + 0.10, c.y + 0.25, c.z + 0.25], [c.x + 0.05, c.y, c.z]); await T.frames(4);
+             const pozKopii = [...b.poz];
+             await T.click('right', 'trigger'); await SZ.czekaj();
+             T.pose('right', [c.x + 0.20, c.y + 0.25, c.z + 0.25], [c.x + 0.15, c.y, c.z]); await T.frames(4);
+             const kop = S.projekt.bryly.find(x => x.nazwa === b.nazwa + ' (kopia)' && x.id !== id && Math.abs(x.poz[0] - pozKopii[0]) < 1e-6);
+             const n1 = S.projekt.bryly.length;
+             const dalej = S.projekt.bryla(id).poz[0] - pozKopii[0];
+             const shots0 = document.getElementById('shotCount').textContent;
+             await T.click('right', 'a-button'); await SZ.czekaj();
+             T.btn('right', 'squeeze', 0); await T.frames(3);
+             return { n0, n1, kop: !!kop, dalej, usunieta: !S.projekt.bryla(id), n2: S.projekt.bryly.length,
+                      bezZrzutu: document.getElementById('shotCount').textContent === shots0 };""")
+    check("szkicownik VR: trzymana bryła + prawy spust = kopia zostaje w miejscu", r["n1"] == r["n0"] + 1 and r["kop"] and r["dalej"] > 1, str(r))
+    check("szkicownik VR: trzymana bryła + A = usunięta (bez zrzutu)", r["usunieta"] and r["n2"] == r["n0"] and r["bezZrzutu"], str(r))
 
     # spust w pustym miejscu = odznacz, B = komunikat o cofaniu
     E("T.pose('right', [0.6, 1.6, 0.3], [1.5, 2.5, 0.5]); await T.frames(3); await T.click('right', 'trigger'); await T.click('right', 'b-button');")
