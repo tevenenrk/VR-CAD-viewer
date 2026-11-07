@@ -43,6 +43,7 @@ Znane ryzyka: duże złożenia (parsowanie na Quest może trwać ~minutę → w 
 wydajność renderu na Quest 3S (może wymagać uproszczenia siatki/LOD), wygoda położenia panelu na kontrolerze, zrzut w AR nie zawiera obrazu z kamer (ograniczenie WebXR, tło = kolor).
 
 ## Plan dalej
+- W TOKU: tryb „Szkicownik brył” (gabaryty w VR, replicad/OCCT w workerze, eksport STEP), osobny moduł `szkicownik/`. Plan i decyzje: `docs/szkicownik-plan.md`. Pracujemy etapami 1–5, po każdym commit i czekamy na „dalej” od Roberta.
 - Następnie: zapis/odczyt `projekt/vr/adnotacje.json` na Drive (komentarze, rysunki, miary — teraz znikają po zamknięciu), samodzielne strzałki bez płytki, komenda głosowa „zrób zdjęcie”.
 - v0.4 (zmiana planu Roberta): zamiast asystenta patrzącego na stream — Gemini czyta zrzuty z folderu `projekt/vr/screeny` na Drive (+ `kontekst.md`, `adnotacje.json`) i się do nich odnosi. Szczegóły później.
 - v0.5: integracja z systemem zarządzania projektami.
