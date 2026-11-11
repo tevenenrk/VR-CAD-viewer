@@ -12,10 +12,11 @@ export const KLIENT = {
   BOOLEAN_TIMEOUT_MS: 5000,       // suma / różnica / część wspólna
   OP_TIMEOUT_MS: 20000,           // budowa bryły, eksport STEP
   START_TIMEOUT_MS: 120000,       // pierwsze wczytanie OpenCascade (23 MB) — na Quest może trwać
-  WCZYTANIE_TIMEOUT_MS: 300000,   // wczytanie oryginalnego STEP do Szkicownika i odtworzenie stanu po restarcie
+  WCZYTANIE_TIMEOUT_MS: 300000,   // wczytanie plików STEP / STL, zapis całego złożenia, odtworzenie stanu po restarcie
 };
 
-const TIMEOUT_KOMENDY = { boolean: 'BOOLEAN_TIMEOUT_MS', start: 'START_TIMEOUT_MS', wczytajOryginal: 'WCZYTANIE_TIMEOUT_MS', odtworz: 'WCZYTANIE_TIMEOUT_MS' };
+const TIMEOUT_KOMENDY = { boolean: 'BOOLEAN_TIMEOUT_MS', start: 'START_TIMEOUT_MS', wczytajOryginal: 'WCZYTANIE_TIMEOUT_MS', wczytajPlik: 'WCZYTANIE_TIMEOUT_MS',
+                          odtworz: 'WCZYTANIE_TIMEOUT_MS', eksport: 'WCZYTANIE_TIMEOUT_MS' };
 
 export class BladGeometrii extends Error {
   constructor(kod, wiadomosc) {

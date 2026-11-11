@@ -9,7 +9,7 @@ Uruchom z folderu projektu:  python test/run_headless.py
 Wymaga: pip install playwright   oraz
         npm install --no-save three@0.187.0 occt-import-js@0.0.23 three-mesh-bvh@0.9.16 iwer@2.6.0
 """
-import base64, json, os, pathlib, re, subprocess, sys, time, urllib.parse
+import base64, json, os, pathlib, re, struct, subprocess, sys, time, urllib.parse
 from playwright.sync_api import sync_playwright
 
 sys.stdout.reconfigure(encoding="utf-8")   # polskie znaki w konsoli Windows
@@ -17,6 +17,22 @@ sys.stdout.reconfigure(encoding="utf-8")   # polskie znaki w konsoli Windows
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PORT = 8765
 STEP = ROOT / "test" / "test_zlozenie.step"
+
+def zapisz_stl_szescian(path, a=50.0, off=(500.0, 0.0, 0.0)):
+    """Mały STL (sześcian a mm przesunięty o off) — tworzony przy teście, nie trzymany w repozytorium."""
+    v = [(x, y, z) for x in (0, a) for y in (0, a) for z in (0, a)]
+    sciany = [(0, 2, 3, 1), (4, 5, 7, 6), (0, 1, 5, 4), (2, 6, 7, 3), (0, 4, 6, 2), (1, 3, 7, 5)]
+    tr = [t for q in sciany for t in ((q[0], q[1], q[2]), (q[0], q[2], q[3]))]
+    with open(path, "wb") as fh:
+        fh.write(b"szescian testowy".ljust(80, b" ")); fh.write(struct.pack("<I", len(tr)))
+        for t in tr:
+            fh.write(struct.pack("<3f", 0, 0, 0))
+            for i in t: fh.write(struct.pack("<3f", *(v[i][k] + off[k] for k in range(3))))
+            fh.write(b"\0\0")
+
+def czytaj_step(path):
+    """Części zapisanego STEP (nazwa, ścieżka, ramka mm) — tym samym czytnikiem co viewer."""
+    return json.loads(subprocess.check_output(["node", str(ROOT / "test" / "czytaj_step.mjs"), str(path)], cwd=ROOT))
 OUT = ROOT / "test"
 
 # Chrome zainstalowany w systemie (pierwsza istniejąca ścieżka). Brak = Chromium z Playwrighta.
@@ -34,7 +50,7 @@ src = (ROOT / "index.html").read_text(encoding="utf-8")
 src = src.replace("https://cdn.jsdelivr.net/npm/three@0.187.0/", f"http://localhost:{PORT}/node_modules/three/")
 src = re.sub(r"https://cdn\.jsdelivr\.net/npm/occt-import-js@[\d.]+/", f"http://localhost:{PORT}/node_modules/occt-import-js/", src)
 src = re.sub(r"https://cdn\.jsdelivr\.net/npm/three-mesh-bvh@[\d.]+/", f"http://localhost:{PORT}/node_modules/three-mesh-bvh/", src)
-src = src.replace("import('./szkicownik/szkicownik.js')", "import('../szkicownik/szkicownik.js')")   # kopia strony leży w test/
+src = src.replace("import('./szkicownik/", "import('../szkicownik/")   # kopia strony leży w test/
 (OUT / "index_local.html").write_text(src, encoding="utf-8")
 
 IWER_JS = (ROOT / "node_modules" / "iwer" / "build" / "iwer.min.js").read_text(encoding="utf-8")
@@ -299,6 +315,36 @@ def test_pc(browser):
     page.click("#noteSave")
     check("komentarz z dyktowania zapisany", page.evaluate("window.__viewer.notes.length && window.__viewer.notes[0].text") == GEMINI_TEXT)
 
+    # --- kilka plików w jednym złożeniu (drugi STEP + STL), zmiany, zapis jako STEP ---
+    stl = OUT / "test_szescian.stl"
+    zapisz_stl_szescian(stl)
+    page.set_input_files("#fileAdd", [str(STEP), str(stl)])
+    page.wait_for_function("window.__viewer.parts.length === 9", timeout=60000)
+    r = page.evaluate("""(() => { const V = window.__viewer, s = V.parts.find(p => p.name === 'test_szescian');
+        const bb = s.mesh.geometry.boundingBox;
+        return { pliki: V.pliki.map(f => f.format), min: bb.min.toArray().map(v => Math.round(v * 1000)), max: bb.max.toArray().map(v => Math.round(v * 1000)),
+                 status: document.getElementById('status').textContent }; })()""")
+    check("„Dodaj plik”: drugi STEP i STL w jednym złożeniu (9 części)", r["pliki"] == ["step", "step", "stl"], r["status"].replace("\n", " | "))
+    check("STL wczytany w mm (sześcian 50 mm w X = 500)", r["min"] == [500, 0, 0] and r["max"] == [550, 50, 50], f"{r['min']} – {r['max']}")
+    page.evaluate("""(() => { const V = window.__viewer;
+        const slup = V.parts.find(p => p.name === 'Slup'); slup.mesh.position.x += 0.1; slup.mesh.updateMatrix();
+        const drugie = V.parts.filter(p => p.zr.plik === V.pliki[1].id);
+        V.hideObjects([drugie.find(p => p.name === 'Silownik_DSNU').mesh]);
+        const [k] = V.copyParts([drugie.find(p => p.name === 'Wspornik_L').mesh]); k.position.x += 0.2; k.updateMatrix(); })()""")
+    with page.expect_download(timeout=120000) as d:
+        page.click("#btnSaveStep")
+    zapis = OUT / "zapis_pc.step"
+    d.value.save_as(str(zapis))
+    cz = czytaj_step(zapis)
+    nazwy = sorted(c["nazwa"] for c in cz)
+    slupy = sorted(round(c["min"][0]) for c in cz if c["nazwa"] == "Slup")
+    wsp = sorted(round(c["min"][0]) for c in cz if c["nazwa"].startswith("Wspornik_L"))
+    szes = [c for c in cz if c["nazwa"] == "test_szescian"]
+    check("„Zapisz STEP”: całe złożenie (2 pliki + STL), bez ukrytej części, z kopią", len(cz) == 9 and nazwy.count("Silownik_DSNU") == 1 and "Wspornik_L (kopia)" in nazwy,
+          ", ".join(nazwy))
+    check("zapis STEP: przesunięta część i kopia w nowym położeniu", slupy == [-175, -75] and wsp == [50, 50, 250], f"słupy X {slupy}, wsporniki X {wsp}")
+    check("zapis STEP: STL jako bryła w swoim miejscu", len(szes) == 1 and [round(v) for v in szes[0]["min"]] == [500, 0, 0], str(szes[:1]))
+
     page.evaluate("document.querySelector('#treeBox').open = true; document.querySelector('#shotsBox').open = true")
     page.screenshot(path=str(OUT / "screenshot.png"))
     page.close()
@@ -324,9 +370,10 @@ window.T = (() => {
       c.quaternion.set(q.x, q.y, q.z, q.w);
     },
     // końcówka narzędzia (3 cm przed kontrolerem) w punkcie p, promień w dół / do przodu
-    tipAt(hand, p, dir = [0, 0, -1]) {
+    tipAt(hand, p, dir = [0, 0, -1]) {               // odległość końcówki od kontrolera zależy od narzędzia
       const d = new THREE.Vector3(...dir).normalize();
-      const eye = new THREE.Vector3(...p).addScaledVector(d, -0.03);
+      const off = -T.ctrl(hand).userData.tip.position.z;
+      const eye = new THREE.Vector3(...p).addScaledVector(d, -off);
       T.pose(hand, eye.toArray(), eye.clone().add(d).toArray());
     },
     btn(hand, id, v) { dev.controllers[hand].updateButtonValue(id, v); },
@@ -398,6 +445,8 @@ def test_xr(browser):
              T.btn('right', 'trigger', 0); await T.frames(4);
              return V.strokes.length ? V.strokes[0].points.length : 0;""")
     check("rysowanie w powietrzu (1 linia)", E("return V.strokes.length;") == 1 and n >= 5, f"{n} punktów")
+    r = E("const u = T.ctrl('right').userData; return [u.tip.position.z, u.ray.scale.z, u.cursor.visible];")
+    check("Rysuj: kulka 8 cm przed kontrolerem, krótka linia do niej", abs(r[0] + 0.08) < 1e-9 and abs(r[1] - 0.08) < 1e-9 and r[2], str(r))
 
     E("await T.click('right', 'b-button');")
     check("przycisk B cofa rysunek", E("return V.strokes.length;") == 0)
@@ -890,10 +939,33 @@ def test_szkicownik_pc(browser):
     page.screenshot(path=str(OUT / "screenshot_szk_pc.png"))
     klik("wroc")
     r = E("""await SZ.frames(3);
+             const szk = V.parts.filter(p => p.zr && p.zr.typ === 'szkic');
              return { akt: S.aktywny, op: V.parts.every(p => p.mesh.material.opacity === 1), vis: V.parts.every(p => p.mesh.visible),
-                      nowe: [...S.wezly.entries()].filter(([id, w]) => w.holder.visible).length, panel: !!S.panel.mesh.parent };""")
-    check("szkicownik PC: „Wróć do podglądu” przywraca model, nowe bryły zostają widoczne",
-          not r["akt"] and r["op"] and r["vis"] and r["nowe"] == 2 and not r["panel"], str(r))
+                      nowe: szk.length, holdery: [...S.wezly.values()].filter(w => w.holder.visible).length, panel: !!S.panel.mesh.parent,
+                      drzewo: V.treeRows.some(x => x.name === 'Szkicownik'), slupX: V.parts.find(p => p.name === 'Slup').mesh.position.x };""")
+    check("szkicownik PC: „Wróć do podglądu” — bryły stają się częściami podglądu (gałąź „Szkicownik”)",
+          not r["akt"] and r["op"] and r["vis"] and r["nowe"] == 2 and r["holdery"] == 0 and r["drzewo"] and not r["panel"], str(r))
+    check("szkicownik PC: przesunięcie części oryginału w Szkicowniku widać w podglądzie", abs(r["slupX"] - 0.1) < 1e-6, f"Slup x = {r['slupX']} m")
+    with page.expect_download(timeout=120000) as d:
+        page.click("#btnSaveStep")
+    zapis = OUT / "zapis_szkic.step"
+    d.value.save_as(str(zapis))
+    cz = czytaj_step(zapis)
+    nazwy = [c["nazwa"] for c in cz]
+    slup = [c for c in cz if c["nazwa"] == "Slup"]
+    # wynik różnicy może mieć kilka brył (walec przeciął prostopadłościan) — wtedy jedna część z kilkoma bryłami
+    check("podgląd → „Zapisz STEP”: oryginał + bryły ze Szkicownika",
+          all(n in nazwy for n in ["Plyta_bazowa", "Slup", "Wspornik_L", "Silownik_DSNU", "Prostopadłościan 1 (kopia)"]) and len(cz) >= 6
+          and all("Szkicownik" in c["sciezka"] or c["nazwa"] == "Szkicownik" for c in cz if c["nazwa"].startswith("Prostopad") or c["nazwa"] == "Szkicownik")
+          and slup and round(slup[0]["min"][0]) == -75, ", ".join(nazwy))
+    r = E("""const p = V.parts.find(x => x.zr && x.zr.typ === 'szkic'), id = p.zr.id;
+             const b0 = [...S.bryla(id).poz];
+             p.mesh.position.x += 0.05; p.mesh.updateMatrix();
+             await V.przelaczSzkicownik(true); await SZ.frames(3);
+             const b1 = [...S.bryla(id).poz];
+             await V.przelaczSzkicownik(false); await SZ.frames(3);
+             return { dx: b1[0] - b0[0], x: p.mesh.position.x, czesci: V.parts.filter(x => x.zr && x.zr.typ === 'szkic').length };""")
+    check("część ze Szkicownika przesunięta w podglądzie → to samo położenie po wejściu do Szkicownika", abs(r["dx"] - 50) < 1e-6 and r["czesci"] == 2, str(r))
     page.mouse.click(820, 660)
     check("po powrocie: klik w model znów wybiera część (viewer działa)", page.is_visible("#picked"))
     page.close()
@@ -1035,6 +1107,21 @@ def test_szkicownik_vr(browser):
     check("szkicownik VR: „Wróć do podglądu” — panel viewera wraca", not r["akt"] and r["pal"] and r["op"], str(r))
     hv = E("await T.palClick('page:narzedzia'); return await T.palClick('tool:miarka');")
     check("po powrocie: panel viewera działa (klik w narzędzie)", E("return V.S.tool;") == "miarka", f"hover={hv}")
+    r = E("""V.paletteAction('tool:wskaz'); V.paletteAction('grab:czesc'); await T.frames(3);
+             const szk = V.parts.filter(p => p.zr && p.zr.typ === 'szkic');
+             const m = szk[szk.length - 1].mesh;
+             const bb = new V.THREE.Box3().setFromObject(m), c = bb.min.clone().lerp(bb.max, 0.12);
+             const x0 = new Map(szk.map(p => [p.mesh, p.mesh.position.x]));
+             T.tipAt('right', c.toArray()); await T.frames(4);
+             T.btn('right', 'squeeze', 1); await T.frames(4);
+             const held = T.ctrl('right').userData.held;
+             T.tipAt('right', [c.x + 0.1, c.y, c.z]); await T.frames(4);
+             const hm = held && held.meshes && held.meshes[0];
+             const dx = hm && x0.has(hm) ? hm.position.x - x0.get(hm) : null;
+             T.btn('right', 'squeeze', 0); await T.frames(3);
+             return { n: szk.length, kind: held && held.kind, nazwy: held && held.meshes ? held.meshes.map(x => x.name) : [], dx, skala: V.pivot.scale.x };""")
+    check("bryła ze Szkicownika w podglądzie: grip chwyta ją jak część i przesuwa",
+          r["n"] == 2 and r["kind"] == "parts" and len(r["nazwy"]) == 1 and abs(r["dx"] - 0.1 / r["skala"]) < 0.003, str(r))
     page.close()
     ctx.close()
     check("szkicownik VR: brak błędów w konsoli", not errors, "; ".join(errors[:5]))

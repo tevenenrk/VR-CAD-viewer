@@ -69,8 +69,10 @@
 <div id="panel">
   <h1>CAD VR Viewer <span>v0.3</span></h1>
   <div class="row">
-    <label class="btn primary" for="fileInput">Otwórz STEP</label>
-    <input type="file" id="fileInput" hidden>
+    <label class="btn primary" for="fileInput" title="Otwiera plik (zamyka poprzedni). Kilka zaznaczonych plików = złożenie">Otwórz STEP / STL</label>
+    <input type="file" id="fileInput" hidden multiple accept=".step,.stp,.iges,.igs,.stl">
+    <label class="btn" for="fileAdd" title="Dokłada plik do tego, co już jest wczytane">Dodaj plik</label>
+    <input type="file" id="fileAdd" hidden multiple accept=".step,.stp,.iges,.igs,.stl">
     <select id="quality" title="Dokładność siatki">
       <option value="niska">Siatka: niska (szybko)</option>
       <option value="srednia" selected>Siatka: średnia</option>
@@ -89,6 +91,8 @@
   </div>
   <div class="row">
     <button id="btnSzk" title="Tryb do szybkiego tworzenia brył zastępczych (gabarytów) z eksportem do STEP">Szkicownik brył</button>
+    <button id="btnSaveStep" title="Zapisuje całe złożenie z widocznymi częściami (przesunięcia, kopie, bryły ze Szkicownika) jako STEP">Zapisz STEP</button>
+    <button id="btnSaveStepDrive" title="Zapis STEP do folderu projektu/cad na Google Drive">Zapisz STEP na Drive</button>
   </div>
   <div id="status">Wybierz plik .step / .stp (eksport z SolidWorksa).</div>
   <div id="msg"></div>
@@ -161,6 +165,8 @@
   </details>
   <details><summary>Sterowanie</summary>
     <div class="help">
+      <p><b>Pliki:</b> „Otwórz” zamyka poprzedni model (kilka zaznaczonych plików = złożenie), „Dodaj plik” dokłada STEP / STL do wczytanego.
+      „Zapisz STEP” zapisuje całe złożenie (widoczne części, przesunięcia, kopie, bryły ze Szkicownika) jako prawdziwe bryły. STL: 1 jednostka = 1 mm.</p>
       <p><b>PC:</b> lewy przycisk – obrót, prawy – przesuw, kółko – zoom, klik – wybór części (kolor, ukryj, półprzezroczysta w panelu), ◐ w drzewie – półprzezroczysta, klik w płytkę – edycja komentarza, Ctrl+Z – cofnij.</p>
       <p><b>Quest:</b><br>
       <b>Spust</b> – wybrane narzędzie: Wskaż / Rysuj / Gumka / Miarka / Kolor / Komentarz / Przekrój<br>
@@ -178,7 +184,7 @@
     </div>
   </details>
 </div>
-<div id="drop">Upuść plik STEP</div>
+<div id="drop">Upuść plik STEP / STL (kilka plików = złożenie)</div>
 <input type="text" id="xrKb" autocomplete="off">
 
 <script type="module">
@@ -217,7 +223,8 @@ const CONFIG = {
   BTN: { TRIGGER: 0, GRIP: 1, STICK: 3, AX: 4, BY: 5 },
   STICK_DEADZONE: 0.25,
   SIZE_SPEED: 1.2,             // szybkość zmiany rozmiaru / skali gałką (na sekundę)
-  TIP_OFFSET: 0.03,            // końcówka narzędzia (pędzel, sfera) przed kontrolerem (m)
+  TIP_OFFSET: 0.03,            // końcówka narzędzia (sfera chwytu) przed kontrolerem (m)
+  DRAW_TIP_OFFSET: 0.08,       // Rysuj / Gumka / tworzenie brył: kulka tyle przed kontrolerem (m), z krótką linią do niej
   RAY_LENGTH: 5,
 
   // Panel narzędzi w goglach
@@ -240,6 +247,9 @@ const CONFIG = {
   // Chwytanie części
   PART_GRAB_RADIUS: 0.02,      // tryb „Część”: zasięg dotyku końcówki kontrolera (m)
   GHOST_OPACITY: 0.3,          // część „półprzezroczysta” (0 = niewidoczna, 1 = pełna)
+  STL_M_NA_JEDNOSTKE: 0.001,   // STL nie zapisuje jednostek: 1 jednostka pliku = 1 mm
+  SZKIC_GRUPA: 'Szkicownik',   // gałąź drzewa z bryłami zatwierdzonymi w Szkicowniku
+  ZAPIS_NAZWA_ZLOZENIA: 'Zlozenie', // nazwa złożenia w zapisanym STEP, gdy wczytano kilka plików
   SPHERE_DEFAULT: 0.08, SPHERE_MIN: 0.02, SPHERE_MAX: 0.6,       // tryb „Grupa”: promień sfery (m)
 
   // Miarka
@@ -308,7 +318,8 @@ for (const id of ['fileInput', 'quality', 'upAxis', 'btnVR', 'btnAR', 'btnShot',
   'noteBox', 'noteTitle', 'noteText', 'noteVoice', 'noteSave', 'noteDelete', 'noteCancel', 'noteStatus',
   'secOn', 'secX', 'secY', 'secZ', 'secFlip', 'secPos', 'secInfo', 'sectionBox',
   'cloudBox', 'cloudState', 'cloudConnect', 'cloudDisconnect', 'cloudAuto', 'cloudFolder', 'cloudBrowse', 'cloudUp', 'cloudSetFolder', 'cloudPending',
-  'cloudPath', 'cloudFiles', 'recent', 'recentCount', 'setClientId', 'setGeminiKey', 'setGeminiModel', 'setSave', 'setMic', 'setInfo', 'xrKb', 'btnSzk'])
+  'cloudPath', 'cloudFiles', 'recent', 'recentCount', 'setClientId', 'setGeminiKey', 'setGeminiModel', 'setSave', 'setMic', 'setInfo', 'xrKb', 'btnSzk',
+  'fileAdd', 'btnSaveStep', 'btnSaveStepDrive'])
   ui[id] = $(id);
 Object.assign(ui, { file: ui.fileInput, vr: ui.btnVR, ar: ui.btnAR, shot: ui.btnShot });
 
@@ -318,7 +329,8 @@ const modelSize = new THREE.Vector3(1, 1, 1);
 let modelName = 'model', loadInfo = null;
 let placementMode = 'stol';                   // 'stol' | 'life'
 let xrMode = null;                            // 'vr' | 'ar' | null
-let parts = [];                               // { mesh, name, path, el }
+let parts = [];                               // { mesh, name, path, el, zr }  zr = skąd bryła do zapisu STEP (plik / szkic)
+let pliki = [], licznikPlikow = 0;            // wczytane pliki złożenia: { id, nazwa, format, blob }
 let visibleCache = null;
 let selectedObj = null, selectedMeshes = [];  // wybór myszą na PC
 let label, toast, toastTimer = 0;
@@ -480,12 +492,32 @@ function detectFormat(name) {
   const ext = name.toLowerCase().split('.').pop();
   if (ext === 'step' || ext === 'stp') return 'step';
   if (ext === 'iges' || ext === 'igs') return 'iges';
+  if (ext === 'stl') return 'stl';
   return null;
 }
 
-async function loadFile(file) {
+async function loadFile(file, dodaj = false) {
   const buf = new Uint8Array(await file.arrayBuffer());
-  await loadBuffer(buf, file.name);
+  await loadBuffer(buf, file.name, undefined, { dodaj });
+}
+
+// kilka plików: pierwszy otwiera (albo dokłada), pozostałe dokładają
+async function loadFiles(files, dodaj = false) {
+  const lista = [...files];
+  for (let i = 0; i < lista.length; i++) await loadFile(lista[i], dodaj || i > 0);
+}
+
+// STL → ten sam układ danych, co wynik OpenCascade (jedna część, metry)
+async function parseStl(buffer, name) {
+  const { STLLoader } = await import('three/addons/loaders/STLLoader.js');
+  const ab = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+  const g = new STLLoader().parse(ab);
+  const pos = g.attributes.position.array;
+  for (let i = 0; i < pos.length; i++) pos[i] *= CONFIG.STL_M_NA_JEDNOSTKE;
+  const idx = new Uint32Array(pos.length / 3);
+  for (let i = 0; i < idx.length; i++) idx[i] = i;
+  return { success: true, root: { name: '', meshes: [0], children: [] },
+           meshes: [{ name: name.replace(/\.[^.]+$/, ''), color: null, attributes: { position: { array: pos }, normal: g.attributes.normal ? { array: g.attributes.normal.array } : undefined }, index: { array: idx } }] };
 }
 
 async function loadUrl(url) {
@@ -501,17 +533,20 @@ async function loadUrl(url) {
 }
 
 // meta: undefined = plik z dysku, obiekt = skąd (np. Google Drive), false = nie zapisuj w „ostatnich” (już tam jest)
-async function loadBuffer(buffer, name, meta) {
+// opcje.dodaj: dołóż do wczytanego modelu zamiast go zamykać
+async function loadBuffer(buffer, name, meta, opcje = {}) {
   const format = detectFormat(name);
   if (!format) {
     const msg = CONFIG.NATIVE_EXT.includes(extOf(name))
       ? `„${name}” to plik SolidWorksa — przeglądarka nie umie go otworzyć. W SolidWorksie: Plik → Zapisz jako → STEP AP214/AP242.`
-      : `„${name}” to nie STEP/IGES. W SolidWorksie: Plik → Zapisz jako → STEP AP214/AP242.`;
+      : `„${name}” to nie STEP/IGES/STL. W SolidWorksie: Plik → Zapisz jako → STEP AP214/AP242.`;
     setStatus(msg); say(msg);
     return;
   }
   const blob = new Blob([buffer]);              // kopia (oryginał idzie do wątku importu)
   lastFile = { blob, name };
+  const dodaj = !!(opcje.dodaj && cadRoot);
+  const plik = { id: 'f' + (++licznikPlikow), nazwa: name, format, blob };
   if (meta !== false) rememberFile(blob, name, meta || { source: 'dysk' });
 
   const q = CONFIG.QUALITY[ui.quality.value] || CONFIG.QUALITY.srednia;
@@ -523,15 +558,16 @@ async function loadBuffer(buffer, name, meta) {
   setButtons(false);
   const t0 = performance.now();
   try {
-    const result = await parseCad(buffer, format, params);
+    const result = format === 'stl' ? await parseStl(buffer, name) : await parseCad(buffer, format, params);
     if (!result || !result.success) throw new Error('plik uszkodzony lub nieobsługiwany');
-    modelName = name.replace(/\.[^.]+$/, '');
+    if (!dodaj) { modelName = name.replace(/\.[^.]+$/, ''); pliki = []; }
     loadInfo = { name, secs: 0, stats: null };
-    loadInfo.stats = buildModel(result);
+    loadInfo.stats = buildModel(result, plik, dodaj);
+    pliki.push(plik);
     loadInfo.secs = ((performance.now() - t0) / 1000).toFixed(1);
     renderLoadStatus();
     document.title = name + ' — CAD VR Viewer';
-    say(`Wczytano „${name}”: ${loadInfo.stats.parts} części`);
+    say((dodaj ? `Dodano „${name}”` : `Wczytano „${name}”`) + `: ${loadInfo.stats.parts} części`);
     if (renderer.xr.isPresenting && pal.page === 'menu') pal.page = 'narzedzia';
   } catch (e) {
     setStatus('Błąd odczytu: ' + e.message);
@@ -543,23 +579,27 @@ async function loadBuffer(buffer, name, meta) {
 function renderLoadStatus() {
   if (!loadInfo || !loadInfo.stats) return;
   const s = loadInfo.stats;
-  setStatus(`Wczytano „${loadInfo.name}”\n${s.parts} części, ${(s.tris / 1000).toFixed(0)} tys. trójkątów, ${loadInfo.secs} s` +
+  const ile = pliki.length > 1 ? ` + ${pliki.length - 1} inne pliki` : '';
+  setStatus(`Wczytano „${loadInfo.name}”${ile}\n${parts.length} części, ${(s.tris / 1000).toFixed(0)} tys. trójkątów, ${loadInfo.secs} s` +
             `\nWymiary: ${(modelSize.x * 1000).toFixed(0)} × ${(modelSize.y * 1000).toFixed(0)} × ${(modelSize.z * 1000).toFixed(0)} mm`);
 }
 
 // ============================================================================
 // BUDOWA MODELU 3D Z WYNIKU OPENCASCADE
 // ============================================================================
-function buildModel(result) {
-  clearModel();
-  cadRoot = new THREE.Group();
-  cadRoot.name = 'CAD';
-
+function buildModel(result, plik = { id: 'f0' }, dodaj = false) {
+  const nowy = !(dodaj && cadRoot);
+  if (nowy) {
+    clearModel();
+    cadRoot = new THREE.Group();
+    cadRoot.name = 'CAD';
+    ui.tree.innerHTML = '';
+    treeRows = [];
+    pal.treeScroll = 0;
+  }
   const geoCache = new Map();
   let tris = 0;
-  ui.tree.innerHTML = '';
-  treeRows = [];
-  pal.treeScroll = 0;
+  const czesciPrzed = parts.length;
 
   const walk = (node, parentObj, path, depth) => {
     const nodeName = node.name || '';
@@ -582,7 +622,7 @@ function buildModel(result) {
       mesh.updateMatrix();
       mesh.userData.origMatrix = mesh.matrix.clone();   // do „Reset części”
       tris += geo.index.count / 3;
-      const p = { mesh, name: partName, path: [...curPath, partName].filter((v, i, a) => i === 0 || v !== a[i - 1]) };
+      const p = { mesh, name: partName, path: [...curPath, partName].filter((v, i, a) => i === 0 || v !== a[i - 1]), zr: { typ: 'plik', plik: plik.id } };
       mesh.userData.part = p;
       p.el = addTreeRow(mesh, partName, depth + (groupRow ? 1 : 0), true);
       parts.push(p);
@@ -595,6 +635,12 @@ function buildModel(result) {
   const tb = performance.now();
   for (const geo of geoCache.values()) geo.computeBoundsTree();
   const bvhMs = performance.now() - tb;
+
+  if (!nowy) {                                  // dołożony plik: te same współrzędne CAD, widok bez skoku
+    for (const g of geoCache.values()) cadBox.union(g.boundingBox);
+    odswiezRozmiar();
+    return { parts: parts.length - czesciPrzed, tris, bvhMs };
+  }
 
   annoRoot = new THREE.Group();                 // rysunki i miary w układzie modelu (ruszają się razem z nim)
   annoRoot.name = 'Adnotacje';
@@ -610,7 +656,34 @@ function buildModel(result) {
 
   offsetGroup.add(cadRoot);
   applyUpAxis();
-  return { parts: parts.length, tris, bvhMs };
+  return { parts: parts.length - czesciPrzed, tris, bvhMs };
+}
+
+// Wymiary całego złożenia (po dołożeniu pliku / brył ze Szkicownika) — bez przestawiania widoku
+function odswiezRozmiar() {
+  pivot.updateMatrixWorld(true);
+  const inv = pivot.matrixWorld.clone().invert(), box = new THREE.Box3();
+  for (const p of parts) box.union(new THREE.Box3().setFromObject(p.mesh).applyMatrix4(inv));
+  if (!box.isEmpty()) box.getSize(modelSize);
+  visibleCache = null;
+  renderLoadStatus();
+}
+
+// Pusty model (np. Szkicownik bez wczytanego pliku) — żeby zatwierdzone bryły miały gdzie trafić
+function zapewnijCadRoot() {
+  if (cadRoot) return false;
+  cadRoot = new THREE.Group();
+  cadRoot.name = 'CAD';
+  ui.tree.innerHTML = ''; treeRows = []; pliki = [];
+  annoRoot = new THREE.Group(); annoRoot.name = 'Adnotacje'; cadRoot.add(annoRoot);
+  cadBox.set(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5));
+  section.vis = makeSectionVisual(); cadRoot.add(section.vis);
+  setSectionAxis('X', 0, false);
+  offsetGroup.add(cadRoot);
+  modelName = CONFIG.SZKIC_GRUPA;
+  loadInfo = { name: CONFIG.SZKIC_GRUPA, secs: '0', stats: { parts: 0, tris: 0 } };
+  cadRoot.rotation.set(ui.upAxis.value === 'Z' ? -Math.PI / 2 : 0, 0, 0);
+  return true;
 }
 
 // Obrót CAD → świat (w goglach Y jest w górę) i wycentrowanie modelu
@@ -704,6 +777,7 @@ function clearModel() {
   section.on = false; SECTION_UNI.uSectionOn.value = false; section.vis = null;
   annoRoot = null;
   if (!cadRoot) return;
+  for (const o of [...cadRoot.children]) if (o.userData.szkRoot) cadRoot.remove(o);   // Szkicownik podepnie się sam
   const geos = new Set();
   cadRoot.traverse((o) => {
     if (o.isMesh) {
@@ -812,7 +886,7 @@ function copyParts(meshes) {
     m.parent.add(c);
     c.updateMatrix();
     c.userData.origMatrix = c.matrix.clone();
-    const p = { mesh: c, name: c.name, path: [...src.path.slice(0, -1), c.name], kopia: true };
+    const p = { mesh: c, name: c.name, path: [...src.path.slice(0, -1), c.name], kopia: true, zr: src.zr };   // ta sama bryła źródłowa (zapis STEP)
     c.userData.part = p;
     const i0 = treeRows.findIndex((r) => r.obj === m);
     p.el = addTreeRow(c, c.name, i0 >= 0 ? treeRows[i0].depth : 0, true);
@@ -835,6 +909,7 @@ function removeCopies(meshes) {
   for (const c of meshes) {
     c.removeFromParent();
     mats(c).forEach((m) => m.dispose());
+    if (!c.userData.sharedGeo && !parts.some((p) => p.mesh !== c && p.mesh.geometry === c.geometry)) c.geometry.dispose();
     parts = parts.filter((p) => p.mesh !== c);
     const i = treeRows.findIndex((r) => r.obj === c);
     if (i >= 0) { treeRows[i].el.remove(); treeRows.splice(i, 1); }
@@ -1750,24 +1825,25 @@ function layoutPalette() {
     }
     row(1066, 84, [{ id: 'cz:back', text: '◀ Wróć' }, { id: 'page:drzewo', text: 'Drzewo' }]);
   } else if (pal.page === 'menu' && pal.menuView === 'glowne') {
-    label(116, 'Plik');
+    label(116, 'Plik' + (pliki.length > 1 ? ` (złożenie z ${pliki.length} plików)` : ''));
     row(154, 92, [{ id: 'menu:drive', text: 'Google Drive' }, { id: 'menu:recent', text: 'Ostatnie pliki' },
-                  { id: 'menu:reload', text: 'Wczytaj ponownie', disabled: !lastFile }]);
-    label(262, 'Widok');
-    row(300, 86, [{ id: 'up:Y', text: 'Góra: Y', active: ui.upAxis.value === 'Y' }, { id: 'up:Z', text: 'Góra: Z', active: ui.upAxis.value === 'Z' },
+                  { id: 'menu:reload', text: 'Wczytaj ponownie', disabled: !lastFile || pliki.length > 1 }]);
+    row(256, 80, [{ id: 'otw:zastap', text: 'Otwórz: zastąp', active: !pal.dodawanie }, { id: 'otw:dodaj', text: 'Otwórz: dodaj', active: !!pal.dodawanie },
+                  { id: 'zapis:pobierz', text: 'Zapisz STEP', disabled: !parts.length }, { id: 'zapis:drive', text: 'STEP na Drive', disabled: !parts.length || !drive.connected }]);
+    label(352, 'Widok');
+    row(390, 86, [{ id: 'up:Y', text: 'Góra: Y', active: ui.upAxis.value === 'Y' }, { id: 'up:Z', text: 'Góra: Z', active: ui.upAxis.value === 'Z' },
                   { id: 'placeset:stol', text: 'Na stół', active: placementMode === 'stol' }, { id: 'placeset:life', text: 'Skala 1:1', active: placementMode === 'life' }]);
-    row(398, 86, [['niska', 'Siatka: niska'], ['srednia', 'średnia'], ['wysoka', 'wysoka']].map(([v, text]) => ({ id: 'qual:' + v, text, active: ui.quality.value === v })));
-    label(500, 'Tryb gogli');
-    row(538, 86, [{ id: 'xr:vr', text: 'VR', active: xrMode === 'vr', disabled: !xrSupport.vr }, { id: 'xr:ar', text: 'AR (passthrough)', active: xrMode === 'ar', disabled: !xrSupport.ar },
+    row(486, 86, [['niska', 'Siatka: niska'], ['srednia', 'średnia'], ['wysoka', 'wysoka']].map(([v, text]) => ({ id: 'qual:' + v, text, active: ui.quality.value === v })));
+    label(582, 'Tryb gogli');
+    row(620, 86, [{ id: 'xr:vr', text: 'VR', active: xrMode === 'vr', disabled: !xrSupport.vr }, { id: 'xr:ar', text: 'AR (passthrough)', active: xrMode === 'ar', disabled: !xrSupport.ar },
                   { id: 'xr:exit', text: 'Wyjdź z gogli' }]);
-    label(640, 'Chmura: Google Drive');
-    info(678, drive.statusText(), 48, 'left', drive.connected ? '#8be28b' : '#ffd27a');
-    row(734, 86, [{ id: 'cloud:auto', text: 'Zrzuty do chmury: ' + (settings.autoUpload ? 'TAK' : 'NIE'), active: settings.autoUpload },
+    label(716, 'Chmura: Google Drive');
+    info(754, drive.statusText(), 48, 'left', drive.connected ? '#8be28b' : '#ffd27a');
+    row(806, 86, [{ id: 'cloud:auto', text: 'Zrzuty do chmury: ' + (settings.autoUpload ? 'TAK' : 'NIE'), active: settings.autoUpload },
                   { id: 'cloud:pending', text: `Wyślij zaległe (${cloudPendingCount})`, disabled: !cloudPendingCount || !drive.connected }]);
-    info(830, 'Zrzuty trafiają do: ' + shotsTargetText(), 48);
-    label(898, 'Dyktowanie głosem');
-    info(936, voice.statusText(), 48);
-    info(996, 'Plik SolidWorks (.sldprt/.sldasm) trzeba zapisać jako STEP.', 44, 'left', '#9aa0a6');
+    info(900, 'Zrzuty trafiają do: ' + shotsTargetText(), 48);
+    label(956, 'Dyktowanie głosem');
+    info(994, voice.statusText(), 44);
     row(1058, 86, [{ id: 'tryb:szkicownik', text: 'Szkicownik brył ▸' }]);
   } else if (pal.page === 'menu' && pal.menuView === 'drive') {
     if (!drive.connected) {
@@ -1970,6 +2046,8 @@ function paletteAction(id) {
   else if (k === 'qual') { ui.quality.value = v; say('Siatka: ' + v + ' — działa po „Wczytaj ponownie”'); }
   else if (k === 'xr') xrAction(v);
   else if (k === 'tryb') przelaczSzkicownik(v === 'szkicownik');
+  else if (k === 'otw') { pal.dodawanie = v === 'dodaj'; say(pal.dodawanie ? 'Pliki z Drive / ostatnie będą DOKŁADANE do złożenia' : 'Plik zastąpi wczytany model'); }
+  else if (k === 'zapis') zapiszStep(v === 'drive');
   else if (k === 'cloud') {
     if (v === 'auto') { settings.autoUpload = !settings.autoUpload; saveSettings(); syncCloudUI(); say('Zrzuty do chmury: ' + (settings.autoUpload ? 'TAK' : 'NIE')); }
     else if (v === 'pending') uploadPendingShots(true);
@@ -2390,6 +2468,7 @@ function eraseAt(c) {
 
 function updateCursor(c) {
   const u = c.userData;
+  u.tip.position.z = -(S.tool === 'rysuj' || S.tool === 'gumka' ? CONFIG.DRAW_TIP_OFFSET : CONFIG.TIP_OFFSET);
   u.cursor.visible = S.tool === 'rysuj' || S.tool === 'gumka';
   if (S.tool === 'rysuj') {
     u.cursor.material.color.set(CONFIG.COLORS[S.colorIdx]); u.cursor.material.opacity = 0.9; u.cursor.scale.setScalar(S.brush);
@@ -2459,6 +2538,8 @@ function handleXRInput(dt) {
         if ((u.activeTool || S.tool) === 'kolor') frameHL.point.add(u.rayHit.object);
       }
     }
+    // Rysuj / Gumka: krótka linia od kontrolera do kulki (widać, gdzie i jak grubo rysujesz)
+    if (!u.uiHover && (S.tool === 'rysuj' || S.tool === 'gumka')) rayLen = CONFIG.DRAW_TIP_OFFSET;
     u.ray.scale.z = rayLen;
 
     // Spust: klik w panel albo narzędzie
@@ -2844,7 +2925,7 @@ async function openFromDrive(it) {
     // <projekt>/cad/plik.step → folder projektu = <projekt>; inaczej folder, w którym leży plik
     const st = browser.stack, cur = st[st.length - 1];
     setProjectFolder(cur.name.toLowerCase() === CONFIG.DRIVE_CAD_FOLDER && st.length > 1 ? st.length - 2 : st.length - 1);
-    await loadBuffer(buf, it.name, { source: 'drive', driveId: it.id });
+    await loadBuffer(buf, it.name, { source: 'drive', driveId: it.id }, { dodaj: pal.dodawanie });
   } catch (e) {
     setStatus('Błąd pobierania z Google Drive: ' + e.message);
     say('Błąd: ' + e.message);
@@ -2926,7 +3007,7 @@ async function rememberFile(blob, name, meta) {
 
 async function openRecent(i) {
   const r = recentList[i];
-  if (r) await loadBuffer(new Uint8Array(await r.blob.arrayBuffer()), r.name, false);
+  if (r) await loadBuffer(new Uint8Array(await r.blob.arrayBuffer()), r.name, false, { dodaj: pal.dodawanie });
 }
 
 async function reloadCurrent() {
@@ -3038,7 +3119,10 @@ function toggleVoice() {
 function setStatus(t) { ui.status.textContent = t; }
 
 function setupUI() {
-  ui.file.addEventListener('change', () => { if (ui.file.files[0]) loadFile(ui.file.files[0]); ui.file.value = ''; });
+  ui.file.addEventListener('change', async () => { const f = [...ui.file.files]; ui.file.value = ''; await loadFiles(f, false); });
+  ui.fileAdd.addEventListener('change', async () => { const f = [...ui.fileAdd.files]; ui.fileAdd.value = ''; await loadFiles(f, true); });
+  ui.btnSaveStep.addEventListener('click', () => zapiszStep(false));
+  ui.btnSaveStepDrive.addEventListener('click', () => zapiszStep(true));
   ui.upAxis.value = CONFIG.DEFAULT_UP_AXIS;
   ui.upAxis.addEventListener('change', applyUpAxis);
   ui.vr.addEventListener('click', () => enterXR('vr'));
@@ -3134,8 +3218,8 @@ function setupUI() {
   window.addEventListener('dragover', (e) => e.preventDefault());
   window.addEventListener('drop', (e) => {
     e.preventDefault(); dragDepth = 0; ui.drop.style.display = 'none';
-    const f = e.dataTransfer.files[0];
-    if (f) loadFile(f);
+    const f = [...e.dataTransfer.files];
+    if (f.length) loadFiles(f, e.shiftKey);       // kilka plików = złożenie; z Shiftem = dołóż do wczytanego
   });
 
   // Klik (bez przeciągania) = wybór części
@@ -3172,9 +3256,193 @@ function szkicownikApi() {                     // to, czego szkicownik potrzebuj
     scene, camera, renderer, controls, controllers, CONFIG,
     get cadRoot() { return cadRoot; }, get pivot() { return pivot; }, get parts() { return parts; },
     get lastFile() { return lastFile; }, get modelName() { return modelName; }, get upAxis() { return ui.upAxis.value; },
+    get pliki() { return pliki; },
     say, requestScreenshot, resetModelPose, offHand, isMain, buttonPressedEdge, pulse, viewCamera,
+    dodajCzescSzkicu, ustawCzesc, usunCzesc, ukryjCzesc, poSynchronizacji: odswiezRozmiar, zapewnijCadRoot, applyUpAxis,
     wyjdz: () => przelaczSzkicownik(false),
   };
+}
+
+// ----------------------------------------------------------------------------
+// BRYŁY ZE SZKICOWNIKA JAKO ZWYKŁE CZĘŚCI PODGLĄDU (chwytanie, skala, kopie, ukrywanie, zapis STEP)
+// ----------------------------------------------------------------------------
+function grupaSzkicu() {
+  let g = cadRoot.children.find((o) => o.userData.grupaSzkicu);
+  if (!g) {
+    g = new THREE.Group();
+    g.name = CONFIG.SZKIC_GRUPA;
+    g.userData.grupaSzkicu = true;
+    cadRoot.add(g);
+    addTreeRow(g, g.name, 0, false);
+  }
+  return g;
+}
+
+// macierz: geometria → układ cadRoot (metry); zr: { typ: 'szkic', id, def, lok, G } (G: układ bryły → geometria)
+function dodajCzescSzkicu({ nazwa, kolor, geometria, macierz, widoczna = true, zr }) {
+  const g = grupaSzkicu();
+  const mat = newMaterial([0, 0, 0]);
+  mat.color.set(kolor); mat.userData.origColor = mat.color.clone();
+  const mesh = new THREE.Mesh(geometria, mat);
+  mesh.name = nazwa;
+  mesh.userData.sharedGeo = true;                   // geometrię trzyma Szkicownik
+  macierz.decompose(mesh.position, mesh.quaternion, mesh.scale);
+  g.add(mesh);
+  mesh.updateMatrix();
+  mesh.userData.origMatrix = mesh.matrix.clone();
+  if (geometria.computeBoundsTree && !geometria.boundsTree) geometria.computeBoundsTree();
+  const p = { mesh, name: nazwa, path: [g.name, nazwa], zr };
+  mesh.userData.part = p;
+  p.el = addTreeRow(mesh, nazwa, 1, true);
+  const iG = treeRows.findIndex((r) => r.obj === g), tr = treeRows.pop();
+  let k = iG + 1;
+  while (k < treeRows.length && treeRows[k].obj.parent === g) k++;
+  treeRows.splice(k, 0, tr);
+  (treeRows[k - 1] ? treeRows[k - 1].el : ui.tree.lastChild).after(tr.el);
+  parts.push(p);
+  if (!widoczna) setRowVisible(tr, false);
+  visibleCache = null;
+  return p;
+}
+
+function ustawCzesc(p, { macierz, geometria, kolor, nazwa, widoczna, zr }) {
+  if (macierz) {
+    macierz.decompose(p.mesh.position, p.mesh.quaternion, p.mesh.scale);
+    p.mesh.updateMatrix();
+  }
+  if (geometria && geometria !== p.mesh.geometry) {
+    p.mesh.geometry = geometria;
+    if (geometria.computeBoundsTree && !geometria.boundsTree) geometria.computeBoundsTree();
+  }
+  if (kolor) mats(p.mesh).forEach((m) => { m.color.set(kolor); m.userData.origColor = m.color.clone(); });
+  if (nazwa && nazwa !== p.name) {
+    p.name = nazwa; p.mesh.name = nazwa; p.path = [...p.path.slice(0, -1), nazwa];
+    const tr = treeRows.find((r) => r.obj === p.mesh);
+    if (tr) { tr.name = nazwa; tr.el.querySelector('span').textContent = nazwa; }
+  }
+  if (zr) p.zr = zr;
+  if (widoczna !== undefined) {
+    const tr = treeRows.find((r) => r.obj === p.mesh);
+    if (tr) setRowVisible(tr, widoczna); else p.mesh.visible = widoczna;
+  }
+  visibleCache = null;
+}
+
+function usunCzesc(p) { removeCopies([p.mesh]); }
+function ukryjCzesc(p) { const tr = treeRows.find((r) => r.obj === p.mesh); if (tr) setRowVisible(tr, false); else p.mesh.visible = false; }
+
+// ----------------------------------------------------------------------------
+// ZAPIS ZMIENIONEGO ZŁOŻENIA JAKO STEP (prawdziwe bryły z plików + bryły ze Szkicownika)
+// Każda widoczna część: bryły z jej pliku (dopasowane do części po ramkach) albo definicja ze Szkicownika,
+// w aktualnym położeniu, obrocie i skali. Ukryte części nie są zapisywane.
+// ----------------------------------------------------------------------------
+async function silnikGeometrii() {
+  if (!szkicownik) {
+    const { Szkicownik } = await import('./szkicownik/szkicownik.js');
+    szkicownik = new Szkicownik(szkicownikApi());
+  }
+  await szkicownik.uruchomSilnik();
+  if (szkicownik.stanSilnika !== 'gotowy') throw new Error('geometria (OpenCascade) niedostępna');
+  return szkicownik.silnik;
+}
+
+let zapisTrwa = false;
+async function zapiszStep(naDrive) {
+  if (szkicownikAktywny()) { say('Zapis złożenia jest w podglądzie — wyjdź ze Szkicownika (tam: Plik → Eksport)'); return null; }
+  if (!parts.length) { say('Brak modelu do zapisu'); return null; }
+  if (naDrive && !drive.connected) { say('Google Drive niepołączony'); return null; }
+  if (zapisTrwa) { say('Zapis już trwa…'); return null; }
+  zapisTrwa = true;
+  try {
+    say('Zapis STEP: ładuję geometrię…');
+    const silnik = await silnikGeometrii();
+    const { dopasujCzesci } = await import('./szkicownik/geometria.js');
+    const lista = parts.filter((p) => isVisibleDeep(p.mesh));
+    const zrodlo = (p) => { let m = p.mesh; while (m.userData.kopiaZ) m = m.userData.kopiaZ; return m; };
+    // bryły plików: wczytane w wątku geometrii i dopasowane do części (raz na plik)
+    for (const id of new Set(lista.filter((p) => p.zr && p.zr.typ === 'plik').map((p) => p.zr.plik))) {
+      const f = pliki.find((x) => x.id === id);
+      if (!f) continue;
+      if (f.format === 'iges') throw new Error(`„${f.nazwa}”: zapis części z pliku IGES nie jest obsługiwany (zapisz go w CAD jako STEP)`);
+      const { jest } = await silnik.wykonaj('mamPlik', { id });
+      if (!jest || !f.ramki) {
+        say(`Zapis STEP: czytam bryły „${f.nazwa}”…`);
+        f.ramki = await silnik.wykonaj('wczytajPlik', { id, format: f.format, bajty: new Uint8Array(await f.blob.arrayBuffer()) });
+      }
+      if (!f.przydzial) {
+        const zrodlowe = parts.filter((p) => p.zr && p.zr.typ === 'plik' && p.zr.plik === id && !p.kopia);
+        const czesci = zrodlowe.map((p) => { const bb = p.mesh.geometry.boundingBox; return { min: bb.min.toArray().map((v) => v * 1000), max: bb.max.toArray().map((v) => v * 1000) }; });
+        const przydzial = f.format === 'stl' ? f.ramki.map(() => 0) : dopasujCzesci(f.ramki, czesci);
+        f.przydzial = new Map();
+        przydzial.forEach((ci, bi) => { if (ci < 0) return; const m = zrodlowe[ci].mesh; if (!f.przydzial.has(m)) f.przydzial.set(m, []); f.przydzial.get(m).push(bi); });
+      }
+    }
+    // drzewo złożenia: ścieżki z drzewa podglądu, położenie z macierzy części
+    cadRoot.updateMatrixWorld(true);
+    const cadInv = cadRoot.matrixWorld.clone().invert();
+    const S1000 = new THREE.Matrix4().makeScale(1000, 1000, 1000), S0001 = new THREE.Matrix4().makeScale(0.001, 0.001, 0.001);
+    const liscie = [];
+    let pominiete = 0;
+    for (const p of lista) {
+      let def, lok = [0, 0, 0], G, id;
+      if (p.zr && p.zr.typ === 'plik') {
+        const f = pliki.find((x) => x.id === p.zr.plik);
+        const ind = f && f.przydzial && f.przydzial.get(zrodlo(p));
+        if (!ind || !ind.length) { pominiete++; continue; }
+        def = { typ: 'oryginal', plik: p.zr.plik, indeksy: ind };
+        G = S0001;
+      } else if (p.zr && p.zr.typ === 'szkic') {
+        def = p.zr.def; lok = p.zr.lok; G = new THREE.Matrix4().fromArray(p.zr.G);
+        if (!p.kopia) id = p.zr.id;
+      } else { pominiete++; continue; }
+      const T = S1000.clone().multiply(cadInv.clone().multiply(p.mesh.matrixWorld)).multiply(G);
+      const pz = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+      T.decompose(pz, q, sc);
+      const e = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+      liscie.push({ sciezka: p.path.slice(0, -1), w: { nazwa: p.name, kolor: '#' + mats(p.mesh)[0].color.getHexString(), id, def, lok,
+        poz: pz.toArray(), obr: [e.x, e.y, e.z].map((v) => v * 180 / Math.PI), skala: (sc.x + sc.y + sc.z) / 3 } });
+    }
+    if (!liscie.length) throw new Error('brak części do zapisu');
+    let nazwa = pliki.length === 1 ? pliki[0].nazwa.replace(/\.[^.]+$/, '') : (pliki.length ? CONFIG.ZAPIS_NAZWA_ZLOZENIA : CONFIG.SZKIC_GRUPA);
+    let obetnij = 0;
+    if (liscie.every((l) => l.sciezka.length && l.sciezka[0] === liscie[0].sciezka[0])) { nazwa = liscie[0].sciezka[0]; obetnij = 1; }
+    const drzewo = { nazwa, dzieci: [] };
+    for (const l of liscie) {
+      let w = drzewo;
+      for (const n of l.sciezka.slice(obetnij)) {
+        let d = w.dzieci.find((x) => x.dzieci && x.nazwa === n);
+        if (!d) { d = { nazwa: n, dzieci: [] }; w.dzieci.push(d); }
+        w = d;
+      }
+      w.dzieci.push(l.w);
+    }
+    say(`Zapis STEP: ${liscie.length} części…`);
+    const { bajty } = await silnik.wykonaj('eksport', { drzewo });
+    const d = new Date(), p2 = (n) => String(n).padStart(2, '0');
+    const plikNazwa = `${(pliki.length === 1 ? modelName : nazwa).replace(/[^\w\-]+/g, '_')}_zmiany_${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}_${p2(d.getHours())}-${p2(d.getMinutes())}.step`;
+    if (naDrive) {
+      const base = settings.project ? settings.project.id : await drive.ensureFolder(CONFIG.DRIVE_DEFAULT_FOLDER, 'root');
+      const folder = await drive.ensureFolder(CONFIG.DRIVE_CAD_FOLDER, base);
+      await drive.upload(new Blob([bajty]), plikNazwa, folder, 'application/octet-stream');
+      say(`Zapisano na Drive: ${(settings.project ? settings.project.path : 'Mój dysk/' + CONFIG.DRIVE_DEFAULT_FOLDER)}/${CONFIG.DRIVE_CAD_FOLDER}/${plikNazwa}`);
+    } else {
+      const url = URL.createObjectURL(new Blob([bajty], { type: 'application/step' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = plikNazwa;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      say(`Zapisano ${plikNazwa}: ${liscie.length} części` + (pominiete ? ` (pominięte bez bryły: ${pominiete})` : ''));
+    }
+    setStatus(`Zapisano STEP: ${plikNazwa}\n${liscie.length} części (ukryte części nie są zapisywane)` + (pominiete ? `, pominięte: ${pominiete}` : ''));
+    return bajty;
+  } catch (e) {
+    console.error(e);
+    say('Błąd zapisu STEP: ' + e.message);
+    setStatus('Błąd zapisu STEP: ' + e.message);
+    return null;
+  } finally {
+    zapisTrwa = false;
+  }
 }
 
 async function przelaczSzkicownik(wlacz) {
@@ -3207,6 +3475,7 @@ function exposeDebug() {                      // do testów automatycznych i dia
     get undoStack() { return undoStack; }, get cadRoot() { return cadRoot; }, get twoHand() { return twoHand; },
     get notes() { return notes; }, get edit() { return edit; }, get treeRows() { return treeRows; }, get selectedObj() { return selectedObj; },
     get recentList() { return recentList; }, get szkicownik() { return szkicownik; }, przelaczSzkicownik,
+    get pliki() { return pliki; }, zapiszStep, loadFiles, copyParts, hideObjects,
     scene, modelSize, pivot, S, pal, PAL, controllers, renderer, THREE, section, cadBox, settings, drive, browser, voice,
     pick(o, d) { raycaster.set(o, d.clone().normalize()); return pickRay(); },
     requestScreenshot, shotStore, modelStore, undo, paletteAction, layoutPalette, refreshPaletteTexture, editKey, openNoteEditor, closeNoteEditor, createNote,

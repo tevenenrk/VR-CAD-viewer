@@ -18,6 +18,7 @@ export const GEO = {
   DOPASOWANIE_TOL_MM: 0.5,        // dopasowanie brył oryginału do części viewera: tolerancja ramki (mm) …
   DOPASOWANIE_TOL_WZGL: 0.003,    // … plus ułamek wielkości części
   KOLOR_DOMYSLNY: '#8fa3b8',
+  STL_TOLERANCJA_MM: 0.01,        // STL: tolerancja zszywania trójkątów w zamkniętą powłokę
   NAZWA_NOWYCH: 'Szkicownik',     // podzłożenie z nowymi bryłami w eksporcie STEP
   // Płaszczyzny szkicu jak w SolidWorksie (oś u = „w prawo”, v = „w górę” na szkicu, n = kierunek wyciągnięcia)
   PLASZCZYZNY: {
@@ -97,10 +98,10 @@ export function dopasujCzesci(bryly, czesci) {
 // def: { typ: 'prostopadloscian', dx, dy, dz } | { typ: 'walec', r, h } | { typ: 'kula', r }
 //    | { typ: 'wyciagniecie', plaszczyzna, odsuniecie, obrys: [{ typ: 'linia', a, b } | { typ: 'luk', a, m, b }], h }
 //    | { typ: 'boolean', op: 'suma'|'roznica'|'wspolna', a: bryla, b: bryla }
-//    | { typ: 'oryginal', indeksy: [nr brył w pliku] }
+//    | { typ: 'oryginal', plik: id pliku, indeksy: [nr brył w pliku] }
 // Prymitywy są wyśrodkowane w swoim początku układu; oś walca = oś góry (Y).
 // bryla: { def, lok: [mm] (przesunięcie geometrii przed obrotem), poz, obr, skala }
-// pobierzOryginal(indeks) → bryła z wczytanego pliku (w układzie pliku)
+// pobierzOryginal(plik, indeks) → bryła z wczytanego pliku (w układzie pliku)
 // ---------------------------------------------------------------------------
 const dodatnia = (v, nazwa) => {
   if (!(Number.isFinite(v) && v > 0)) throw new Error(`Wymiar „${nazwa}” musi być liczbą większą od zera (jest: ${v})`);
@@ -126,7 +127,7 @@ export function zbudujDef(def, pobierzOryginal) {
     case 'oryginal': {                    // jedna część z pliku STEP (może składać się z kilku brył)
       const indeksy = def.indeksy || [def.indeks];
       const lista = indeksy.map((i) => {
-        const s = pobierzOryginal ? pobierzOryginal(i) : null;
+        const s = pobierzOryginal ? pobierzOryginal(def.plik || 'oryginal', i) : null;
         if (!s) throw new Error(`Brak bryły ${i} z oryginalnego pliku STEP (plik nie jest wczytany do Szkicownika)`);
         return s.clone();
       });
@@ -197,7 +198,10 @@ export function operacjaBoolean(op, a, b) {
   return { ksztalt: wynik, ...info };
 }
 
-function komunikatOC(e) {
+export function komunikatOC(e) {
+  if (typeof WebAssembly !== 'undefined' && WebAssembly.Exception && e instanceof WebAssembly.Exception && oc && oc.getExceptionMessage) {
+    try { return oc.getExceptionMessage(e).filter(Boolean).join(': '); } catch { /* brak opisu */ }
+  }
   if (typeof e === 'number' && oc && oc.OCJS && oc.OCJS.getStandard_FailureData) {
     try { return oc.OCJS.getStandard_FailureData(e).GetMessageString(); } catch { /* brak opisu */ }
   }
@@ -270,6 +274,76 @@ export async function wczytajSTEP(bajty) {
   zbierz(T.TopAbs_SOLID, T.TopAbs_SHAPE);
   zbierz(T.TopAbs_SHELL, T.TopAbs_SOLID);          // same powierzchnie (części powierzchniowe)
   return bryly;
+}
+
+// STL (siatka trójkątów, jednostka pliku = mm) → kształt: bryła, gdy powierzchnia jest zamknięta, inaczej sama powłoka.
+// (replicad.importSTL wywraca się na wyniku ShapeUpgrade — dlatego własna wersja)
+let licznikStl = 0;
+
+// Trójkąty z pliku STL (binarnego albo tekstowego) → Float32Array [x1,y1,z1, x2,…] (9 liczb na trójkąt)
+export function trojkatySTL(bajty) {
+  const b = new Uint8Array(bajty);
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const n = b.length >= 84 ? dv.getUint32(80, true) : 0;
+  if (n > 0 && b.length === 84 + n * 50) {
+    const out = new Float32Array(n * 9);
+    for (let i = 0; i < n; i++) for (let k = 0; k < 9; k++) out[i * 9 + k] = dv.getFloat32(84 + i * 50 + 12 + k * 4, true);
+    return out;
+  }
+  const tekst = new TextDecoder().decode(b);
+  const liczby = [];
+  const re = /vertex\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)/g;
+  for (let m; (m = re.exec(tekst));) liczby.push(+m[1], +m[2], +m[3]);
+  if (!liczby.length || liczby.length % 9) throw new Error('Plik STL jest pusty albo uszkodzony');
+  return new Float32Array(liczby);
+}
+
+export function wczytajSTL(bajty) {
+  // Czytnik STL w OpenCascade nie czyta pliku, gdy pierwszy wierzchołek leży dokładnie w (0,0,0) — dlatego
+  // trójkąty są na chwilę przesuwane tak, by wszystkie współrzędne były ≥ 1 mm, a po odczycie bryła wraca na miejsce.
+  const t = trojkatySTL(bajty);
+  const min = [Infinity, Infinity, Infinity];
+  for (let i = 0; i < t.length; i++) min[i % 3] = Math.min(min[i % 3], t[i]);
+  const przes = min.map((v) => 1 - v);
+  const n = t.length / 9;
+  const plikBin = new Uint8Array(84 + n * 50);
+  const dv = new DataView(plikBin.buffer);
+  dv.setUint32(80, n, true);
+  for (let i = 0; i < n; i++) for (let k = 0; k < 9; k++) dv.setFloat32(84 + i * 50 + 12 + k * 4, t[i * 9 + k] + przes[k % 3], true);
+  const plik = `/szkicownik_${++licznikStl}.stl`;
+  oc.FS.writeFile(plik, plikBin);
+  const reader = new oc.StlAPI_Reader();
+  const surowy = new oc.TopoDS_Shell();
+  const ok = reader.Read(surowy, plik);
+  oc.FS.unlink(plik);
+  reader.delete();
+  if (!ok) throw new Error('Nie udało się odczytać pliku STL');
+  let ksztalt = surowy;
+  try {                                          // zszyj trójkąty w powłokę (czytnik daje luźne ściany)
+    const szycie = new oc.BRepBuilderAPI_Sewing(GEO.STL_TOLERANCJA_MM, true, true, true, false);
+    szycie.Add(surowy);
+    szycie.Perform(new oc.Message_ProgressRange());
+    ksztalt = szycie.SewedShape();
+  } catch { ksztalt = surowy; }
+  try {                                          // scal płaskie trójkąty w większe ściany (mniejszy plik, lżejsze operacje)
+    const u = new oc.ShapeUpgrade_UnifySameDomain(ksztalt, true, true, false);
+    u.Build();
+    ksztalt = u.Shape();
+  } catch { /* zostaje zszyta powłoka */ }
+  const T = oc.TopAbs_ShapeEnum;
+  const ex = new oc.TopExp_Explorer(ksztalt, T.TopAbs_SHELL, T.TopAbs_SHAPE);
+  let wynik = null;
+  if (ex.More()) {
+    try {
+      const mk = new oc.BRepBuilderAPI_MakeSolid();
+      mk.Add(oc.TopoDS.Shell(ex.Current()));
+      let bryla = R.cast(mk.Solid());
+      if (objetosc(bryla) < 0) bryla = R.cast(bryla.wrapped.Reversed());   // ściany skierowane do środka → odwróć
+      if (objetosc(bryla) > 0) wynik = bryla;
+    } catch { wynik = null; }
+  }
+  ex.delete();
+  return (wynik || R.cast(ksztalt)).translate(przes.map((v) => -v));
 }
 
 // drzewo: { nazwa, dzieci: [ węzeł ] } albo liść { nazwa, ksztalt, kolor }

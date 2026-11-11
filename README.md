@@ -1,17 +1,30 @@
 # CAD VR Viewer
 
-Przeglądarka modeli CAD (STEP / IGES, np. eksport z SolidWorksa) w przeglądarce PC i w goglach Meta Quest (VR oraz AR/passthrough). Działa w całości w przeglądarce, bez instalacji. Pliki modeli nie są wysyłane na żaden serwer programu: plik jest odczytywany lokalnie na urządzeniu (opcjonalnie pobierany z Twojego Google Drive).
+Przeglądarka modeli CAD (STEP / IGES / STL, np. eksport z SolidWorksa) w przeglądarce PC i w goglach Meta Quest (VR oraz AR/passthrough). Działa w całości w przeglądarce, bez instalacji. Pliki modeli nie są wysyłane na żaden serwer programu: plik jest odczytywany lokalnie na urządzeniu (opcjonalnie pobierany z Twojego Google Drive).
 
 **Uruchom:** https://tevenenrk.github.io/VR-CAD-viewer/
 
 **Model testowy od razu po otwarciu:** https://tevenenrk.github.io/VR-CAD-viewer/?model=test/test_zlozenie.step
 (po wczytaniu przestaw w panelu „Góra: Z”).
 
+## Pliki: kilka plików w jednym złożeniu, zapis STEP
+
+- **Otwórz STEP / STL** — zamyka poprzedni model. Zaznaczenie kilku plików naraz = jedno złożenie.
+- **Dodaj plik** — dokłada kolejny STEP albo STL do tego, co już jest wczytane (te same współrzędne CAD).
+  W goglach: X → Menu → „Otwórz: dodaj”, potem plik z Google Drive albo z „Ostatnich plików”.
+  Przeciągnięcie plików na okno: kilka plików = złożenie, z klawiszem Shift = dołóż do wczytanego.
+- **STL** — siatka trójkątów bez jednostek: program przyjmuje 1 jednostka = 1 mm (`CONFIG.STL_M_NA_JEDNOSTKE`).
+- **Zapisz STEP** (PC i Menu w goglach) — całe zmienione złożenie jako **prawdziwe bryły**: części ze wszystkich plików
+  w aktualnym położeniu i skali, kopie, bryły ze Szkicownika (gałąź „Szkicownik”), kolory i podzłożenia.
+  **Ukryte części nie są zapisywane** — tak „usuwasz” części z pliku. STL trafia do STEP jako bryła z trójkątów.
+  „Zapisz STEP na Drive” zapisuje do `<folder projektu>/cad/` (nowy plik `…_zmiany_<data>.step`, nic nie jest nadpisywane).
+  Pierwszy zapis ładuje OpenCascade (23 MB) i czyta bryły z plików — przy dużych złożeniach to może potrwać.
+
 ## Sterowanie w goglach (Meta Quest)
 
 | Przycisk | Działanie |
 |---|---|
-| Spust | wybrane narzędzie: **Wskaż** (nazwa i wybór części), **Rysuj** (linia w powietrzu, grubość zależy od siły nacisku), **Gumka**, **Miarka** (od punktu do punktu na powierzchni), **Kolor** (maluje część), **Komentarz** (płytka ze strzałką), **Przekrój** (płaszczyzna cięcia w ręce) |
+| Spust | wybrane narzędzie: **Wskaż** (nazwa i wybór części), **Rysuj** (linia w powietrzu, grubość zależy od siły nacisku; kulka pędzla 8 cm przed kontrolerem), **Gumka**, **Miarka** (od punktu do punktu na powierzchni), **Kolor** (maluje część), **Komentarz** (płytka ze strzałką), **Przekrój** (płaszczyzna cięcia w ręce) |
 | Grip przy części | chwyć **część** albo **grupę części w sferze** (tryb w panelu) |
 | Trzymasz część + prawy spust | **kopia** części zostaje w tym miejscu, a Ty dalej trzymasz oryginał |
 | Trzymasz część + A | **ukryj** trzymaną część (B – cofnij) |
@@ -116,7 +129,9 @@ przesuwu/obrotu/skali (W / E / R), strzałki i PageUp/PageDown = krok siatki (Sh
 + / − = skala, Del = usuń, Ctrl+D = kopiuj, Ctrl+G = grupuj (Ctrl+Shift+G rozgrupuj), Ctrl+A = zaznacz wszystko,
 Esc = odznacz, cyfry + Enter w klawiaturze numerycznej.
 
-Po „Wróć do podglądu” nowe bryły zostają widoczne razem z modelem; przesunięcia części oryginału widać tylko w Szkicowniku i w eksporcie.
+Po „Wróć do podglądu” bryły ze Szkicownika stają się **zwykłymi częściami podglądu** (w drzewie pod „Szkicownik”): chwytasz je,
+powiększasz dwiema rękami, kopiujesz prawym spustem, ukrywasz, a „Zapisz STEP” zapisuje je razem z resztą. Przesunięcia części
+oryginału zrobione w Szkicowniku są widoczne w podglądzie, a przesunięcia z podglądu — w Szkicowniku (przy każdym wejściu).
 
 Test silnika (w folderze projektu, Node.js): `node test/szkicownik_test.mjs` — zapisuje do `test/` pliki STEP do obejrzenia w SolidWorksie.
 
