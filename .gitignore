@@ -12,6 +12,8 @@
 *.SLDPRT
 *.SLDASM
 *.glb
+*.stl
+*.STL
 *.gltf
 # Wyjątek: własne złożenie testowe wygenerowane przez test/make_test_step.py
 !test/test_zlozenie.step
@@ -30,6 +32,7 @@ test/screenshot_vr.png
 test/screenshot_vr_menu.png
 test/screenshot_przekroj.png
 test/screenshot_szk_*.png
+test/zapis_*.step
 test/index_cap.html
 test/zrzut_*.jpg
 __pycache__/

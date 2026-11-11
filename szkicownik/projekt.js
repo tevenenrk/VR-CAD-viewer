@@ -34,7 +34,8 @@ export class Projekt {
     this.bryly = [];
     this.grupy = [];
     this.licznikGrup = 0;
-    this.oryginal = null;          // { nazwa, bajty, czesci: [{ nazwa, sciezka, kolor, min, max }] }
+    this.oryginal = null;          // ostatnio przejęty plik: { nazwa, bajty, czesci } (nazwa złożenia w eksporcie)
+    this.pliki = {};               // wszystkie przejęte pliki: id → { nazwa, format, bajty } (do odtworzenia po restarcie wątku)
     this.licznik = 0;
     silnik.odtworzStan = (s) => this.odtworzWWatku(s);
   }
@@ -178,9 +179,11 @@ export class Projekt {
 
   // ---- oryginalny STEP jako elementy złożenia ----
   // czesci: części viewera { nazwa, sciezka, kolor, min, max } w mm układu pliku (jedna pozycja = jedna część z drzewa)
-  async wczytajOryginal(bajty, czesci, nazwa) {
+  // plikId / format: kilka plików w złożeniu (STEP albo STL)
+  async wczytajOryginal(bajty, czesci, nazwa, plikId = 'oryginal', format = 'step') {
     const zachowane = new Uint8Array(bajty);                       // kopia na wypadek restartu wątku
-    const bryly = await this.silnik.wykonaj('wczytajOryginal', { bajty: zachowane.slice() });
+    const bryly = await this.silnik.wykonaj('wczytajPlik', { id: plikId, format, bajty: zachowane.slice() });
+    this.pliki[plikId] = { nazwa: nazwa || plikId, format, bajty: zachowane };
     const przydzial = dopasujCzesci(bryly, czesci);
     // jedna bryła Szkicownika na jedną część viewera (część może mieć kilka brył); niedopasowane osobno
     const grupy = new Map();
@@ -195,14 +198,14 @@ export class Projekt {
       nazwa: g.czesc ? g.czesc.nazwa : `Bryła niedopasowana ${k + 1}`,
     }));
     const wyniki = await this.silnik.wykonaj('zbudujWiele', {
-      pozycje: nowe.map((n) => ({ id: n.id, def: { typ: 'oryginal', indeksy: n.g.indeksy }, wysrodkuj: true, bezSiatki: true })),
+      pozycje: nowe.map((n) => ({ id: n.id, def: { typ: 'oryginal', plik: plikId, indeksy: n.g.indeksy }, wysrodkuj: true, bezSiatki: true })),
     });
     const dodane = nowe.map((n, k) => {
       const w = wyniki[k];
       const b = {
         id: n.id, nazwa: n.nazwa, kolor: (n.g.czesc && n.g.czesc.kolor) || PROJEKT.KOLORY[0], widoczna: true,
         zrodlo: 'oryginal', sciezka: n.g.czesc ? [...n.g.czesc.sciezka] : [], indeksCzesci: n.g.indeksCzesci, grupa: null,
-        def: { typ: 'oryginal', indeksy: n.g.indeksy }, lok: w.lok, poz: w.srodek, obr: [0, 0, 0], skala: 1,
+        def: { typ: 'oryginal', plik: plikId, indeksy: n.g.indeksy }, lok: w.lok, poz: w.srodek, obr: [0, 0, 0], skala: 1,
         objetosc: w.objetosc, ramka: w.ramka,
       };
       this.bryly.push(b);
@@ -259,7 +262,7 @@ export class Projekt {
   async odtworzWWatku(silnik) {
     await silnik.wyslijTeraz('odtworz', {
       bryly: this.bryly.map((b) => ({ id: b.id, def: b.def, lok: b.lok, brep: b.brep || null })),
-      bajtyOryginalu: this.oryginal ? this.oryginal.bajty.slice() : null,
+      pliki: Object.entries(this.pliki).map(([id, f]) => ({ id, format: f.format, bajty: f.bajty.slice() })),
     });
   }
 }

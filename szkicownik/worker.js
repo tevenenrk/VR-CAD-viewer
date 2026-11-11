@@ -17,7 +17,7 @@ const KONFIG = {
 import * as G from './geometria.js';
 
 const bryly = new Map();      // id → kształt lokalny
-let oryginal = [];            // bryły z wczytanego pliku STEP (układ pliku, mm)
+const pliki = new Map();      // id pliku → bryły z pliku STEP / STL (układ pliku, mm)
 let gotowe = null;
 
 function startuj() {
@@ -35,7 +35,16 @@ function startuj() {
   return gotowe;
 }
 
-const pobierzOryginal = (indeks) => oryginal[indeks] || null;
+const pobierzOryginal = (plik, indeks) => (pliki.get(plik) || [])[indeks] || null;
+
+async function wczytajPlik(id, format, bajty) {
+  await startuj();
+  const stare = pliki.get(id);
+  if (stare) stare.forEach((s) => { try { s.delete(); } catch { /* już zwolniony */ } });
+  const lista = format === 'stl' ? [G.wczytajSTL(bajty)] : await G.wczytajSTEP(bajty);
+  pliki.set(id, lista);
+  return lista;
+}
 
 function zapamietaj(id, ksztalt) {
   const stary = bryly.get(id);
@@ -122,15 +131,20 @@ const KOMENDY = {
     return { wynik: { liczba: bryly.size } };
   },
 
-  async wczytajOryginal({ bajty }) {
-    oryginal.forEach((s) => { try { s.delete(); } catch { /* już zwolniony */ } });
-    oryginal = await G.wczytajSTEP(bajty);
-    return { wynik: oryginal.map((s, indeks) => ({ indeks, ...G.ramka(s), objetosc: G.objetosc(s) })) };
+  // plik STEP / STL → bryły w pamięci wątku; wynik: ramki brył (do dopasowania z częściami podglądu)
+  async wczytajPlik({ id, format = 'step', bajty }) {
+    const lista = await wczytajPlik(id, format, bajty);
+    return { wynik: lista.map((s, indeks) => ({ indeks, ...G.ramka(s), objetosc: G.objetosc(s) })) };
   },
 
+  async wczytajOryginal({ bajty }) { return KOMENDY.wczytajPlik({ id: 'oryginal', format: 'step', bajty }); },
+
+  mamPlik({ id }) { return { wynik: { jest: pliki.has(id) } }; },
+
   // Po restarcie wątku: odtworzenie wszystkich brył (z zapisu BREP albo z parametrów)
-  async odtworz({ bryly: lista, bajtyOryginalu }) {
-    if (bajtyOryginalu) oryginal = await G.wczytajSTEP(bajtyOryginalu);
+  async odtworz({ bryly: lista, pliki: listaPlikow = [], bajtyOryginalu }) {
+    if (bajtyOryginalu) await wczytajPlik('oryginal', 'step', bajtyOryginalu);
+    for (const f of listaPlikow) await wczytajPlik(f.id, f.format, f.bajty);
     const { R } = await startuj();
     for (const b of lista) {
       let s = null;
@@ -161,10 +175,11 @@ const KOMENDY = {
   },
 
   // tylko do diagnostyki i testów
-  stan() { return { wynik: { ids: [...bryly.keys()], oryginal: oryginal.length } }; },
+  stan() { return { wynik: { ids: [...bryly.keys()], oryginal: [...pliki.values()].reduce((n, l) => n + l.length, 0), pliki: [...pliki.keys()] } }; },
 };
 
 function opisBledu(e) {
+  if (typeof WebAssembly !== 'undefined' && WebAssembly.Exception && e instanceof WebAssembly.Exception) return 'błąd OpenCascade: ' + G.komunikatOC(e);
   if (e instanceof Error) return e.message;
   if (typeof e === 'number') return 'błąd OpenCascade nr ' + e;
   return String(e);

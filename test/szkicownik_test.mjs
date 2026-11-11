@@ -204,6 +204,21 @@ try {
   sprawdz('rozgrupowanie: grupa z jedną bryłą znika', projekt.grupy.length === 0 && !projekt.bryla(kop.id).grupa);
   await projekt.usun([kol.id, kop.id]);
 
+  // 8c. STL (siatka) → bryła w wątku geometrii, zapis do STEP w nowym położeniu
+  {
+    const tr = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]].flatMap((q) => [[q[0], q[1], q[2]], [q[0], q[2], q[3]]]);
+    const v = []; for (const x of [0, 50]) for (const y of [0, 50]) for (const z of [0, 50]) v.push([x, y, z]);
+    const buf = Buffer.alloc(84 + tr.length * 50);
+    buf.writeUInt32LE(tr.length, 80);
+    tr.forEach((t, i) => { const o = 84 + i * 50; t.forEach((vi, k) => v[vi].forEach((c, j) => buf.writeFloatLE(c, o + 12 + k * 12 + j * 4))); });
+    const ramki = await silnik.wykonaj('wczytajPlik', { id: 'stl1', format: 'stl', bajty: new Uint8Array(buf) });
+    sprawdz('STL → bryła (sześcian 50 mm = 125 000 mm³)', ramki.length === 1 && blisko(ramki[0].objetosc, 125000, 0.01), `${ramki[0] && ramki[0].objetosc.toFixed(2)} mm³`);
+    const bajtyStl = await silnik.wykonaj('eksport', { drzewo: { nazwa: 'Z', dzieci: [{ nazwa: 'Szescian', def: { typ: 'oryginal', plik: 'stl1', indeksy: [0] }, lok: [0, 0, 0], poz: [100, 0, 0], obr: [0, 0, 0], skala: 1 }] } });
+    const czStl = await czytajSTEP(bajtyStl.bajty);
+    sprawdz('STL zapisany do STEP w nowym położeniu', czStl.length === 1 && blisko(czStl[0].min[0], 100, TEST.TOL_RAMKA_MM) && blisko(czStl[0].max[0], 150, TEST.TOL_RAMKA_MM),
+            JSON.stringify(czStl.map((c) => c.min.map(Math.round))));
+  }
+
   // 9. Strażnik czasu: ciężki boolean przerwany, wątek odtworzony, bryły nietknięte
   const N = TEST.CIEZKI_BOOLEAN_RAMION, pkt = [];
   for (let i = 0; i < N; i++) { const a = 2 * Math.PI * i / N, r = i % 2 ? 90 : 100; pkt.push([r * Math.cos(a), r * Math.sin(a)]); }

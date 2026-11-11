@@ -108,6 +108,8 @@ export class Szkicownik {
 
     this.root = new THREE.Group();             // układ CAD w milimetrach
     this.root.name = 'Szkicownik';
+    this.root.userData.szkRoot = true;
+    this.powiazania = new Map();               // id bryły → część podglądu, która ją pokazuje poza Szkicownikiem
     this.root.scale.setScalar(0.001);
     this.osGrupa = new THREE.Group();          // obrót osi góry, gdy nie ma modelu
     this.pivotWlasny = new THREE.Group();      // położenie i skala, gdy nie ma modelu
@@ -151,6 +153,7 @@ export class Szkicownik {
     const a = this.api;
     this.aktywny = true;
     this.podepnij();
+    try { this.zViewera(); } catch (e) { console.error(e); }      // położenia z podglądu (części mogły być przesunięte)
     this.zastosujTlo(true);
     for (const w of this.wezly.values()) w.holder.visible = this.bryla(w.holder.userData.szkId)?.widoczna !== false;
     for (const c of a.controllers) {
@@ -176,12 +179,70 @@ export class Szkicownik {
     this.przerwijTworzenie();
     for (const c of this.api.controllers) if (c.userData.szk) c.userData.szk.chwyt = null;
     this.dwieRece = null;
-    // nowe bryły zostają widoczne w podglądzie; przejęte części oryginału pokazuje znów viewer
-    for (const [id, w] of this.wezly) {
-      const b = this.bryla(id);
-      w.holder.visible = !!b && b.widoczna && b.zrodlo !== 'oryginal';
-      this.ustawPodswietlenie(w, '');
+    // bryły trafiają do podglądu jako zwykłe części (chwytanie, skala, kopie, zapis STEP); tu je chowamy
+    try { this.doViewera(); } catch (e) { console.error(e); this.api.say('Błąd przenoszenia brył do podglądu: ' + e.message); }
+    for (const w of this.wezly.values()) { w.holder.visible = false; this.ustawPodswietlenie(w, ''); }
+  }
+
+  // ==========================================================================
+  // SYNCHRONIZACJA Z PODGLĄDEM
+  // Bryła ↔ część podglądu: ta sama geometria (siatka), a położenie przeliczane w układzie cadRoot:
+  //   część: macierz M (geometria → cadRoot, metry);  bryła: H (układ bryły, mm) i C (geometria w węźle bryły)
+  //   M = S(0,001) · H · C      H = S(1000) · M · C⁻¹
+  // ==========================================================================
+  zViewera() {
+    const a = this.api;
+    if (!a.cadRoot || !this.projekt) return;
+    a.cadRoot.updateMatrixWorld(true);
+    const cadInv = a.cadRoot.matrixWorld.clone().invert();
+    const S1000 = new THREE.Matrix4().makeScale(1000, 1000, 1000);
+    const widoczna = (o) => { for (let x = o; x && x !== a.cadRoot; x = x.parent) if (!x.visible) return false; return true; };
+    for (const [id, p] of [...this.powiazania]) {
+      if (!a.parts.includes(p)) { this.powiazania.delete(id); continue; }
+      const b = this.bryla(id), w = this.wezly.get(id);
+      if (!b || !w || !w.mesh) continue;
+      w.mesh.updateMatrix();
+      const H = S1000.clone().multiply(cadInv.clone().multiply(p.mesh.matrixWorld)).multiply(w.mesh.matrix.clone().invert());
+      const t = this.zMacierzy(H);
+      const r6 = (v) => Math.round(v * 1e6) / 1e6;
+      this.projekt.ustawTransformacje(id, { poz: t.poz.map(r6), obr: t.obr.map(r6), skala: r6(t.skala) });
+      if (b.widoczna !== widoczna(p.mesh)) this.projekt.ustawWlasciwosci(id, { widoczna: widoczna(p.mesh) });
     }
+  }
+
+  doViewera() {
+    const a = this.api;
+    if (!this.projekt || (!this.projekt.bryly.length && !this.powiazania.size)) return;
+    const nowyModel = a.zapewnijCadRoot();
+    a.cadRoot.updateMatrixWorld(true);
+    const cadInv = a.cadRoot.matrixWorld.clone().invert();
+    const S0001 = new THREE.Matrix4().makeScale(0.001, 0.001, 0.001);
+    const ids = new Set(this.projekt.bryly.map((b) => b.id));
+    for (const b of this.projekt.bryly) {
+      const w = this.wezly.get(b.id);
+      if (!w || !w.mesh) continue;
+      w.holder.updateMatrix(); w.mesh.updateMatrix();
+      const Mcad = S0001.clone().multiply(w.holder.matrix).multiply(w.mesh.matrix);
+      const zr = { typ: 'szkic', id: b.id, def: JSON.parse(JSON.stringify(b.def)), lok: [...b.lok], G: w.mesh.matrix.clone().invert().toArray() };
+      let p = this.powiazania.get(b.id);
+      if (p && !a.parts.includes(p)) p = null;
+      if (p) {
+        const P = cadInv.clone().multiply(p.mesh.parent.matrixWorld);
+        const zeSzkicu = p.zr && p.zr.typ === 'szkic';
+        a.ustawCzesc(p, { macierz: P.invert().multiply(Mcad), widoczna: b.widoczna,
+                          ...(zeSzkicu ? { geometria: w.mesh.geometry, kolor: b.kolor, nazwa: b.nazwa, zr } : {}) });
+      } else {
+        p = a.dodajCzescSzkicu({ nazwa: b.nazwa, kolor: b.kolor, geometria: w.mesh.geometry, macierz: Mcad, widoczna: b.widoczna, zr });
+        this.powiazania.set(b.id, p);
+      }
+    }
+    for (const [id, p] of [...this.powiazania]) {      // bryły usunięte albo zużyte przez boolean
+      if (ids.has(id)) continue;
+      this.powiazania.delete(id);
+      if (!a.parts.includes(p)) continue;
+      if (p.zr && p.zr.typ === 'szkic') a.usunCzesc(p); else a.ukryjCzesc(p);
+    }
+    if (nowyModel) a.applyUpAxis(); else a.poSynchronizacji();
   }
 
   async uruchomSilnik() {
@@ -240,12 +301,10 @@ export class Szkicownik {
     }
   }
 
-  ukryjPrzejete() {
-    if (!this.tlo || !this.projekt || !this.projekt.oryginal || this.projekt.oryginal.cadRoot !== this.api.cadRoot) return;
-    for (const b of this.projekt.bryly) {
-      if (b.zrodlo !== 'oryginal' || !(b.indeksCzesci >= 0)) continue;
-      const p = this.api.parts[b.indeksCzesci];
-      if (!p || this.tlo.ukryte.some((s) => s.mesh === p.mesh)) continue;
+  ukryjPrzejete() {                            // części podglądu pokazywane teraz przez Szkicownik
+    if (!this.tlo) return;
+    for (const p of this.powiazania.values()) {
+      if (!this.api.parts.includes(p) || this.tlo.ukryte.some((s) => s.mesh === p.mesh)) continue;
       this.tlo.ukryte.push({ mesh: p.mesh, visible: p.mesh.visible });
       p.mesh.visible = false;
     }
@@ -313,7 +372,6 @@ export class Szkicownik {
       const w = this.wezly.get(d.bryla.id);
       if (w) { this.ustawWezel(d.bryla); w.mat.color.set(d.bryla.kolor); w.holder.visible = d.bryla.widoczna; }
     } else if (zd === 'oryginal') {
-      this.projekt.oryginal.cadRoot = this.api.cadRoot;
       for (const b of d.bryly) this.utworzWezel(b, {});
       this.ukryjPrzejete();
     }
@@ -693,54 +751,48 @@ export class Szkicownik {
   }
 
   // Oryginalny STEP z viewera → elementy złożenia szkicownika (prawdziwe bryły, nazwy z drzewa viewera)
+  // Pliki z podglądu (STEP / STL) → elementy złożenia Szkicownika (prawdziwe bryły, nazwy z drzewa podglądu)
+  plikiDoPrzejecia() {
+    return (this.api.pliki || []).filter((f) => f.format !== 'iges' && !(this.projekt && this.projekt.pliki[f.id]));
+  }
+
   przejmijOryginal() {
     const a = this.api;
-    if (!a.cadRoot || !a.lastFile) { this.powiedz('Najpierw wczytaj model STEP w podglądzie'); return null; }
-    if (this.projekt && this.projekt.oryginal) { this.powiedz('Oryginał jest już przejęty'); return null; }
-    return this.zadanie('Przejmuję oryginał (odczyt brył STEP)…', async () => {
-      const bajty = new Uint8Array(await a.lastFile.blob.arrayBuffer());
-      const widoczna = (o) => { for (let x = o; x; x = x.parent) if (!x.visible) return false; return true; };
-      const widoczne = a.parts.map((p) => widoczna(p.mesh));
-      // kopie zrobione w podglądzie nie mają własnych brył w pliku — ramka „nigdzie”, dodane niżej jako kopie
-      const czesci = a.parts.map((p) => {
-        const bb = p.mesh.geometry.boundingBox;
-        const kopia = !!p.kopia;
-        return { nazwa: p.name, sciezka: p.path.slice(0, -1), kolor: '#' + mats(p.mesh)[0].color.getHexString(),
-                 min: kopia ? [Infinity, Infinity, Infinity] : bb.min.toArray().map((v) => v * 1000),
-                 max: kopia ? [-Infinity, -Infinity, -Infinity] : bb.max.toArray().map((v) => v * 1000) };
-      });
-      const w = await this.projekt.wczytajOryginal(bajty, czesci, a.modelName);
-      // położenie z podglądu (część przesunięta chwytem): H = M[mm] · przesunięcie(−lok)
-      const S = new THREE.Matrix4().makeScale(1000, 1000, 1000), Si = new THREE.Matrix4().makeScale(0.001, 0.001, 0.001);
-      const zPodgladu = (b, mesh) => {
-        mesh.updateMatrix();
-        const H = S.clone().multiply(mesh.matrix).multiply(Si).multiply(new THREE.Matrix4().makeTranslation(-b.lok[0], -b.lok[1], -b.lok[2]));
-        this.projekt.ustawTransformacje(b.id, this.zMacierzy(H));
-      };
-      const I = new THREE.Matrix4();
-      for (const b of w.bryly) {
-        const p = b.indeksCzesci >= 0 && a.parts[b.indeksCzesci];
-        if (!p) continue;
-        p.mesh.updateMatrix();
-        if (!p.mesh.matrix.equals(I)) zPodgladu(b, p.mesh);
-        if (!widoczne[b.indeksCzesci]) this.projekt.ustawWlasciwosci(b.id, { widoczna: false });
+    if (!a.cadRoot || !(a.pliki || []).length) { this.powiedz('Najpierw wczytaj model STEP / STL w podglądzie'); return null; }
+    const lista = this.plikiDoPrzejecia();
+    if (!lista.length) { this.powiedz('Części z plików są już przejęte'); return null; }
+    return this.zadanie('Przejmuję części (odczyt brył STEP)…', async () => {
+      let razem = 0, niedopasowane = 0, kopii = 0;
+      for (const f of lista) {
+        const bajty = new Uint8Array(await f.blob.arrayBuffer());
+        // tylko części z tego pliku (bez kopii) mogą dostać bryły — reszta ma ramkę „nigdzie”
+        const czesci = a.parts.map((p) => {
+          const wlasna = p.zr && p.zr.typ === 'plik' && p.zr.plik === f.id && !p.kopia;
+          const bb = p.mesh.geometry.boundingBox;
+          return { nazwa: p.name, sciezka: p.path.slice(0, -1), kolor: '#' + mats(p.mesh)[0].color.getHexString(),
+                   min: wlasna ? bb.min.toArray().map((v) => v * 1000) : [Infinity, Infinity, Infinity],
+                   max: wlasna ? bb.max.toArray().map((v) => v * 1000) : [-Infinity, -Infinity, -Infinity] };
+        });
+        const w = await this.projekt.wczytajOryginal(bajty, czesci, f.nazwa.replace(/\.[^.]+$/, ''), f.id, f.format);
+        for (const b of w.bryly) if (b.indeksCzesci >= 0 && a.parts[b.indeksCzesci]) this.powiazania.set(b.id, a.parts[b.indeksCzesci]);
+        razem += w.bryly.length; niedopasowane += w.niedopasowane;
       }
-      let kopii = 0;
-      for (let i = 0; i < a.parts.length; i++) {
-        const p = a.parts[i];
-        if (!p.kopia || !p.mesh.userData.kopiaZ) continue;
-        const iz = a.parts.findIndex((x) => x.mesh === p.mesh.userData.kopiaZ);
-        const zr = w.bryly.find((b) => b.indeksCzesci === iz) || this.projekt.bryly.find((b) => b.zrodlo === 'oryginal' && b.indeksCzesci === iz);
+      // kopie zrobione w podglądzie
+      const powiazane = () => new Set(this.powiazania.values());
+      for (const p of a.parts) {
+        if (!p.kopia || !p.zr || p.zr.typ !== 'plik' || powiazane().has(p)) continue;
+        let m = p.mesh; while (m.userData.kopiaZ) m = m.userData.kopiaZ;
+        const zr = [...this.powiazania].find(([, q]) => q.mesh === m);
         if (!zr) continue;
-        const [k] = await this.projekt.kopiuj([zr.id], [0, 0, 0]);
-        k.nazwa = p.name; k.indeksCzesci = i;
-        zPodgladu(k, p.mesh);
-        if (!widoczne[i]) this.projekt.ustawWlasciwosci(k.id, { widoczna: false });
+        const [k] = await this.projekt.kopiuj([zr[0]], [0, 0, 0]);
+        this.projekt.ustawWlasciwosci(k.id, { nazwa: p.name });
+        this.powiazania.set(k.id, p);
         kopii++;
       }
+      this.zViewera();                           // położenia i widoczność z podglądu
       this.ukryjPrzejete();
-      this.powiedz(`Przejęto ${w.bryly.length} części` + (kopii ? ` + ${kopii} kopii` : '') + (w.niedopasowane ? ` (bez nazwy: ${w.niedopasowane})` : ''));
-      return w;
+      this.powiedz(`Przejęto ${razem} części` + (kopii ? ` + ${kopii} kopii` : '') + (niedopasowane ? ` (bez nazwy: ${niedopasowane})` : ''));
+      return { razem, kopii };
     });
   }
 
@@ -842,6 +894,7 @@ export class Szkicownik {
       const u = c.userData, src = u.inputSource;
       if (!src) continue;
       const s = u.szk || (u.szk = { trigPrev: false, gripPrev: false, hover: null, traf: null, zuzyty: false, chwyt: null });
+      if (u.tip) u.tip.position.z = -a.CONFIG.DRAW_TIP_OFFSET;     // punkt tworzenia kilka cm przed kontrolerem
       const glowna = a.isMain(c);
 
       if (a.buttonPressedEdge(c, B.AX)) {
@@ -1241,8 +1294,9 @@ export class Szkicownik {
     U.etykieta(116, 'Narzędzie (spust): rozciągnij bryłę od punktu do punktu');
     U.rzad(154, 92, [['wybierz', 'Wybierz'], ['prostopadloscian', 'Prostopadłościan'], ['walec', 'Walec'], ['kula', 'Kula']]
       .map(([id, text]) => ({ id: 'narz:' + id, text, active: this.narzedzie === id, flex: id === 'prostopadloscian' ? 1.6 : 1 })));
-    const moznaPrzejac = !!(a.cadRoot && a.lastFile && !(this.projekt && this.projekt.oryginal));
-    U.rzad(258, 86, [{ id: 'oryginal', text: this.projekt && this.projekt.oryginal ? 'Oryginał przejęty' : 'Przejmij oryginał', disabled: !moznaPrzejac, flex: 1.4 },
+    const moznaPrzejac = !!(a.cadRoot && this.plikiDoPrzejecia().length);
+    const przejety = !!(this.projekt && Object.keys(this.projekt.pliki).length);
+    U.rzad(258, 86, [{ id: 'oryginal', text: !moznaPrzejac && przejety ? 'Oryginał przejęty' : 'Przejmij oryginał', disabled: !moznaPrzejac, flex: 1.4 },
                      { id: 'kopiuj', text: 'Kopiuj', disabled: brak }, { id: 'usun', text: 'Usuń', disabled: brak }]);
     U.etykieta(360, `Bryły (${lista.length})` + (this.zazn.length ? ` · zaznaczone: ${this.zazn.length}` : ''));
     U.rzad(398, 76, [{ id: 'wiele', text: this.wiele ? 'Zaznaczanie: wiele' : 'Zaznaczanie: jedna', active: this.wiele, flex: 1.5 },
