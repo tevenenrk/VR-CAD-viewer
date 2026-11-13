@@ -28,6 +28,8 @@ export const GEO = {
   },
 };
 
+import { poJednejStronie } from './szkic2d.js';
+
 let R = null;     // moduł replicad
 let oc = null;    // OpenCascade (WASM)
 
@@ -97,6 +99,7 @@ export function dopasujCzesci(bryly, czesci) {
 // BUDOWA BRYŁ Z PARAMETRÓW
 // def: { typ: 'prostopadloscian', dx, dy, dz } | { typ: 'walec', r, h } | { typ: 'kula', r }
 //    | { typ: 'wyciagniecie', plaszczyzna, odsuniecie, obrys: [{ typ: 'linia', a, b } | { typ: 'luk', a, m, b }], h }
+//    | { typ: 'obrot', plaszczyzna, odsuniecie, obrys, os: { a: [u,v], b: [u,v] }, kat (stopnie, domyślnie 360) }
 //    | { typ: 'boolean', op: 'suma'|'roznica'|'wspolna', a: bryla, b: bryla }
 //    | { typ: 'oryginal', plik: id pliku, indeksy: [nr brył w pliku] }
 // Prymitywy są wyśrodkowane w swoim początku układu; oś walca = oś góry (Y).
@@ -122,6 +125,8 @@ export function zbudujDef(def, pobierzOryginal) {
       return R.makeSphere(dodatnia(def.r, 'promień'));
     case 'wyciagniecie':
       return zbudujWyciagniecie(def);
+    case 'obrot':
+      return zbudujObrot(def);
     case 'boolean':
       return operacjaBoolean(def.op, zbudujBryle(def.a, pobierzOryginal), zbudujBryle(def.b, pobierzOryginal)).ksztalt;
     case 'oryginal': {                    // jedna część z pliku STEP (może składać się z kilku brył)
@@ -153,6 +158,49 @@ export function przeksztalc(ksztalt, { poz = [0, 0, 0], obr = [0, 0, 0], skala =
   if (obr[0]) s = s.rotate(obr[0], [0, 0, 0], [1, 0, 0]);
   if (poz[0] || poz[1] || poz[2]) s = s.translate(poz);
   return s;
+}
+
+// Punkt szkicu [u, v] na płaszczyźnie (odsunięcie o) → punkt CAD [x, y, z] w mm
+export function punktPlaszczyzny(plaszczyzna, o, [u, v]) {
+  const pl = GEO.PLASZCZYZNY[plaszczyzna];
+  return [0, 1, 2].map((i) => pl.n[i] * o + pl.u[i] * u + pl.v[i] * v);
+}
+
+function rysunekObrysu(def) {
+  const pl = GEO.PLASZCZYZNY[def.plaszczyzna];
+  if (!pl) throw new Error('Nieznana płaszczyzna szkicu: ' + def.plaszczyzna);
+  const seg = def.obrys || [];
+  if (seg.length < 2 && !(seg.length === 1 && seg[0].typ === 'luk')) throw new Error('Obrys musi mieć co najmniej 2 odcinki');
+  const o = def.odsuniecie || 0;
+  const plane = new R.Plane(pl.n.map((v) => v * o), pl.u, pl.n);
+  let pen = R.draw(seg[0].a);
+  seg.forEach((s, i) => {
+    const ostatni = i === seg.length - 1;
+    if (s.typ === 'linia') { if (!ostatni) pen = pen.lineTo(s.b); }
+    else if (s.typ === 'luk') pen = pen.threePointsArcTo(s.b, s.m);
+    else throw new Error('Nieznany odcinek obrysu: ' + s.typ);
+  });
+  return pen.close().sketchOnPlane(plane);
+}
+
+// Obrót obrysu wokół osi (prosta przez dwa punkty szkicu) — obrys musi leżeć po jednej stronie osi
+function zbudujObrot(def) {
+  const o = def.odsuniecie || 0;
+  if (!def.os || !def.os.a || !def.os.b) throw new Error('Brak osi obrotu');
+  const A = punktPlaszczyzny(def.plaszczyzna, o, def.os.a), B = punktPlaszczyzny(def.plaszczyzna, o, def.os.b);
+  const d = B.map((v, i) => v - A[i]), L = Math.hypot(...d);
+  if (L < 1e-9) throw new Error('Oś obrotu ma zerową długość');
+  const kat = Number(def.kat ?? 360);
+  if (!(kat > 0 && kat <= 360)) throw new Error('Kąt obrotu musi być w zakresie 0–360°');
+  if (!poJednejStronie(def.obrys || [], def.os.a, def.os.b)) throw new Error('Obrys przechodzi przez oś obrotu — oś musi być z boku obrysu albo na jego krawędzi');
+  let bryla;
+  try { bryla = rysunekObrysu(def).revolve(d.map((v) => v / L), { origin: A, angle: kat }); }
+  catch (e) { throw new Error('Obrót nie powiódł się: ' + komunikatOC(e)); }
+  const info = sprawdz(bryla);
+  if (!info.liczbaBryl || info.objetosc < GEO.MIN_OBJETOSC_MM3 || (GEO.SPRAWDZAJ_POPRAWNOSC && !info.poprawna)) {
+    throw new Error('Obrót nie dał poprawnej bryły (czy obrys nie przecina osi?)');
+  }
+  return bryla;
 }
 
 function zbudujWyciagniecie(def) {

@@ -24,6 +24,7 @@ import occtimportjs from '../node_modules/occt-import-js/dist/occt-import-js.js'
 import { GEO, cadDoSceny, scenaDoCad, macierzBryly, przeksztalcPunkt, dopasujCzesci } from '../szkicownik/geometria.js';
 import { SilnikGeometrii, BladGeometrii } from '../szkicownik/klient.js';
 import { Projekt } from '../szkicownik/projekt.js';
+import { Szkic, samoprzeciecia, pole, poJednejStronie } from '../szkicownik/szkic2d.js';
 
 const KATALOG = fileURLToPath(new URL('.', import.meta.url));
 const wyniki = [];
@@ -91,6 +92,36 @@ console.log('\n=== SZKICOWNIK: GEOMETRIA W NODE ===');
   const c = [{ min: [0, 0, 0], max: [100, 10, 10] }, { min: [0, 0, 0], max: [10, 10, 10] }];
   const m = dopasujCzesci([{ min: [0, 0, 0], max: [10, 10, 10] }, { min: [0.1, 0, 0], max: [99.9, 10, 10] }, { min: [500, 0, 0], max: [510, 1, 1] }], c);
   sprawdz('dopasowanie brył do części po ramkach', m.join() === '1,0,-1', m.join());
+}
+
+// 2b. Szkic 2D (czysty JS): domykanie, samoprzecięcia, łuk, zawracanie
+{
+  const s = new Szkic('XZ');
+  [[0, 0], [100, 0], [100, 50], [0, 50]].forEach((p) => s.dodaj('linia', p));
+  const r = s.dodaj('linia', [5, 4]);                       // blisko początku → domyka do [0, 0]
+  sprawdz('szkic: ostatni punkt przy pierwszym domyka obrys', r.ok && r.zamknieto && s.zamkniety && s.segmenty.length === 4 &&
+          s.segmenty[3].b.join() === '0,0' && Math.abs(Math.abs(pole(s.segmenty)) - 5000) < 1e-9, `pole ${pole(s.segmenty)}`);
+  const k = new Szkic('XY');
+  [[0, 0], [100, 100], [100, 0]].forEach((p) => k.dodaj('linia', p));
+  const rk = k.dodaj('linia', [0, 100]);                    // „kokardka”: odcinek przecina pierwszy
+  sprawdz('szkic: samoprzecięcie odrzucone z numerem odcinka', !rk.ok && rk.kolizja === 0 && k.segmenty.length === 2, rk.blad);
+  const zl = [{ typ: 'linia', a: [0, 0], b: [100, 100] }, { typ: 'linia', a: [100, 100], b: [100, 0] }, { typ: 'linia', a: [100, 0], b: [0, 100] }, { typ: 'linia', a: [0, 100], b: [0, 0] }];
+  sprawdz('szkic: samoprzecięcia całego obrysu', samoprzeciecia(zl).length === 1 && samoprzeciecia(s.segmenty).length === 0, JSON.stringify(samoprzeciecia(zl)));
+  const z = new Szkic('XY');
+  z.dodaj('linia', [0, 0]); z.dodaj('linia', [50, 0]);
+  const rz = z.dodaj('linia', [20, 0]);
+  sprawdz('szkic: cofanie się po poprzednim odcinku odrzucone', !rz.ok && /cofa/.test(rz.blad), rz.blad);
+  const l = new Szkic('XY');
+  l.dodaj('linia', [0, 0]); l.dodaj('linia', [40, 0]);
+  const rl1 = l.dodaj('luk', [40, 30], [55, 15]);
+  const rl0 = l.dodaj('luk', [0, 30], [20, 30]);            // punkty na prostej → błąd
+  l.dodaj('linia', [0, 30]);
+  const rl2 = l.dodaj('linia', [0, 0]);
+  sprawdz('szkic: łuk przez 3 punkty, łuk na prostej odrzucony', rl1.ok && !rl0.ok && rl2.zamknieto &&
+          Math.abs(Math.abs(pole(l.segmenty)) - (1200 + Math.PI * 225 / 2)) < 5, `pole ${pole(l.segmenty).toFixed(1)}`);
+  l.cofnij();
+  sprawdz('szkic: usuń ostatni otwiera obrys', !l.zamkniety && l.segmenty.length === 3);
+  sprawdz('oś obrotu: obrys po jednej stronie osi', poJednejStronie(s.segmenty, [0, 0], [0, 50]) && !poJednejStronie(s.segmenty, [50, -10], [50, 60]));
 }
 
 const silnik = new SilnikGeometrii({ utworzWorker: workerNode, limity: { BOOLEAN_TIMEOUT_MS: TEST.TIMEOUT_TESTOWY_MS } });
@@ -217,6 +248,48 @@ try {
     const czStl = await czytajSTEP(bajtyStl.bajty);
     sprawdz('STL zapisany do STEP w nowym położeniu', czStl.length === 1 && blisko(czStl[0].min[0], 100, TEST.TOL_RAMKA_MM) && blisko(czStl[0].max[0], 150, TEST.TOL_RAMKA_MM),
             JSON.stringify(czStl.map((c) => c.min.map(Math.round))));
+  }
+
+  // 8d. Bryły ze szkicu: wyciągnięcie w dół, obrót wokół krawędzi obrysu; cofanie (migawka → przywróć)
+  {
+    const prost = [[0, 0], [20, 0], [20, 40], [0, 40]].map((p, i, t) => ({ typ: 'linia', a: p, b: t[(i + 1) % 4] }));
+    const dol = await projekt.dodaj({ typ: 'wyciagniecie', plaszczyzna: 'XZ', odsuniecie: 100, obrys: prost, h: -30 }, { nazwa: 'WDol' });
+    const dMin = dol.poz.map((v, i) => v + dol.ramka.min[i]), dMax = dol.poz.map((v, i) => v + dol.ramka.max[i]);
+    sprawdz('wyciągnięcie z wysokością ujemną (w dół od płaszczyzny Y=100)', blisko(dol.objetosc, 20 * 40 * 30, 1e-3) && blisko(dMin[1], 70, 1e-6) && blisko(dMax[1], 100, 1e-6),
+            `Y ${dMin[1].toFixed(2)}…${dMax[1].toFixed(2)}`);
+    const tuleja = await projekt.dodaj({ typ: 'obrot', plaszczyzna: 'XY', odsuniecie: 0, obrys: prost, os: { a: [0, 0], b: [0, 40] }, kat: 360 }, { nazwa: 'Obrot' });
+    sprawdz('obrót prostokąta 20×40 wokół krawędzi = walec Ø40 × 40', blisko(tuleja.objetosc, Math.PI * 400 * 40, 0.05), tuleja.objetosc.toFixed(3));
+    const pol = await projekt.dodaj({ typ: 'obrot', plaszczyzna: 'XZ', odsuniecie: 0, obrys: prost, os: { a: [0, 0], b: [20, 0] }, kat: 90 }, { nazwa: 'Cwierc' });
+    sprawdz('obrót o 90° na płaszczyźnie XZ', blisko(pol.objetosc, Math.PI * 1600 * 20 / 4, 0.05), pol.objetosc.toFixed(3));
+    const lukZam = [{ typ: 'linia', a: [0, 0], b: [40, 0] }, { typ: 'luk', a: [40, 0], m: [20, 20], b: [0, 0] }];
+    const pk = await projekt.dodaj({ typ: 'wyciagniecie', plaszczyzna: 'XY', odsuniecie: 0, obrys: lukZam, h: 10 }, { nazwa: 'Polkole' });
+    sprawdz('obrys zamknięty łukiem (ostatni odcinek = łuk)', blisko(pk.objetosc, Math.PI * 400 / 2 * 10, 0.05), pk.objetosc.toFixed(3));
+    let bladOs = null;
+    try { await projekt.dodaj({ typ: 'obrot', plaszczyzna: 'XY', odsuniecie: 0, obrys: prost, os: { a: [10, -5], b: [10, 50] } }); } catch (e) { bladOs = e; }
+    sprawdz('oś przecinająca obrys → czytelny błąd', bladOs && /oś/.test(bladOs.message), bladOs && bladOs.message);
+
+    // cofanie
+    const przed = projekt.migawka();
+    const idsPrzed = projekt.bryly.map((b) => b.id).join();
+    await projekt.zmienDef(tuleja.id, { ...tuleja.def, kat: 180 });
+    projekt.ustawTransformacje(dol.id, { poz: [999, 0, 0] });
+    projekt.grupuj([dol.id, pol.id]);
+    await projekt.usun([pk.id]);
+    const nowa = await projekt.dodaj({ typ: 'kula', r: 5 });
+    const zd = [];
+    projekt.przyZmianie = (z, d) => zd.push(z);
+    await projekt.przywroc(przed);
+    projekt.przyZmianie = () => {};
+    const stanC = await silnik.wykonaj('stan');
+    sprawdz('cofanie: lista brył, położenie, grupy i wymiary jak przed zmianami',
+            projekt.bryly.map((b) => b.id).join() === idsPrzed && projekt.bryla(dol.id).poz[0] !== 999 && !projekt.grupy.length &&
+            blisko(projekt.bryla(tuleja.id).objetosc, Math.PI * 400 * 40, 0.05) && !projekt.bryla(nowa.id), zd.join(','));
+    sprawdz('cofanie: wątek ma przywróconą usuniętą bryłę, nie ma dodanej', stanC.ids.includes(pk.id) && !stanC.ids.includes(nowa.id));
+    const exp = await czytajSTEP(await projekt.eksportSTEP({ zakres: 'nowe', ids: [tuleja.id, pk.id] }));
+    const t1 = czesc(exp, 'Obrot');
+    sprawdz('cofanie: przywrócone bryły eksportują się poprawnie', exp.length === 2 && t1 && blisko(t1.max[0] - t1.min[0], 40, TEST.TOL_RAMKA_MM),
+            exp.map((c) => c.nazwa).join(', '));
+    await projekt.usun([dol.id, tuleja.id, pol.id, pk.id]);
   }
 
   // 9. Strażnik czasu: ciężki boolean przerwany, wątek odtworzony, bryły nietknięte

@@ -3,6 +3,8 @@
 // Ten sam wygląd co panel viewera, ale osobny kod — viewer pozostaje nietknięty.
 // ============================================================================
 
+import { rysujIkone } from '../ikony.js';
+
 // ---------------------------------------------------------------------------
 // KONFIGURACJA
 // ---------------------------------------------------------------------------
@@ -10,7 +12,7 @@ export const PANEL = {
   W: 1024, H: 1240,               // rozdzielczość płótna (px)
   PAD: 28, GAP: 14,               // marginesy i odstępy przycisków (px)
   SZEROKOSC_M: 0.24,              // szerokość panelu w goglach (m)
-  POZ_NA_RECE: [0, 0.10, -0.07],  // położenie względem lewego kontrolera (m): [w prawo, w górę, do przodu = minus]
+  POZ_NA_RECE: [0, 0.18, -0.11],  // środek panelu względem lewego kontrolera (m) — dolna krawędź ok. 6 cm nad kontrolerem
   NACHYLENIE_DEG: -35,            // pochylenie panelu do oczu
   PC_WYSOKOSC_EKRANU: 0.82,       // na PC: panel zajmuje tyle wysokości widoku
   PC_ODLEGLOSC_M: 1.0,            // na PC: odległość panelu przed kamerą
@@ -34,6 +36,9 @@ export class Uklad {
     }
   }
   etykieta(y, text) { this.B.push({ kind: 'label', x: PANEL.PAD, y, w: PANEL.W - 2 * PANEL.PAD, h: 36, text }); }
+  ramka(y, h, text) { this.B.push({ kind: 'card', x: PANEL.PAD - 8, y, w: PANEL.W - 2 * PANEL.PAD + 16, h, text }); }
+  // rząd przycisków wewnątrz ramki (z wcięciem)
+  rzadW(y, h, items) { this.rzad(y, h, items, PANEL.PAD + 14, PANEL.W - PANEL.PAD - 14); }
   info(y, text, h = 48, align = 'left', color) { this.B.push({ kind: 'info', x: PANEL.PAD, y, w: PANEL.W - 2 * PANEL.PAD, h, text, align, color }); }
   dodaj(item) { this.B.push(item); }
 }
@@ -63,7 +68,7 @@ export class Panel3D {
   // items: wynik Uklad.B; hover: id pod promieniem; stopka: tekst na dole
   odswiez(items, hover, stopka) {
     this.przyciski = items;
-    const sig = hover + '|' + stopka + '|' + JSON.stringify(items.map((b) => [b.id, b.text, b.active, b.disabled, b.checked, b.dim, b.sub, b.color]));
+    const sig = hover + '|' + stopka + '|' + JSON.stringify(items.map((b) => [b.id, b.kind, b.text, b.icon, b.active, b.disabled, b.checked, b.dim, b.sub, b.color, b.y]));
     if (sig === this.sig) return;
     this.sig = sig;
     this.rysuj(hover, stopka);
@@ -79,6 +84,13 @@ export class Panel3D {
     for (const b of this.przyciski) {
       const text = b.text == null ? '' : String(b.text);
       const hov = hover === b.id && !b.disabled && b.id;
+      if (b.kind === 'card') {                   // ramka grupy przycisków z tytułem
+        ctx.fillStyle = '#1e2228'; rr(b.x, b.y, b.w, b.h, 26); ctx.fill();
+        ctx.lineWidth = 3; ctx.strokeStyle = '#30353d'; ctx.stroke();
+        ctx.textAlign = 'left'; ctx.fillStyle = b.color || K.szary; fitFont(ctx, text, b.w - 44, 28, 600);
+        ctx.fillText(text, b.x + 22, b.y + 22);
+        continue;
+      }
       if (b.kind === 'label') {
         ctx.textAlign = 'left'; ctx.fillStyle = K.szary; ctx.font = '500 30px system-ui, sans-serif';
         ctx.fillText(text, b.x + 4, b.y + b.h / 2); continue;
@@ -122,6 +134,26 @@ export class Panel3D {
       rr(b.x, b.y, b.w, b.h, 20); ctx.fill();
       ctx.lineWidth = hov ? 6 : 3; ctx.strokeStyle = hov ? '#ffffff' : K.ramka; ctx.stroke();
       ctx.fillStyle = b.disabled ? K.wylaczony : (b.active ? '#111111' : K.tekst); ctx.textAlign = 'center';
+      const kol = ctx.fillStyle;
+      if (b.icon && !text) {                     // sama ikona
+        rysujIkone(ctx, b.icon, b.x + b.w / 2, b.y + b.h / 2, Math.min(b.w, b.h) * 0.62, kol);
+        continue;
+      }
+      if (b.icon && b.h >= 96 && !b.tab) {       // ikona nad napisem
+        rysujIkone(ctx, b.icon, b.x + b.w / 2, b.y + b.h * 0.38, Math.min(b.h * 0.46, b.w * 0.5), kol);
+        ctx.fillStyle = kol; fitFont(ctx, text, b.w - 14, 28, 600);
+        ctx.fillText(text, b.x + b.w / 2, b.y + b.h * 0.8);
+        continue;
+      }
+      if (b.icon) {                              // ikona z lewej, napis obok
+        const s = b.h * 0.5;
+        fitFont(ctx, text, b.w - s - 40, b.tab ? 38 : 32, b.tab ? 700 : 600);
+        const tw = ctx.measureText(text).width, x0 = b.x + (b.w - (s + 12 + tw)) / 2;
+        rysujIkone(ctx, b.icon, x0 + s / 2, b.y + b.h / 2, s, kol);
+        ctx.fillStyle = kol; ctx.textAlign = 'left';
+        ctx.fillText(text, x0 + s + 12, b.y + b.h / 2 + 2);
+        continue;
+      }
       if (b.sub) {                               // przycisk z podpisem (np. pole liczbowe: „X” nad „120 mm”)
         ctx.font = '500 24px system-ui, sans-serif'; ctx.fillStyle = b.active ? '#111111' : K.szary;
         ctx.fillText(b.sub, b.x + b.w / 2, b.y + b.h * 0.3);

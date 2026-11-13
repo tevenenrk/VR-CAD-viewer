@@ -11,6 +11,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { SilnikGeometrii } from './klient.js';
 import { Projekt, PROJEKT } from './projekt.js';
 import { Panel3D, Uklad, PANEL } from './panel.js';
+import { Szkic, SZKIC, przyciagnij as przyciagnijPunkt, kolizja as kolizjaOdcinka, punktyOdcinka, odlOdOdcinka, poJednejStronie } from './szkic2d.js';
 
 // ---------------------------------------------------------------------------
 // KONFIGURACJA
@@ -33,13 +34,28 @@ export const SZK = {
   KOLOR_NAD: 0x1aa3ff, JASNOSC_NAD: 0.3,
   KOLOR_KRAWEDZI: 0x15181d,
   ZASIEG_PROMIENIA_M: 6,
-  WIERSZE_LISTY: 7,
+  WIERSZE_LISTY: 6,
   PIVOT_BEZ_MODELU: [0, 1.0, -0.6], // gdzie stoi początek układu CAD, gdy nie ma wczytanego modelu (m)
   SKALA_SCENY_MIN: 0.0005, SKALA_SCENY_MAX: 20,
   SKALA_SCENY_PREDKOSC: 1.2,      // prawa gałka
   STICK_DEADZONE: 0.25,
   ETYKIETA_WYSOKOSC: 0.05,        // wysokość napisu nad bryłą jako ułamek odległości od oczu
   KOMUNIKAT_S: 4,                 // jak długo komunikat wisi w stopce panelu
+  HISTORIA_MAX: 40,               // ile kroków można cofnąć (B / Ctrl+Z)
+  // szkic 2D
+  SZKIC_GRUBOSC_M: 0.0018,        // grubość linii szkicu w goglach (m, niezależnie od skali modelu)
+  SZKIC_KOLOR: 0xffffff,          // narysowane odcinki
+  SZKIC_KOLOR_GUMKI: 0x00c7be,    // odcinek od ostatniego punktu do kursora
+  SZKIC_KOLOR_BLEDU: 0xff3b30,    // przecięcie / błędny odcinek
+  SZKIC_KOLOR_OSI: 0xffd60a,      // odcinek wskazany jako oś obrotu
+  SZKIC_POLE_SIATKI: 40,          // siatka płaszczyzny szkicu: tyle kratek (krok = snap)
+  SZKIC_BLAD_S: 2.5,              // jak długo błędny odcinek świeci na czerwono
+  KATY_OBROTU: [360, 270, 180, 90],  // obrót obrysu wokół osi (do wyboru w panelu)
+};
+const PLASZCZYZNY = {             // jak GEO.PLASZCZYZNY w geometria.js (u × v = n)
+  XY: { u: [1, 0, 0], v: [0, 1, 0], n: [0, 0, 1] },
+  XZ: { u: [1, 0, 0], v: [0, 0, -1], n: [0, 1, 0] },
+  YZ: { u: [0, 0, -1], v: [0, 1, 0], n: [1, 0, 0] },
 };
 
 // Pola wpisywane przy dodawaniu / zmianie wymiarów. „Góra” = oś góry pliku CAD (Y jak w SolidWorksie albo Z).
@@ -50,6 +66,7 @@ function polaTypu(typ, osGory = 'Y') {
     walec: [['d', 'Średnica Ø'], ['h', 'Wysokość (oś pionowa)']],
     kula: [['d', 'Średnica Ø']],
     wyciagniecie: [['h', 'Wysokość wyciągnięcia']],
+    obrot: [['kat', 'Kąt obrotu']],
   }[typ] || null;
 }
 const NAZWY_OP = { suma: 'Suma', roznica: 'Różnica', wspolna: 'Część wspólna' };
@@ -65,6 +82,7 @@ const mats = (m) => (Array.isArray(m.material) ? m.material : [m.material]);
 // def ↔ pola formularza (średnice zamiast promieni)
 function poleZDef(def, pole) {
   if (pole === 'd') return def.r * 2;
+  if (pole === 'kat') return def.kat ?? 360;
   return def[pole];
 }
 function defZPol(typ, wartosci, staraDef) {
@@ -72,6 +90,7 @@ function defZPol(typ, wartosci, staraDef) {
   if (typ === 'walec') return { typ, r: wartosci.d / 2, h: wartosci.h };
   if (typ === 'kula') return { typ, r: wartosci.d / 2 };
   if (typ === 'wyciagniecie') return { ...staraDef, h: wartosci.h };
+  if (typ === 'obrot') return { ...staraDef, kat: wartosci.kat };
   return staraDef;
 }
 
@@ -105,6 +124,13 @@ export class Szkicownik {
     this.tlo = null;
     this.pc = { wlaczony: false, tc: null, helper: null, mysz: null, nasluch: null };
     this.rc = new THREE.Raycaster();
+    this.historia = [];            // cofanie: [{ opis, stan: projekt.migawka(), znacznik }]
+    // szkic 2D: { s: Szkic, narz: 'linia'|'luk', faza: 'rysuj'|'wyciagnij'|'os', kursor: [u,v], h, osIdx, blad: {idx, czas} }
+    this.szkic = null;
+    this.plSzkicu = null;          // płaszczyzna nowego szkicu (domyślnie pozioma wg osi góry)
+    this.narzSzkicu = 'linia';
+    this.katObrotu = 360;
+    this.szkicWidok = null;        // obiekty three.js podglądu szkicu
 
     this.root = new THREE.Group();             // układ CAD w milimetrach
     this.root.name = 'Szkicownik';
@@ -176,6 +202,7 @@ export class Szkicownik {
     this.panel.mesh.removeFromParent();
     this.etykieta.sprite.visible = false;
     this.znaczniki.forEach((z) => { z.visible = false; });
+    if (this.szkicWidok) this.szkicWidok.grupa.visible = false;
     this.przerwijTworzenie();
     for (const c of this.api.controllers) if (c.userData.szk) c.userData.szk.chwyt = null;
     this.dwieRece = null;
@@ -324,6 +351,7 @@ export class Szkicownik {
     if (this.msgCzas > 0) { this.msgCzas -= dt; if (this.msgCzas <= 0) this.msg = ''; }
     this.ustawPanel();
     this.odswiezPodswietlenia();
+    this.odswiezSzkic(dt);
     this.aktualizujEtykiete();
     this.panel.odswiez(this.uklad().B, this.hoverPanelu, this.stopka());
   }
@@ -519,14 +547,53 @@ export class Szkicownik {
     this.api.say(t);
   }
 
-  async zadanie(opis, fn) {
+  // historia: opis kroku do cofnięcia (stan sprzed operacji); przy błędzie krok jest wycofywany z historii
+  async zadanie(opis, fn, historia = null) {
     if (this.zajety) { this.powiedz('Poczekaj — trwa poprzednia operacja'); return null; }
     if (!this.gotowy()) return null;
     this.zajety = true;
     if (opis) this.powiedz(opis);
+    const wpis = historia ? this.zapiszHistorie(historia) : null;
     try { return await fn(); }
-    catch (e) { this.powiedz(e.message); return null; }
+    catch (e) { if (wpis) this.historia = this.historia.filter((h) => h !== wpis); this.powiedz(e.message); return null; }
     finally { this.zajety = false; }
+  }
+
+  // ==========================================================================
+  // COFANIE: przed każdą zmianą migawka projektu; B / Ctrl+Z / przycisk przywraca ostatnią
+  // ==========================================================================
+  zapiszHistorie(opis, znacznik = null) {
+    if (!this.projekt) return null;
+    const wpis = { opis, stan: this.projekt.migawka(), znacznik };
+    this.historia.push(wpis);
+    if (this.historia.length > SZK.HISTORIA_MAX) this.historia.shift();
+    return wpis;
+  }
+
+  // ruch bez zmiany (np. chwyt i puszczenie w miejscu) nie zostaje w historii
+  porzucJesliBezZmian(znacznik, ids) {
+    const h = this.historia[this.historia.length - 1];
+    if (!h || h.znacznik !== znacznik) return;
+    const t = (b) => b && JSON.stringify([b.poz, b.obr, b.skala]);
+    if (ids.every((id) => t(h.stan.bryly.find((b) => b.id === id)) === t(this.bryla(id)))) this.historia.pop();
+  }
+
+  cofnij() {
+    if (this.szkic && this.szkicCofnij()) return null;
+    if (this.trzymane()) { this.powiedz('Puść bryłę, żeby cofnąć'); return null; }
+    if (this.zajety) { this.powiedz('Poczekaj — trwa poprzednia operacja'); return null; }
+    if (!this.historia.length) { this.powiedz('Nie ma czego cofać'); return null; }
+    const h = this.historia.pop();
+    return this.zadanie('Cofam…', async () => {
+      try { await this.projekt.przywroc(h.stan); }
+      catch (e) { this.historia.push(h); throw e; }
+      this.oczekujeB = null;
+      this.zazn = this.zazn.filter((id) => this.bryla(id));
+      if (!this.zazn.includes(this.prowadzaca)) this.prowadzaca = this.zazn[0] || null;
+      this.przypnijUchwyty();
+      this.powiedz(`Cofnięto: ${h.opis}` + (this.historia.length ? ` (zostało ${this.historia.length})` : ''));
+      return h;
+    });
   }
 
   // ==========================================================================
@@ -537,6 +604,7 @@ export class Szkicownik {
     this.przerwijTworzenie();
     this.przypnijUchwyty();
     const vr = this.api.renderer.xr.isPresenting;
+    if (n === 'szkic') { this.zacznijSzkic(); this.powiedz(`Szkic na płaszczyźnie ${this.plaszczyznaSzkicu()}: ` + (vr ? 'spust = punkt' : 'klik = punkt')); return; }
     this.powiedz(n === 'wybierz' ? 'Narzędzie: wybierz / chwyć'
       : `${PROJEKT.NAZWY[n]}: ` + (vr ? 'spust w punkcie początkowym, przeciągnij, puść' : 'przeciągnij myszą (Esc = wybierz)'));
   }
@@ -599,7 +667,7 @@ export class Szkicownik {
       this.wiele = false; this.zazn = [b.id]; this.prowadzaca = b.id; this.przypnijUchwyty();
       this.powiedz(`Dodano: ${b.nazwa}  ${k.opis}`);
       return b;
-    });
+    }, 'dodanie bryły');
   }
 
   przerwijTworzenie() { this.tworzenie = null; this.pokazPodglad(); }
@@ -646,7 +714,7 @@ export class Szkicownik {
       const k = await this.projekt.kopiuj(cel.ids, [0, 0, 0]);
       this.powiedz(`Kopia zostaje w miejscu: ${k.map((b) => b.nazwa).join(', ')}`);
       return k;
-    });
+    }, 'kopia');
   }
 
   usunTrzymane() {
@@ -659,8 +727,8 @@ export class Szkicownik {
       await this.projekt.usun(ids);
       this.zazn = this.zazn.filter((x) => !ids.includes(x));
       this.przypnijUchwyty();
-      this.powiedz(`Usunięto: ${ids.length} (cofanie będzie w etapie 5)`);
-    });
+      this.powiedz(`Usunięto: ${ids.length} (B = cofnij)`);
+    }, 'usunięcie');
   }
 
   zmienWymiar(b) {
@@ -668,11 +736,11 @@ export class Szkicownik {
     if (!pola) { this.powiedz('Ta bryła nie ma wymiarów — użyj skali'); return; }
     this.otworzNumpad({
       tytul: `${b.nazwa}: wymiary`,
-      pola: pola.map(([k, et]) => ({ klucz: k, etykieta: et, wartosc: poleZDef(b.def, k), jednostka: 'mm', dodatnia: true })),
+      pola: pola.map(([k, et]) => ({ klucz: k, etykieta: et, wartosc: poleZDef(b.def, k), jednostka: k === 'kat' ? '°' : 'mm', dodatnia: k !== 'h' })),
       gotowe: (w) => this.zadanie('Przeliczam bryłę…', async () => {
         await this.projekt.zmienDef(b.id, defZPol(b.def.typ, w, b.def));
         this.powiedz(`Zmieniono wymiary: ${b.nazwa}`);
-      }),
+      }, 'zmiana wymiarów'),
     });
   }
 
@@ -685,6 +753,7 @@ export class Szkicownik {
     this.otworzNumpad({
       tytul: b.nazwa, pola: [pole],
       gotowe: (w) => {
+        this.zapiszHistorie(rodzaj === 'skala' ? 'skala' : rodzaj === 'poz' ? 'przesunięcie' : 'obrót');
         if (rodzaj === 'skala') this.projekt.ustawTransformacje(b.id, { skala: Math.min(SZK.SKALA_MAX, w.skala) });
         else { const t = [...b[rodzaj]]; t[os] = w.v; this.projekt.ustawTransformacje(b.id, { [rodzaj]: t }); }
       },
@@ -714,7 +783,7 @@ export class Szkicownik {
       this.zazn = [w.id]; this.prowadzaca = w.id; this.przypnijUchwyty();
       this.powiedz(`${NAZWY_OP[op]} gotowa: ${A.nazwa} ${PROJEKT.ZNAK_OPERACJI[op]} ${B.nazwa} (${fmt(w.objetosc / 1000, 1)} cm³)`);
       return w;
-    });
+    }, NAZWY_OP[op].toLowerCase());
   }
 
   kopiuj() {
@@ -724,7 +793,7 @@ export class Szkicownik {
       this.zazn = kopie.map((b) => b.id); this.prowadzaca = this.zazn[0]; this.przypnijUchwyty();
       this.powiedz(`Skopiowano: ${kopie.length}`);
       return kopie;
-    });
+    }, 'kopia');
   }
 
   usun() {
@@ -733,19 +802,22 @@ export class Szkicownik {
     return this.zadanie(null, async () => {
       await this.projekt.usun(ids);
       this.zazn = []; this.prowadzaca = null; this.przypnijUchwyty();
-      this.powiedz(`Usunięto: ${ids.length}`);
-    });
+      this.powiedz(`Usunięto: ${ids.length} (B = cofnij)`);
+    }, 'usunięcie');
   }
 
   grupuj() {
+    const wpis = this.zazn.length >= 2 ? this.zapiszHistorie('grupowanie') : null;
     try {
       const g = this.projekt.grupuj(this.zazn);
       this.powiedz(`Utworzono ${g.nazwa} (${this.zazn.length} brył) — chwytasz i eksportujesz ją razem`);
-    } catch (e) { this.powiedz(e.message); }
+    } catch (e) { if (wpis) this.historia = this.historia.filter((h) => h !== wpis); this.powiedz(e.message); }
   }
 
   rozgrupuj() {
     if (!this.zazn.length) { this.powiedz('Wybierz bryłę z grupy'); return; }
+    if (!this.zazn.some((id) => this.bryla(id)?.grupa)) { this.powiedz('Zaznaczone bryły nie są w grupie'); return; }
+    this.zapiszHistorie('rozgrupowanie');
     this.projekt.rozgrupuj(this.zazn);
     this.powiedz('Rozgrupowano');
   }
@@ -791,6 +863,7 @@ export class Szkicownik {
       }
       this.zViewera();                           // położenia i widoczność z podglądu
       this.ukryjPrzejete();
+      this.historia = [];                        // przejęcia nie da się cofnąć — historia zaczyna się od tego miejsca
       this.powiedz(`Przejęto ${razem} części` + (kopii ? ` + ${kopii} kopii` : '') + (niedopasowane ? ` (bez nazwy: ${niedopasowane})` : ''));
       return { razem, kopii };
     });
@@ -903,7 +976,7 @@ export class Szkicownik {
         else { this.panelWidoczny = !this.panelWidoczny; }
       }
       if (a.buttonPressedEdge(c, B.BY)) {
-        if (glowna) this.powiedz('Cofanie będzie w etapie 5');
+        if (glowna) { this.cofnij(); a.pulse(c, 0.3, 20); }
         else this.resetWidoku();
       }
       const gp = src.gamepad;
@@ -940,6 +1013,7 @@ export class Szkicownik {
           if (!this.aktywny) return;             // „Wróć do podglądu” — dalej steruje viewer
         }
         else if (glowna && this.trzymane()) { this.kopiujTrzymane(); a.pulse(c, 0.6, 40); }
+        else if (this.trybSzkicu()) { if (!this.numpad && glowna) { this.szkicKlik(); a.pulse(c, 0.25, 15); } }
         else if (this.narzedzie !== 'wybierz' && !this.tworzenie && !this.numpad) {
           if (this.gotowy()) this.zacznijTworzenie(this.naSiatke(this.swiatDoCad(this.czubek(c))), c);
         }
@@ -960,6 +1034,13 @@ export class Szkicownik {
         if (w) { w.holder.updateMatrixWorld(true); pB = w.holder.localToWorld(s.chwyt.punktLok.clone()); kB = SZK.KOLOR_CHWYTU; }
       } else if (s.traf && !s.hover) pB = s.traf.point;
       this.ustawZnacznik(this.znaczniki[i * 2], pB, kB);
+      if (this.trybSzkicu()) {                   // szkic: kursor = czubek ręki głównej rzutowany na płaszczyznę
+        if (glowna && !s.hover && !this.numpad) this.szkicKursorXR(c);
+        const S = this.szkic;
+        const pk = glowna && !s.hover && S.kursor && S.faza !== 'wyciagnij' ? this.cadDoSwiata(this.zPlaszczyzny(S.kursor, S.s.odsuniecie ?? S.oPodglad)) : null;
+        this.ustawZnacznik(this.znaczniki[i * 2 + 1], pk, SZK.KOLOR_PODGLADU);
+        continue;
+      }
       const tworzy = this.narzedzie !== 'wybierz' && !s.hover && !s.chwyt;
       const pT = !tworzy ? null : this.cadDoSwiata(this.tworzenie && this.tworzenie.zrodlo === c ? this.tworzenie.B : this.naSiatke(this.swiatDoCad(this.czubek(c))));
       this.ustawZnacznik(this.znaczniki[i * 2 + 1], pT, SZK.KOLOR_PODGLADU);
@@ -983,6 +1064,7 @@ export class Szkicownik {
     }
     if (this.zajety) { this.powiedz('Poczekaj — trwa operacja'); }
     const cel = this.celZTrafienia(this.zajety ? null : c.userData.szk.traf);
+    if (cel.typ === 'bryly') this.zapiszHistorie('przesunięcie', cel);
     this.migawka(cel);
     cel.c0inv = c.matrixWorld.clone().invert();
     c.userData.szk.chwyt = cel;
@@ -1000,6 +1082,7 @@ export class Szkicownik {
       return;
     }
     if (cel.typ === 'bryly') {
+      this.porzucJesliBezZmian(cel, cel.ids);
       const b = this.bryla(cel.ids[0]);
       if (b) this.powiedz(`${b.nazwa}: X ${fmt(b.poz[0], 1)}  Y ${fmt(b.poz[1], 1)}  Z ${fmt(b.poz[2], 1)} mm`);
     }
@@ -1040,7 +1123,13 @@ export class Szkicownik {
     this.pc.wlaczony = true;
     if (!this.pc.tc) {
       const tc = new TransformControls(a.camera, a.renderer.domElement);
-      tc.addEventListener('dragging-changed', (e) => { a.controls.enabled = !e.value; this.pc.przeciaganie = e.value; });
+      tc.addEventListener('dragging-changed', (e) => {
+        a.controls.enabled = !e.value; this.pc.przeciaganie = e.value;
+        const id = tc.object && tc.object.userData.szkId;
+        if (!id) return;
+        if (e.value) this.pc.znacznikTC = this.zapiszHistorie('przesunięcie uchwytem', 'tc:' + id) && 'tc:' + id;
+        else if (this.pc.znacznikTC) { this.porzucJesliBezZmian(this.pc.znacznikTC, [id]); this.pc.znacznikTC = null; }
+      });
       tc.addEventListener('objectChange', () => this.zUchwytow());
       tc.setSize(0.8);
       this.pc.tc = tc;
@@ -1075,6 +1164,32 @@ export class Szkicownik {
       const u = this.osGoryIndeks();
       return { u, h: traf ? this.swiatDoCad(traf.point)[u] : this.naSiatke(this.swiatDoCad(a.controls.target))[u] };
     };
+    // szkic: promień myszy → płaszczyzna szkicu (pusty szkic: płaszczyzna przez wskazaną bryłę albo środek obrotu kamery)
+    const szkicMysz = () => {
+      const S = this.szkic, P = PLASZCZYZNY[S.s.plaszczyzna];
+      const o0 = this.swiatDoCad(this.rc.ray.origin), q = this.swiatDoCad(this.rc.ray.origin.clone().add(this.rc.ray.direction));
+      const d = q.map((v, i) => v - o0[i]), dot = (x, y) => x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+      if (S.faza === 'wyciagnij') {             // wysokość = punkt na prostej prostopadłej do szkicu najbliższy promieniowi
+        const pts = S.s.punkty, sr = pts.reduce((m, p) => [m[0] + p[0] / pts.length, m[1] + p[1] / pts.length], [0, 0]);
+        const C = this.zPlaszczyzny(sr, S.s.odsuniecie), w0 = o0.map((v, i) => v - C[i]);
+        const A = dot(d, d), B = dot(d, P.n), D = dot(d, w0), E = dot(P.n, w0), den = A - B * B;
+        if (Math.abs(den) > 1e-12) S.h = this.naKrokSkalar((A * E - B * D) / den);
+        return;
+      }
+      let o = S.s.odsuniecie;
+      if (o == null) {
+        const t = this.trafBryle(this.rc);
+        o = t ? Math.round(dot(this.swiatDoCad(t.point), P.n) * 1000) / 1000 : this.naKrokSkalar(dot(this.swiatDoCad(a.controls.target), P.n));
+      }
+      const dn = dot(d, P.n);
+      if (Math.abs(dn) < 1e-9) return;
+      const t = (o - dot(o0, P.n)) / dn;
+      if (t < 0) return;
+      const p = o0.map((v, i) => v + d[i] * t);
+      this.szkicKursor([dot(p, P.u), dot(p, P.v)], o);
+      if (S.kursor && S.faza !== 'os') this.ustawZnacznik(this.znaczniki[1], this.cadDoSwiata(this.zPlaszczyzny(S.kursor, o)), SZK.KOLOR_PODGLADU);
+      else this.ustawZnacznik(this.znaczniki[1], null);
+    };
     const n = {
       down: (e) => {
         promien(e);
@@ -1085,7 +1200,7 @@ export class Szkicownik {
           if (id !== 'panel') this.akcja(id);
           return;
         }
-        if (this.narzedzie !== 'wybierz' && e.button === 0 && !this.numpad && this.gotowy()) {
+        if (this.narzedzie !== 'wybierz' && this.narzedzie !== 'szkic' && e.button === 0 && !this.numpad && this.gotowy()) {
           const pl = plaszczyznaPod(this.trafBryle(this.rc));
           const A = naPlaszczyznie(pl);
           if (A) { this.zacznijTworzenie(A, 'pc', true, pl); e.stopImmediatePropagation(); e.preventDefault(); }
@@ -1101,6 +1216,11 @@ export class Szkicownik {
         }
         const id = panelPod();
         this.hoverPanelu = id && id !== 'panel' ? id : null;
+        if (this.trybSzkicu()) {
+          if (!id && !this.numpad) szkicMysz(); else this.ustawZnacznik(this.znaczniki[1], null);
+          this.ustawZnacznik(this.znaczniki[0], null);
+          return;
+        }
         const t = id ? null : this.trafBryle(this.rc);
         this.nad = t ? t.id : null;
         this.ustawZnacznik(this.znaczniki[0], t && this.narzedzie === 'wybierz' ? t.point : null, SZK.KOLOR_PUNKTU);
@@ -1120,6 +1240,7 @@ export class Szkicownik {
         if (!m || m.panel || this.pc.przeciaganie || e.button !== 0) return;
         if (Math.hypot(e.clientX - m.x, e.clientY - m.y) > 5) return;
         if (this.pc.tc.axis) return;                // klik w uchwyt
+        if (this.trybSzkicu()) { if (!this.numpad) { promien(e); szkicMysz(); this.szkicKlik(); } return; }
         if (this.narzedzie !== 'wybierz') return;
         promien(e);
         const t = this.trafBryle(this.rc);
@@ -1196,13 +1317,17 @@ export class Szkicownik {
     const z = this.api.upAxis === 'Z';         // strzałki: poziomo, PageUp/PageDown: w górę/w dół (oś góry pliku)
     const kroki = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: z ? [1, 1] : [2, -1], ArrowDown: z ? [1, -1] : [2, 1],
                     PageUp: [z ? 2 : 1, 1], PageDown: [z ? 2 : 1, -1] };
+    if (this.szkic && this.klawiszSzkicu(k, ctrl)) { e.preventDefault(); e.stopImmediatePropagation(); return; }
     if (kroki[k] && this.zazn.length) {
+      this.zapiszHistorie('przesunięcie');
       const [os, zn] = kroki[k];
       const d = zn * this.snap.siatka * (e.shiftKey ? 10 : 1);
       for (const id of this.zazn) { const b = this.bryla(id); const p = [...b.poz]; p[os] += d; this.projekt.ustawTransformacje(id, { poz: p }); }
     } else if ((k === 'q' || k === 'Q') && this.zazn.length) {
+      this.zapiszHistorie('obrót');
       this.obrocZaznaczone((e.shiftKey ? -1 : 1) * this.snap.kat);
     } else if ((k === '+' || k === '=' || k === '-') && this.zazn.length && !ctrl) {
+      this.zapiszHistorie('skala');
       for (const id of this.zazn) {
         const b = this.bryla(id);
         const s = Math.min(SZK.SKALA_MAX, Math.max(SZK.SKALA_MIN, Math.round((b.skala + (k === '-' ? -1 : 1) * SZK.SKALA_KROK) / SZK.SKALA_KROK) * SZK.SKALA_KROK));
@@ -1216,7 +1341,7 @@ export class Szkicownik {
     else if (ctrl && (k === 'g' || k === 'G')) { if (e.shiftKey) this.rozgrupuj(); else this.grupuj(); }
     else if (ctrl && (k === 'a' || k === 'A')) { this.zazn = this.projekt.bryly.filter((b) => b.widoczna).map((b) => b.id); this.przypnijUchwyty(); }
     else if (k === 'Escape') { if (this.tworzenie) this.przerwijTworzenie(); else if (this.narzedzie !== 'wybierz') this.ustawNarzedzie('wybierz'); else this.odznacz(); }
-    else if (ctrl && (k === 'z' || k === 'Z')) this.powiedz('Cofanie będzie w etapie 5');
+    else if (ctrl && (k === 'z' || k === 'Z')) this.cofnij();
     else return;
     e.preventDefault(); e.stopImmediatePropagation();
   }
@@ -1267,112 +1392,466 @@ export class Szkicownik {
   }
 
   // ==========================================================================
+  // SZKIC 2D → BRYŁA (wyciągnięcie albo obrót wokół osi)
+  // Punkty szkicu [u, v] w mm na płaszczyźnie XY / XZ / YZ przesuniętej o „odsuniecie” wzdłuż normalnej.
+  // Gogle: punkt = czubek kontrolera rzutowany na płaszczyznę (pierwszy punkt wyznacza położenie płaszczyzny).
+  // PC: punkt = przecięcie promienia myszy z płaszczyzną (przez wskazaną bryłę albo środek obrotu kamery).
+  // ==========================================================================
+  plaszczyznaPozioma() { return this.api.upAxis === 'Z' ? 'XY' : 'XZ'; }
+  plaszczyznaSzkicu() { return this.szkic ? this.szkic.s.plaszczyzna : (this.plSzkicu || this.plaszczyznaPozioma()); }
+  trybSzkicu() { return this.narzedzie === 'szkic' && !!this.szkic; }
+  naKrokSkalar(v) { const g = this.krok(); return Math.round(v / g) * g; }
+
+  zacznijSzkic() {
+    if (!this.szkic) this.szkic = { s: new Szkic(this.plaszczyznaSzkicu()), faza: 'rysuj', kursor: null, oPodglad: 0, h: 0, osIdx: -1, blad: null };
+    return this.szkic;
+  }
+
+  ustawPlaszczyzne(pl) {
+    const S = this.zacznijSzkic();
+    if (S.s.start && S.s.plaszczyzna !== pl) { this.powiedz('Szkic ma już punkty — najpierw „Anuluj szkic”'); return; }
+    this.plSzkicu = pl;
+    S.s.plaszczyzna = pl;
+    this.powiedz(`Płaszczyzna szkicu: ${pl}` + (pl === this.plaszczyznaPozioma() ? ' (pozioma)' : ' (pionowa)'));
+  }
+
+  anulujSzkic() {
+    this.szkic = null;
+    if (this.narzedzie === 'szkic') this.zacznijSzkic();
+    this.powiedz('Szkic anulowany');
+  }
+
+  // punkt CAD [x, y, z] → { uv, o } w układzie płaszczyzny
+  doPlaszczyzny(p, pl = this.plaszczyznaSzkicu()) {
+    const P = PLASZCZYZNY[pl], dot = (a) => a[0] * p[0] + a[1] * p[1] + a[2] * p[2];
+    return { uv: [dot(P.u), dot(P.v)], o: dot(P.n) };
+  }
+  zPlaszczyzny(uv, o, pl = this.plaszczyznaSzkicu()) {
+    const P = PLASZCZYZNY[pl];
+    return [0, 1, 2].map((i) => P.n[i] * o + P.u[i] * uv[0] + P.v[i] * uv[1]);
+  }
+
+  // kursor szkicu z punktu na płaszczyźnie (uv surowe, o = położenie płaszczyzny, gdy szkic jest jeszcze pusty)
+  szkicKursor(uv, o) {
+    const S = this.szkic, s = S.s;
+    S.oPodglad = s.odsuniecie ?? o;
+    if (S.faza === 'os') { S.kursor = uv; S.osIdx = this.najblizszaOs(uv); return; }
+    const sn = przyciagnijPunkt(uv, s.punkty, this.krok(), SZKIC.SNAP_PUNKT_MM);
+    S.kursor = sn.p;
+  }
+
+  // gogle: czubek kontrolera → kursor (albo wysokość wyciągnięcia)
+  szkicKursorXR(c) {
+    const S = this.szkic, p = this.swiatDoCad(this.czubek(c));
+    const { uv, o } = this.doPlaszczyzny(p);
+    if (S.faza === 'wyciagnij') { S.h = this.naKrokSkalar(o - S.s.odsuniecie); return; }
+    this.szkicKursor(uv, this.naKrokSkalar(o));
+  }
+
+  najblizszaOs(uv) {
+    let best = -1, bd = Infinity;
+    this.szkic.s.segmenty.forEach((sg, i) => {
+      if (sg.typ !== 'linia') return;
+      const d = odlOdOdcinka(uv, sg.a, sg.b);
+      if (d < bd) { bd = d; best = i; }
+    });
+    return best;
+  }
+
+  szkicKlik() {
+    const S = this.szkic;
+    if (!S) return;
+    const s = S.s;
+    if (S.faza === 'wyciagnij') { this.zatwierdzWyciagniecie(S.h); return; }
+    if (S.faza === 'os') {
+      if (S.osIdx >= 0) this.zatwierdzObrot(S.osIdx); else this.powiedz('Wskaż prosty odcinek obrysu jako oś obrotu');
+      return;
+    }
+    if (!S.kursor) return;
+    if (s.zamkniety) { this.powiedz('Obrys zamknięty — wybierz „Wyciągnij” albo „Obrót”'); return; }
+    if (!s.start) {
+      s.odsuniecie = S.oPodglad;
+      s.dodaj('linia', S.kursor);
+      this.powiedz(this.narzSzkicu === 'luk' ? 'Początek łuku — wskaż punkt na łuku' : 'Punkt początkowy — wskaż następny');
+      return;
+    }
+    if (this.narzSzkicu === 'luk' && !s.lukSrodek) {
+      if (Math.hypot(S.kursor[0] - s.ostatni[0], S.kursor[1] - s.ostatni[1]) < 1e-6) return;
+      s.lukSrodek = [...S.kursor];
+      this.powiedz('Łuk: teraz wskaż punkt końcowy');
+      return;
+    }
+    const r = this.narzSzkicu === 'luk' ? s.dodaj('luk', S.kursor, s.lukSrodek) : s.dodaj('linia', S.kursor);
+    s.lukSrodek = null;
+    if (r.ok) { if (r.zamknieto) this.powiedz('Obrys zamknięty ✓ — „Wyciągnij” albo „Obrót”'); }
+    else {
+      this.powiedz(r.blad);
+      if (r.kolizja >= 0) S.blad = { idx: r.kolizja, czas: SZK.SZKIC_BLAD_S };
+    }
+  }
+
+  // true = cofnięto krok szkicu (B / Ctrl+Z / Usuń ostatni); false = szkic pusty, cofanie idzie do historii brył
+  szkicCofnij() {
+    const S = this.szkic;
+    if (!S || this.narzedzie !== 'szkic') return false;
+    if (S.faza !== 'rysuj') { S.faza = 'rysuj'; this.powiedz('Powrót do rysowania'); return true; }
+    if (S.s.lukSrodek) { S.s.lukSrodek = null; this.powiedz('Anulowano punkt łuku'); return true; }
+    if (!S.s.start) return false;
+    S.s.cofnij();
+    this.powiedz(S.s.start ? `Usunięto ostatni odcinek (zostało ${S.s.segmenty.length})` : 'Szkic pusty');
+    return true;
+  }
+
+  zamknijSzkic() {
+    const S = this.szkic;
+    if (!S) return;
+    const r = S.s.zamknij();
+    if (r.ok) this.powiedz('Obrys zamknięty ✓ — „Wyciągnij” albo „Obrót”');
+    else { this.powiedz(r.blad); if (r.kolizja >= 0) S.blad = { idx: r.kolizja, czas: SZK.SZKIC_BLAD_S }; }
+  }
+
+  zamknietyObrys() {
+    if (!this.szkic || !this.szkic.s.zamkniety) { this.powiedz('Najpierw zamknij obrys (ostatni punkt na pierwszym albo „Zamknij”)'); return false; }
+    return true;
+  }
+
+  zacznijWyciaganie() {
+    if (!this.zamknietyObrys()) return;
+    const S = this.szkic;
+    S.faza = 'wyciagnij'; S.h = 0;
+    this.powiedz(this.api.renderer.xr.isPresenting ? 'Odsuń rękę od płaszczyzny na wysokość bryły, spust = gotowe' : 'Rusz myszą w górę / w dół, klik = gotowe');
+  }
+
+  wpiszWysokosc() {
+    if (!this.zamknietyObrys()) return;
+    const S = this.szkic;
+    this.otworzNumpad({
+      tytul: 'Wyciągnięcie szkicu',
+      pola: [{ klucz: 'h', etykieta: 'Wysokość (minus = w drugą stronę)', wartosc: S.h || 50, jednostka: 'mm' }],
+      gotowe: (w) => this.zatwierdzWyciagniecie(w.h),
+    });
+  }
+
+  zacznijObrot() {
+    if (!this.zamknietyObrys()) return;
+    const S = this.szkic;
+    if (!S.s.segmenty.some((sg) => sg.typ === 'linia')) { this.powiedz('Obrys nie ma prostego odcinka, który mógłby być osią'); return; }
+    S.faza = 'os'; S.osIdx = -1;
+    this.powiedz(`Obrót ${this.katObrotu}°: wskaż odcinek obrysu, który będzie osią (żółty), spust = gotowe`);
+  }
+
+  zatwierdzWyciagniecie(h) {
+    const S = this.szkic;
+    if (!S || !S.s.zamkniety) return null;
+    if (!Number.isFinite(h) || Math.abs(h) < 1e-6) { this.powiedz('Wysokość równa zero — odsuń rękę / mysz od płaszczyzny'); return null; }
+    const s = S.s;
+    const def = { typ: 'wyciagniecie', plaszczyzna: s.plaszczyzna, odsuniecie: s.odsuniecie, obrys: s.obrys(), h };
+    return this.zadanie('Wyciągam…', async () => {
+      const b = await this.projekt.dodaj(def);
+      this.poSzkicu(b, `Wyciągnięcie gotowe: ${b.nazwa}, wysokość ${fmt(h)} mm`);
+      return b;
+    }, 'wyciągnięcie');
+  }
+
+  zatwierdzObrot(idx) {
+    const S = this.szkic;
+    if (!S || !S.s.zamkniety) return null;
+    const s = S.s, sg = s.segmenty[idx];
+    if (!sg || sg.typ !== 'linia') { this.powiedz('Oś musi być prostym odcinkiem'); return null; }
+    if (!poJednejStronie(s.segmenty, sg.a, sg.b)) { this.powiedz('Obrys leży po obu stronach tej osi — wybierz odcinek na brzegu obrysu'); return null; }
+    const def = { typ: 'obrot', plaszczyzna: s.plaszczyzna, odsuniecie: s.odsuniecie, obrys: s.obrys(), os: { a: [...sg.a], b: [...sg.b] }, kat: this.katObrotu };
+    return this.zadanie('Obracam obrys…', async () => {
+      const b = await this.projekt.dodaj(def);
+      this.poSzkicu(b, `Obrót gotowy: ${b.nazwa} (${this.katObrotu}°)`);
+      return b;
+    }, 'obrót szkicu');
+  }
+
+  poSzkicu(b, tekst) {
+    this.szkic = null;
+    this.zacznijSzkic();
+    this.zazn = [b.id]; this.prowadzaca = b.id;
+    this.przypnijUchwyty();
+    this.powiedz(tekst);
+  }
+
+  klawiszSzkicu(k, ctrl) {
+    if (!this.trybSzkicu()) return false;
+    const S = this.szkic;
+    if (k === 'Escape') {
+      if (S.faza !== 'rysuj' || S.s.lukSrodek) this.szkicCofnij();
+      else { this.strona = 'bryly'; this.ustawNarzedzie('wybierz'); }
+      return true;
+    }
+    if (k === 'Backspace' || (ctrl && (k === 'z' || k === 'Z'))) return this.szkicCofnij();
+    if (k === 'Enter') {
+      if (S.faza === 'rysuj') this.zamknijSzkic(); else this.szkicKlik();
+      return true;
+    }
+    if (!ctrl && (k === 'l' || k === 'L')) { this.narzSzkicu = 'linia'; this.szkic.s.lukSrodek = null; return true; }
+    if (!ctrl && (k === 'a' || k === 'A')) { this.narzSzkicu = 'luk'; return true; }
+    return false;
+  }
+
+  // ---- podgląd szkicu w scenie (odcinki jako cienkie walce o stałej grubości w świecie) ----
+  widokSzkicu() {
+    if (this.szkicWidok) return this.szkicWidok;
+    const grupa = new THREE.Group();
+    grupa.name = 'Szkic 2D';
+    const walec = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true);
+    const kula = new THREE.SphereGeometry(1, 12, 8);
+    const mat = (kolor, op = 1) => new THREE.MeshBasicMaterial({ color: kolor, depthTest: false, transparent: true, opacity: op });
+    const M = { linia: mat(SZK.SZKIC_KOLOR), gumka: mat(SZK.SZKIC_KOLOR_GUMKI), blad: mat(SZK.SZKIC_KOLOR_BLEDU), os: mat(SZK.SZKIC_KOLOR_OSI) };
+    const siatka = new THREE.GridHelper(1, SZK.SZKIC_POLE_SIATKI, 0x7fd4ff, 0x4a6a80);
+    siatka.material.transparent = true; siatka.material.opacity = 0.35; siatka.material.depthWrite = false;
+    siatka.matrixAutoUpdate = false;
+    const bryla = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: SZK.KOLOR_PODGLADU, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide }));
+    bryla.matrixAutoUpdate = false;
+    grupa.add(siatka, bryla);
+    this.szkicWidok = { grupa, walec, kula, M, siatka, bryla, odcinki: [], punkty: [], kluczBryly: '' };
+    return this.szkicWidok;
+  }
+
+  odswiezSzkic(dt) {
+    const V = this.widokSzkicu(), S = this.szkic;
+    if (V.grupa.parent !== this.root) this.root.add(V.grupa);
+    const widac = this.trybSzkicu();
+    V.grupa.visible = widac;
+    if (!widac) return;
+    if (S.blad) { S.blad.czas -= dt; if (S.blad.czas <= 0) S.blad = null; }
+    const s = S.s, pl = s.plaszczyzna, o = s.odsuniecie ?? S.oPodglad;
+    const sw = new THREE.Vector3();
+    this.root.getWorldScale(sw);
+    const r = SZK.SZKIC_GRUBOSC_M / Math.max(sw.x, 1e-9);           // promień linii w mm
+    const p3 = (uv) => new THREE.Vector3(...this.zPlaszczyzny(uv, o, pl));
+    let ni = 0, pi = 0;
+    const Y = new THREE.Vector3(0, 1, 0);
+    const odcinek = (a, b, mat) => {
+      let m = V.odcinki[ni];
+      if (!m) { m = new THREE.Mesh(V.walec, mat); m.renderOrder = 995; V.grupa.add(m); V.odcinki.push(m); }
+      ni++;
+      const A = p3(a), B = p3(b), d = B.clone().sub(A), L = d.length();
+      m.visible = L > 1e-9;
+      if (!m.visible) return;
+      m.material = mat;
+      m.position.copy(A).add(B).multiplyScalar(0.5);
+      m.quaternion.setFromUnitVectors(Y, d.divideScalar(L));
+      m.scale.set(r, L, r);
+    };
+    const punkt = (uv, mat, k = 2.2) => {
+      let m = V.punkty[pi];
+      if (!m) { m = new THREE.Mesh(V.kula, mat); m.renderOrder = 996; V.grupa.add(m); V.punkty.push(m); }
+      pi++;
+      m.visible = true; m.material = mat;
+      m.position.copy(p3(uv)); m.scale.setScalar(r * k);
+    };
+    const lamana = (sg, mat) => { const q = punktyOdcinka(sg); for (let i = 0; i < q.length - 1; i++) odcinek(q[i], q[i + 1], mat); };
+    s.segmenty.forEach((sg, i) => {
+      const mat = S.blad && S.blad.idx === i ? V.M.blad : (S.faza === 'os' && S.osIdx === i ? V.M.os : V.M.linia);
+      lamana(sg, mat);
+    });
+    s.punkty.forEach((q, i) => punkt(q, i === 0 && !s.zamkniety ? V.M.gumka : V.M.linia, i === 0 ? 3 : 2.2));
+    if (s.lukSrodek) punkt(s.lukSrodek, V.M.gumka, 1.8);
+    // gumka: od ostatniego punktu do kursora (czerwona, gdy odcinek przecinałby obrys)
+    if (S.faza === 'rysuj' && S.kursor && s.start && !s.zamkniety) {
+      const a = s.ostatni;
+      const n = s.segmenty.length, luk = this.narzSzkicu === 'luk' && s.lukSrodek;
+      let b = S.kursor;
+      const domyka = n >= (luk ? 1 : 2) && Math.hypot(b[0] - s.start[0], b[1] - s.start[1]) <= SZKIC.TOL_DOMKNIECIA_MM;
+      if (domyka) b = s.start;
+      const nowy = luk ? { typ: 'luk', a, m: s.lukSrodek, b } : { typ: 'linia', a, b };
+      const zly = (Math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-6) &&
+        kolizjaOdcinka(s.segmenty, nowy, [n - 1, ...(domyka ? [0] : [])].filter((x) => x >= 0)) >= 0;
+      lamana(nowy, zly ? V.M.blad : V.M.gumka);
+    }
+    if (S.kursor && S.faza !== 'wyciagnij') punkt(S.kursor, V.M.gumka, 2.6);
+    for (let i = ni; i < V.odcinki.length; i++) V.odcinki[i].visible = false;
+    for (let i = pi; i < V.punkty.length; i++) V.punkty[i].visible = false;
+
+    // siatka płaszczyzny (linie co krok snapu, środek na siatce)
+    const P = PLASZCZYZNY[pl], g = this.krok(), N = SZK.SZKIC_POLE_SIATKI;
+    const sr = (s.start || S.kursor || [0, 0]).map((v) => Math.round(v / g) * g);
+    const U = new THREE.Vector3(...P.u), Vv = new THREE.Vector3(...P.v), Nn = new THREE.Vector3(...P.n);
+    V.siatka.matrix.makeBasis(U, Nn, Vv).scale(new THREE.Vector3(N * g, 1, N * g)).setPosition(p3(sr));
+    V.siatka.visible = S.faza === 'rysuj';
+    // podgląd wyciągnięcia
+    const pokazBryle = S.faza === 'wyciagnij' && s.zamkniety && Math.abs(S.h) > 1e-6;
+    V.bryla.visible = pokazBryle;
+    if (pokazBryle) {
+      const klucz = JSON.stringify(s.segmenty);
+      if (klucz !== V.kluczBryly) {
+        const pts = [];
+        s.segmenty.forEach((sg) => { const q = punktyOdcinka(sg); pts.push(...q.slice(0, -1)); });
+        V.bryla.geometry.dispose();
+        V.bryla.geometry = new THREE.ExtrudeGeometry(new THREE.Shape(pts.map((q) => new THREE.Vector2(q[0], q[1]))), { depth: 1, bevelEnabled: false, curveSegments: 4 });
+        V.kluczBryly = klucz;
+      }
+      V.bryla.matrix.makeBasis(U, Vv, Nn).scale(new THREE.Vector3(1, 1, S.h)).setPosition(Nn.clone().multiplyScalar(o));
+    }
+  }
+
+  // ==========================================================================
   // PANEL: układ zakładek i reakcje na przyciski
   // ==========================================================================
   stopka() {
     if (this.msg) return this.msg;
+    const vr = this.api.renderer.xr.isPresenting, spust = vr ? 'spust' : 'klik';
     if (this.oczekujeB) return `${NAZWY_OP[this.oczekujeB.op]}: wskaż bryłę B spustem`;
     if (this.zajety) return 'Liczę…';
-    if (this.narzedzie !== 'wybierz') return this.api.renderer.xr.isPresenting ? 'Spust w punkcie A → przeciągnij → puść' : 'Przeciągnij myszą po płaszczyźnie · Esc = wybierz';
-    return 'Spust: wybierz · Grip: chwyć (prawy spust = kopia, A = usuń)';
+    if (this.trybSzkicu()) {
+      const S = this.szkic, s = S.s;
+      if (S.faza === 'wyciagnij') return `Wysokość ${fmt(S.h)} mm — ${vr ? 'odsuń rękę' : 'rusz myszą'}, ${spust} = gotowe, B = wróć`;
+      if (S.faza === 'os') return `Wskaż odcinek-oś (żółty), ${spust} = obrót ${this.katObrotu}°, B = wróć`;
+      if (s.zamkniety) return 'Obrys zamknięty — „Wyciągnij” albo „Obrót”';
+      if (!s.start) return vr ? 'Spust: pierwszy punkt (płaszczyzna przechodzi przez czubek)' : 'Klik: pierwszy punkt na płaszczyźnie';
+      if (this.narzSzkicu === 'luk') return s.lukSrodek ? `Łuk: ${spust} = punkt końcowy` : `Łuk: ${spust} = punkt na łuku`;
+      return `Linia: ${spust} = następny punkt · na pierwszym punkcie = zamknij · B = usuń ostatni`;
+    }
+    if (this.narzedzie !== 'wybierz') return vr ? 'Spust w punkcie A → przeciągnij → puść' : 'Przeciągnij myszą po płaszczyźnie · Esc = wybierz';
+    return vr ? 'Spust: wybierz · Grip: chwyć (prawy spust = kopia, A = usuń) · B: cofnij' : 'Klik: wybierz · Ctrl+Z: cofnij';
   }
 
   uklad() {
     const U = new Uklad();
     if (this.numpad) return this.ukladNumpada(U);
-    U.rzad(20, 80, [['bryly', 'Bryły'], ['edycja', 'Edycja'], ['plik', 'Plik']].map(([id, text]) => ({ id: 'tab:' + id, text, active: this.strona === id, tab: true })));
+    U.rzad(20, 80, [['bryly', 'Bryły', 'prostopadloscian'], ['szkic', 'Szkic', 'szkic'], ['edycja', 'Edycja', 'numer'], ['plik', 'Plik', 'plik']]
+      .map(([id, text, icon]) => ({ id: 'tab:' + id, text, icon, active: this.strona === id, tab: true })));
     if (this.strona === 'bryly') this.ukladBryly(U);
+    else if (this.strona === 'szkic') this.ukladSzkic(U);
     else if (this.strona === 'edycja') this.ukladEdycja(U);
     else this.ukladPlik(U);
     return U;
+  }
+
+  przyciskCofnij() {
+    const h = this.historia[this.historia.length - 1];
+    return { id: 'cofnij', text: 'Cofnij (B)', icon: 'cofnij', disabled: !h, flex: 1.15 };
   }
 
   ukladBryly(U) {
     const a = this.api, P = PANEL.PAD, W = PANEL.W;
     const lista = this.projekt ? this.projekt.bryly : [];
     const brak = !this.zazn.length;
-    U.etykieta(116, 'Narzędzie (spust): rozciągnij bryłę od punktu do punktu');
-    U.rzad(154, 92, [['wybierz', 'Wybierz'], ['prostopadloscian', 'Prostopadłościan'], ['walec', 'Walec'], ['kula', 'Kula']]
-      .map(([id, text]) => ({ id: 'narz:' + id, text, active: this.narzedzie === id, flex: id === 'prostopadloscian' ? 1.6 : 1 })));
+    U.ramka(112, 196, 'Narzędzie — spust: rozciągnij bryłę od punktu do punktu');
+    U.rzadW(150, 140, [['wybierz', 'Wybierz'], ['prostopadloscian', 'Prostopadłościan'], ['walec', 'Walec'], ['kula', 'Kula']]
+      .map(([id, text]) => ({ id: 'narz:' + id, text, icon: id, active: this.narzedzie === id, flex: id === 'prostopadloscian' ? 1.35 : 1 })));
+    U.ramka(322, 196, 'Działania na zaznaczonych');
+    U.rzadW(360, 140, [this.przyciskCofnij(), { id: 'kopiuj', text: 'Kopiuj', icon: 'kopiuj', disabled: brak }, { id: 'usun', text: 'Usuń', icon: 'usun', disabled: brak },
+                       { id: 'grupuj', text: 'Grupuj', icon: 'grupuj', disabled: this.zazn.length < 2 },
+                       { id: 'rozgrupuj', text: 'Rozgrupuj', icon: 'rozgrupuj', disabled: !this.zazn.some((id) => this.bryla(id)?.grupa), flex: 1.15 }]);
     const moznaPrzejac = !!(a.cadRoot && this.plikiDoPrzejecia().length);
     const przejety = !!(this.projekt && Object.keys(this.projekt.pliki).length);
-    U.rzad(258, 86, [{ id: 'oryginal', text: !moznaPrzejac && przejety ? 'Oryginał przejęty' : 'Przejmij oryginał', disabled: !moznaPrzejac, flex: 1.4 },
-                     { id: 'kopiuj', text: 'Kopiuj', disabled: brak }, { id: 'usun', text: 'Usuń', disabled: brak }]);
-    U.etykieta(360, `Bryły (${lista.length})` + (this.zazn.length ? ` · zaznaczone: ${this.zazn.length}` : ''));
-    U.rzad(398, 76, [{ id: 'wiele', text: this.wiele ? 'Zaznaczanie: wiele' : 'Zaznaczanie: jedna', active: this.wiele, flex: 1.5 },
-                     { id: 'grupuj', text: 'Grupuj', disabled: this.zazn.length < 2 }, { id: 'rozgrupuj', text: 'Rozgrupuj', disabled: brak },
-                     { id: 'pokaz', text: 'Pokaż wszystko' }]);
-    if (!lista.length) U.info(500, this.stanSilnika === 'gotowy' ? 'Brak brył — dodaj prostopadłościan, walec albo kulę' : 'Ładowanie geometrii…');
+    U.ramka(532, 628, `Bryły (${lista.length})` + (this.zazn.length ? ` · zaznaczone: ${this.zazn.length}` : ''));
+    U.rzadW(570, 76, [{ id: 'wiele', text: this.wiele ? 'Zaznaczanie: wiele' : 'Zaznaczanie: jedna', icon: 'wiele', active: this.wiele, flex: 1.3 },
+                      { id: 'pokaz', text: 'Pokaż wszystko', icon: 'oko' },
+                      { id: 'oryginal', text: !moznaPrzejac && przejety ? 'Przejęto' : 'Przejmij oryginał', icon: 'przejmij', disabled: !moznaPrzejac }]);
+    const x0 = P + 14, x1 = W - P - 14;
+    if (!lista.length) U.dodaj({ kind: 'info', x: x0, y: 690, w: x1 - x0, h: 48, text: this.stanSilnika === 'gotowy' ? 'Brak brył — wybierz narzędzie albo zakładkę Szkic' : 'Ładowanie geometrii…', color: PANEL.KOLORY.szary });
     const N = SZK.WIERSZE_LISTY;
     this.przewin = Math.max(0, Math.min(this.przewin, lista.length - N));
     for (let k = 0; k < N; k++) {
       const b = lista[this.przewin + k];
       if (!b) break;
-      const y = 488 + k * 78;
+      const y = 660 + k * 70;
       const g = b.grupa && this.projekt.grupa(b.grupa);
-      U.dodaj({ kind: 'check', id: 'vis:' + b.id, checked: b.widoczna, x: P, y, w: 70, h: 70 });
+      U.dodaj({ kind: 'check', id: 'vis:' + b.id, checked: b.widoczna, x: x0, y, w: 62, h: 62 });
       U.dodaj({ kind: 'item', id: 'sel:' + b.id, text: b.nazwa, sub: g ? g.nazwa : (b.zrodlo === 'oryginal' ? 'oryginał' : ''),
-                active: this.zazn.includes(b.id), dim: !b.widoczna, x: P + 84, y, w: W - 2 * P - 84, h: 70 });
+                active: this.zazn.includes(b.id), dim: !b.widoczna, x: x0 + 76, y, w: x1 - x0 - 76, h: 62 });
     }
-    U.rzad(1046, 76, [{ id: 'lista:-', text: '▲', disabled: this.przewin <= 0, flex: 0.7 }, { id: 'lista:+', text: '▼', disabled: this.przewin + N >= lista.length, flex: 0.7 },
-                      { id: '', kind: 'info', align: 'center', text: lista.length ? `${this.przewin + 1}–${Math.min(lista.length, this.przewin + N)} z ${lista.length}` : '', flex: 1.6 }]);
+    U.rzadW(1084, 64, [{ id: 'lista:-', text: '▲', disabled: this.przewin <= 0, flex: 0.7 }, { id: 'lista:+', text: '▼', disabled: this.przewin + N >= lista.length, flex: 0.7 },
+                       { id: '', kind: 'info', align: 'center', text: lista.length ? `${this.przewin + 1}–${Math.min(lista.length, this.przewin + N)} z ${lista.length}` : '', flex: 1.6 }]);
+  }
+
+  ukladSzkic(U) {
+    const S = this.szkic, s = S && S.s, pl = this.plaszczyznaSzkicu(), poz = this.plaszczyznaPozioma();
+    const zamk = !!(s && s.zamkniety), ma = !!(s && s.start);
+    U.ramka(112, 196, 'Płaszczyzna szkicu');
+    U.rzadW(150, 140, ['XY', 'XZ', 'YZ'].map((p) => ({ id: 'pl:' + p, icon: 'pl' + p, text: p + (p === poz ? ' · poziom' : ' · pion'),
+                                                    active: pl === p, disabled: ma && pl !== p })));
+    U.ramka(322, 196, 'Rysowanie obrysu' + (s ? ` · odcinki: ${s.segmenty.length}` + (zamk ? ' · zamknięty ✓' : '') : ''));
+    U.rzadW(360, 140, [{ id: 'sz:linia', text: 'Linia', icon: 'linia', active: this.narzSzkicu === 'linia' },
+                       { id: 'sz:luk', text: 'Łuk', icon: 'luk', active: this.narzSzkicu === 'luk' },
+                       { id: 'sz:wstecz', text: 'Usuń ostatni', icon: 'wstecz', disabled: !ma, flex: 1.25 },
+                       { id: 'sz:zamknij', text: 'Zamknij', icon: 'ok', disabled: zamk || !(s && s.segmenty.length >= 2) },
+                       { id: 'sz:anuluj', text: 'Anuluj', icon: 'anuluj', disabled: !ma }]);
+    U.ramka(532, 196, 'Bryła z zamkniętego obrysu');
+    U.rzadW(570, 140, [{ id: 'sz:wyciagnij', text: 'Wyciągnij', icon: 'wyciagnij', disabled: !zamk, active: S && S.faza === 'wyciagnij' },
+                       { id: 'sz:wysokosc', text: 'Wpisz wysokość', icon: 'numer', disabled: !zamk, flex: 1.2 },
+                       { id: 'sz:obrot', text: `Obrót ${this.katObrotu}°`, icon: 'obrot', disabled: !zamk, active: S && S.faza === 'os' },
+                       { id: 'sz:kat', text: 'Zmień kąt', icon: 'reset' }]);
+    U.ramka(742, 160, 'Snap (przyciąganie do siatki i punktów)');
+    this.rzadSnapu(U, 780);
+    const vr = this.api.renderer.xr.isPresenting;
+    const pomoc = vr
+      ? ['Spust: kolejny punkt (czubek kontrolera, rzut na płaszczyznę)', 'Pierwszy punkt ustala, na jakiej wysokości leży płaszczyzna',
+         'Ostatni punkt na pierwszym = obrys zamknięty', 'Czerwony odcinek = przecina obrys (niedozwolone)', 'B: usuń ostatni odcinek · Grip: chwyć model']
+      : ['Klik: kolejny punkt · przeciąganie: obrót widoku', 'Płaszczyzna przez wskazaną bryłę albo środek widoku',
+         'Ostatni punkt na pierwszym albo Enter = zamknij', 'Czerwony odcinek = przecina obrys (niedozwolone)', 'Backspace / Ctrl+Z: usuń ostatni · L / A: linia / łuk · Esc'];
+    U.ramka(916, 244, 'Jak rysować');
+    pomoc.forEach((t, i) => U.dodaj({ kind: 'info', x: PANEL.PAD + 14, y: 952 + i * 40, w: PANEL.W - 2 * PANEL.PAD - 28, h: 40, text: t, color: PANEL.KOLORY.szary }));
+  }
+
+  rzadSnapu(U, y) {
+    U.rzadW(y, 96, [{ id: 'snap', text: this.snap.wl ? 'Snap: TAK' : 'Snap: NIE', active: this.snap.wl },
+                    { id: 'siatka', sub: 'Siatka', text: `${this.snap.siatka} mm` }, { id: 'kat', sub: 'Kąt', text: `${this.snap.kat}°` }]);
   }
 
   ukladEdycja(U) {
     const b = this.wybrana();
-    if (!b) { U.info(130, 'Wybierz bryłę: spust na bryle albo nazwa na liście'); this.ukladSnap(U, 846); return; }
+    if (!b) {
+      U.info(130, 'Wybierz bryłę: spust na bryle albo nazwa na liście', 48, 'left', PANEL.KOLORY.szary);
+      U.ramka(200, 160, 'Snap (przyciąganie)');
+      this.rzadSnapu(U, 238);
+      U.rzadW(390, 96, [this.przyciskCofnij()]);
+      return;
+    }
     const typ = b.def.typ;
     const nazwyTypow = { ...PROJEKT.NAZWY, boolean: 'Wynik operacji', oryginal: 'Część oryginału' };
     U.info(112, b.nazwa, 48, 'left', PANEL.KOLORY.akcent);
     U.info(160, `${nazwyTypow[typ] || typ} · ${fmt(b.objetosc / 1000 * b.skala ** 3, 1)} cm³` + (this.zazn.length > 1 ? ` · zaznaczone: ${this.zazn.length}` : ''), 44, 'left', PANEL.KOLORY.szary);
-    U.etykieta(216, 'Wymiary [mm]');
     const pola = polaTypu(typ, this.api.upAxis);
-    if (pola) U.rzad(254, 96, pola.map(([k, et]) => ({ id: 'wym', sub: et, text: fmt(poleZDef(b.def, k)) })));
-    else U.info(276, 'Bez wymiarów (zmiana tylko skalą)', 48, 'left', PANEL.KOLORY.szary);
-    U.etykieta(364, 'Położenie środka [mm]');
-    U.rzad(402, 96, [0, 1, 2].map((i) => ({ id: 'poz:' + i, sub: 'XYZ'[i], text: fmt(b.poz[i], 1) })));
-    U.etykieta(512, 'Obrót [°] i skala');
-    U.rzad(550, 96, [...[0, 1, 2].map((i) => ({ id: 'obr:' + i, sub: 'Obrót ' + 'XYZ'[i], text: fmt(b.obr[i], 1) })), { id: 'skala', sub: 'Skala', text: fmt(b.skala, 3) }]);
-    U.etykieta(660, 'Operacje: wybrana = A, potem wskaż B');
-    U.rzad(698, 92, Object.entries(NAZWY_OP).map(([op, text]) => ({ id: 'op:' + op, text, active: !!(this.oczekujeB && this.oczekujeB.op === op) })));
-    this.ukladSnap(U, 806);
-    U.etykieta(946, 'Kolor');
-    U.rzad(984, 76, PROJEKT.KOLORY.map((k, i) => ({ id: 'kolor:' + i, kind: 'swatch', color: k, active: b.kolor === k })));
-    U.rzad(1078, 80, [{ id: 'kopiuj', text: 'Kopiuj' }, { id: 'usun', text: 'Usuń' }, { id: 'odznacz', text: 'Odznacz' }]);
-  }
-
-  ukladSnap(U, y) {
-    U.etykieta(y, 'Snap (przyciąganie)');
-    U.rzad(y + 38, 86, [{ id: 'snap', text: this.snap.wl ? 'Snap: TAK' : 'Snap: NIE', active: this.snap.wl },
-                        { id: 'siatka', text: `Siatka ${this.snap.siatka} mm` }, { id: 'kat', text: `Kąt ${this.snap.kat}°` }]);
+    U.ramka(212, 152, typ === 'obrot' ? 'Kąt obrotu [°]' : 'Wymiary [mm]');
+    if (pola) U.rzadW(250, 96, pola.map(([k, et]) => ({ id: 'wym', sub: et, text: fmt(poleZDef(b.def, k)) })));
+    else U.dodaj({ kind: 'info', x: PANEL.PAD + 14, y: 274, w: 700, h: 48, text: 'Bez wymiarów (zmiana tylko skalą)', color: PANEL.KOLORY.szary });
+    U.ramka(376, 152, 'Położenie środka [mm]');
+    U.rzadW(414, 96, [0, 1, 2].map((i) => ({ id: 'poz:' + i, sub: 'XYZ'[i], text: fmt(b.poz[i], 1) })));
+    U.ramka(540, 152, 'Obrót [°] i skala');
+    U.rzadW(578, 96, [...[0, 1, 2].map((i) => ({ id: 'obr:' + i, sub: 'Obrót ' + 'XYZ'[i], text: fmt(b.obr[i], 1) })), { id: 'skala', sub: 'Skala', text: fmt(b.skala, 3) }]);
+    U.ramka(704, 152, 'Operacje: wybrana = A, potem wskaż B');
+    U.rzadW(742, 96, Object.entries(NAZWY_OP).map(([op, text]) => ({ id: 'op:' + op, text, active: !!(this.oczekujeB && this.oczekujeB.op === op) })));
+    U.ramka(868, 128, 'Kolor');
+    U.rzadW(906, 72, PROJEKT.KOLORY.map((k, i) => ({ id: 'kolor:' + i, kind: 'swatch', color: k, active: b.kolor === k })));
+    U.rzadW(1010, 96, [{ id: 'snap', text: this.snap.wl ? 'Snap: TAK' : 'Snap: NIE', active: this.snap.wl, flex: 1.1 },
+                       { id: 'siatka', sub: 'Siatka', text: `${this.snap.siatka} mm`, flex: 0.9 }, { id: 'kat', sub: 'Kąt', text: `${this.snap.kat}°`, flex: 0.8 },
+                       { ...this.przyciskCofnij(), text: 'Cofnij' }, { id: 'odznacz', text: 'Odznacz', icon: 'anuluj' }]);
   }
 
   ukladPlik(U) {
     const n = this.zazn.length;
-    U.etykieta(116, 'Eksport STEP — prawdziwe bryły (pobranie pliku)');
-    U.rzad(154, 92, [{ id: 'eksport:wszystko', text: 'Wszystko' }, { id: 'eksport:nowe', text: 'Tylko nowe' },
-                     { id: 'eksport:oryginal', text: 'Oryginał', disabled: !(this.projekt && this.projekt.oryginal) }]);
-    U.rzad(258, 86, [{ id: 'eksport:zaznaczone', text: `Zaznaczone (${n})`, disabled: !n }]);
-    U.info(358, this.ostatniEksport ? `Ostatni: ${this.ostatniEksport.nazwa}` : 'Plik trafia do folderu Pobrane', 48, 'left', PANEL.KOLORY.szary);
-    U.etykieta(426, 'Tryb');
-    U.rzad(464, 92, [{ id: 'wroc', text: 'Wróć do podglądu' }]);
-    U.etykieta(572, 'Geometria (OpenCascade)');
+    U.ramka(112, 314, 'Eksport STEP — prawdziwe bryły (pobranie pliku)');
+    U.rzadW(150, 140, [{ id: 'eksport:wszystko', text: 'Wszystko', icon: 'pobierz' }, { id: 'eksport:nowe', text: 'Tylko nowe', icon: 'szkic' },
+                       { id: 'eksport:oryginal', text: 'Oryginał', icon: 'przejmij', disabled: !(this.projekt && this.projekt.oryginal) },
+                       { id: 'eksport:zaznaczone', text: `Zaznaczone (${n})`, icon: 'wiele', disabled: !n }]);
+    U.dodaj({ kind: 'info', x: PANEL.PAD + 14, y: 310, w: PANEL.W - 2 * PANEL.PAD - 28, h: 48,
+              text: this.ostatniEksport ? `Ostatni: ${this.ostatniEksport.nazwa}` : 'Plik trafia do folderu Pobrane', color: PANEL.KOLORY.szary });
+    U.dodaj({ kind: 'info', x: PANEL.PAD + 14, y: 360, w: PANEL.W - 2 * PANEL.PAD - 28, h: 44,
+              text: 'Po powrocie do podglądu: Zapisz STEP (też na Google Drive)', color: PANEL.KOLORY.szary });
+    U.ramka(440, 196, 'Tryb i geometria');
     const st = { brak: 'nie uruchomiona', laduje: 'ładowanie…', gotowy: 'gotowa', blad: 'błąd' }[this.stanSilnika];
-    U.info(610, `Stan: ${st}` + (this.silnik && this.silnik.restarty ? ` · restarty: ${this.silnik.restarty}` : ''), 48);
-    if (this.api.renderer.xr.isPresenting) {
-      U.etykieta(676, 'Sterowanie w goglach');
-      ['Narzędzie bryły: spust w punkcie A, przeciągnij do B, puść', 'Spust na bryle: wybierz · na pustym: odznacz',
-       'Grip na bryle: chwyć (zielony punkt) · w pustym: całość', 'Trzymasz bryłę: prawy spust = kopia, A = usuń',
-       'Dwa gripy: obrót + skala · prawa gałka: skala sceny', 'A: zrzut · X: panel · Y: reset widoku'].forEach((t, i) => U.info(714 + i * 44, t, 44));
-    } else {
-      U.etykieta(676, 'Sterowanie na PC (test bez gogli)');
-      ['Narzędzie bryły: przeciągnij myszą po płaszczyźnie', 'Klik: wybierz (jak spust) · uchwyty: przesuń / obróć', 'W / E / R: uchwyt przesuwu / obrotu / skali',
-       'Strzałki, PageUp/PageDown: krok siatki (Shift ×10)', 'Q / Shift+Q: obrót o kąt snapu · + / −: skala',
-       'Del: usuń · Ctrl+D: kopiuj · Ctrl+G: grupuj · Esc: odznacz'].forEach((t, i) => U.info(714 + i * 44, t, 44));
-    }
-    U.etykieta(1000, 'Wkrótce');
-    U.info(1038, 'Etap 4: szkic 2D i wyciągnięcie', 44, 'left', PANEL.KOLORY.szary);
-    U.info(1082, 'Etap 5: cofanie, zapis projektu, zapis na Google Drive', 44, 'left', PANEL.KOLORY.szary);
+    U.rzadW(478, 140, [{ id: 'wroc', text: 'Wróć do podglądu', icon: 'wroc', flex: 1.4 }, this.przyciskCofnij(),
+                       { id: '', kind: 'info', align: 'center', text: `Geometria: ${st}` + (this.silnik && this.silnik.restarty ? ` · restarty: ${this.silnik.restarty}` : ''), flex: 1.6 }]);
+    const vr = this.api.renderer.xr.isPresenting;
+    const pomoc = vr
+      ? ['Narzędzie bryły: spust w punkcie A, przeciągnij do B, puść', 'Szkic: spust = punkt, potem Wyciągnij albo Obrót',
+         'Spust na bryle: wybierz · na pustym: odznacz', 'Grip na bryle: chwyć (zielony punkt) · w pustym: całość',
+         'Trzymasz bryłę: prawy spust = kopia, A = usuń', 'Dwa gripy: obrót + skala · prawa gałka: skala sceny',
+         'B: cofnij · A: zrzut · X: panel · Y: reset widoku']
+      : ['Narzędzie bryły: przeciągnij myszą po płaszczyźnie', 'Klik: wybierz (jak spust) · uchwyty: przesuń / obróć',
+         'W / E / R: uchwyt przesuwu / obrotu / skali', 'Strzałki, PageUp/PageDown: krok siatki (Shift ×10)',
+         'Q / Shift+Q: obrót o kąt snapu · + / −: skala', 'Del: usuń · Ctrl+D: kopiuj · Ctrl+G: grupuj',
+         'Ctrl+Z: cofnij · Esc: odznacz / wyjdź z narzędzia'];
+    U.ramka(650, 510, vr ? 'Sterowanie w goglach' : 'Sterowanie na PC (test bez gogli)');
+    pomoc.forEach((t, i) => U.dodaj({ kind: 'info', x: PANEL.PAD + 14, y: 690 + i * 62, w: PANEL.W - 2 * PANEL.PAD - 28, h: 56, text: t }));
   }
 
   ukladNumpada(U) {
@@ -1381,11 +1860,11 @@ export class Szkicownik {
     U.info(72, `${p.etykieta}` + (n.pola.length > 1 ? `  (${n.i + 1} z ${n.pola.length})` : ''), 44);
     U.dodaj({ kind: 'wartosc', id: '', text: n.tekst, sub: p.jednostka, x: PANEL.PAD, y: 128, w: PANEL.W - 2 * PANEL.PAD, h: 160 });
     const k = (t, id, extra = {}) => ({ id: 'np:' + id, text: t, ...extra });
-    U.rzad(312, 118, [k('7', '7'), k('8', '8'), k('9', '9'), k('⌫', 'wstecz')]);
+    U.rzad(312, 118, [k('7', '7'), k('8', '8'), k('9', '9'), k('', 'wstecz', { icon: 'wstecz' })]);
     U.rzad(442, 118, [k('4', '4'), k('5', '5'), k('6', '6'), k('C', 'wyczysc')]);
-    U.rzad(572, 118, [k('1', '1'), k('2', '2'), k('3', '3'), k('−', 'minus')]);
+    U.rzad(572, 118, [k('1', '1'), k('2', '2'), k('3', '3'), k('±', 'minus')]);
     U.rzad(702, 118, [k('0', '0', { flex: 2.08 }), k(',', 'przecinek'), k('', '', { disabled: true })]);
-    U.rzad(840, 118, [k('Anuluj', 'anuluj'), k(n.i < n.pola.length - 1 ? 'Dalej ▸' : 'OK', 'ok', { active: true, flex: 1.6 })]);
+    U.rzad(840, 118, [k('Anuluj', 'anuluj', { icon: 'anuluj' }), k(n.i < n.pola.length - 1 ? 'Dalej' : 'OK', 'ok', { icon: 'ok', active: true, flex: 1.6 })]);
     U.info(984, 'Na PC: cyfry z klawiatury, Enter = OK, Esc = anuluj', 44, 'left', PANEL.KOLORY.szary);
     return U;
   }
@@ -1395,20 +1874,29 @@ export class Szkicownik {
     const i = id.indexOf(':');
     const k = i < 0 ? id : id.slice(0, i), v = i < 0 ? '' : id.slice(i + 1);
     if (k === 'np') { this.klawiszNumpada(v); return; }
-    if (k === 'tab') { this.strona = v; return; }
+    if (k === 'tab') {
+      this.strona = v;
+      if (v === 'szkic') { this.zacznijSzkic(); if (this.narzedzie !== 'szkic') this.ustawNarzedzie('szkic'); }
+      else if (this.narzedzie === 'szkic') this.ustawNarzedzie('wybierz');
+      return;
+    }
     if (k === 'wroc') { this.api.wyjdz(); return; }
     if (!this.projekt) { this.powiedz('Geometria się ładuje…'); return; }
     const b = this.wybrana();
+    const S = this.szkic;
     switch (k) {
       case 'narz': case 'dodaj': this.ustawNarzedzie(v); break;
+      case 'cofnij': this.cofnij(); break;
       case 'oryginal': this.przejmijOryginal(); break;
       case 'kopiuj': this.kopiuj(); break;
       case 'usun': this.usun(); break;
       case 'wiele': this.wiele = !this.wiele; this.powiedz(this.wiele ? 'Zaznaczanie wielu brył: klikaj kolejne' : 'Zaznaczanie jednej bryły'); break;
       case 'grupuj': this.grupuj(); break;
       case 'rozgrupuj': this.rozgrupuj(); break;
-      case 'pokaz': this.projekt.bryly.forEach((x) => this.projekt.ustawWlasciwosci(x.id, { widoczna: true })); break;
-      case 'vis': { const x = this.bryla(v); if (x) this.projekt.ustawWlasciwosci(v, { widoczna: !x.widoczna }); break; }
+      case 'pokaz':
+        if (this.projekt.bryly.some((x) => !x.widoczna)) this.zapiszHistorie('pokaż wszystko');
+        this.projekt.bryly.forEach((x) => this.projekt.ustawWlasciwosci(x.id, { widoczna: true })); break;
+      case 'vis': { const x = this.bryla(v); if (x) { this.zapiszHistorie(x.widoczna ? 'ukrycie' : 'pokazanie'); this.projekt.ustawWlasciwosci(v, { widoczna: !x.widoczna }); } break; }
       case 'sel': this.wybierz(v); break;
       case 'lista': this.przewin += (v === '+' ? 1 : -1) * (SZK.WIERSZE_LISTY - 1); break;
       case 'wym': if (b) this.zmienWymiar(b); break;
@@ -1419,9 +1907,24 @@ export class Szkicownik {
       case 'snap': this.snap.wl = !this.snap.wl; this.ustawSnapUchwytow(); this.powiedz('Snap: ' + (this.snap.wl ? 'TAK' : 'NIE')); break;
       case 'siatka': { const L = SZK.SIATKI_MM; this.snap.siatka = L[(L.indexOf(this.snap.siatka) + 1) % L.length]; this.ustawSnapUchwytow(); break; }
       case 'kat': { const L = SZK.KATY_DEG; this.snap.kat = L[(L.indexOf(this.snap.kat) + 1) % L.length]; this.ustawSnapUchwytow(); break; }
-      case 'kolor': for (const id2 of this.zazn) this.projekt.ustawWlasciwosci(id2, { kolor: PROJEKT.KOLORY[Number(v)] }); break;
+      case 'kolor':
+        if (this.zazn.length) this.zapiszHistorie('kolor');
+        for (const id2 of this.zazn) this.projekt.ustawWlasciwosci(id2, { kolor: PROJEKT.KOLORY[Number(v)] }); break;
       case 'odznacz': this.odznacz(); break;
       case 'eksport': this.eksport(v); break;
+      // szkic
+      case 'pl': this.ustawPlaszczyzne(v); break;
+      case 'sz':
+        if (this.narzedzie !== 'szkic') { this.zacznijSzkic(); this.ustawNarzedzie('szkic'); }
+        if (v === 'linia' || v === 'luk') { this.narzSzkicu = v; if (this.szkic) this.szkic.s.lukSrodek = null; this.powiedz(v === 'luk' ? 'Łuk przez 3 punkty: początek, punkt na łuku, koniec' : 'Linia'); }
+        else if (v === 'wstecz') this.szkicCofnij();
+        else if (v === 'zamknij') this.zamknijSzkic();
+        else if (v === 'anuluj') this.anulujSzkic();
+        else if (v === 'wyciagnij') { if (S && S.faza === 'wyciagnij') S.faza = 'rysuj'; else this.zacznijWyciaganie(); }
+        else if (v === 'wysokosc') this.wpiszWysokosc();
+        else if (v === 'obrot') { if (S && S.faza === 'os') S.faza = 'rysuj'; else this.zacznijObrot(); }
+        else if (v === 'kat') { const L = SZK.KATY_OBROTU; this.katObrotu = L[(L.indexOf(this.katObrotu) + 1) % L.length]; this.powiedz(`Kąt obrotu: ${this.katObrotu}°`); }
+        break;
       default: break;
     }
   }
@@ -1442,7 +1945,7 @@ export class Szkicownik {
   opisBryly(b) {
     const d = b.def;
     const wym = d.typ === 'prostopadloscian' ? `${fmt(d.dx)}×${fmt(d.dy)}×${fmt(d.dz)}` : d.typ === 'walec' ? `Ø${fmt(d.r * 2)}×${fmt(d.h)}`
-      : d.typ === 'kula' ? `Ø${fmt(d.r * 2)}` : d.typ === 'wyciagniecie' ? `h ${fmt(d.h)}` : '';
+      : d.typ === 'kula' ? `Ø${fmt(d.r * 2)}` : d.typ === 'wyciagniecie' ? `h ${fmt(d.h)}` : d.typ === 'obrot' ? `${fmt(d.kat ?? 360)}°` : '';
     return `${b.nazwa}${wym ? '  ' + wym : ''}${b.skala !== 1 ? '  ×' + fmt(b.skala, 3) : ''}   X ${fmt(b.poz[0], 0)}  Y ${fmt(b.poz[1], 0)}  Z ${fmt(b.poz[2], 0)}`;
   }
 

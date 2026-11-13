@@ -13,7 +13,7 @@
 export const PROJEKT = {
   WERSJA_PLIKU: 1,
   KOLORY: ['#8fa3b8', '#e0a458', '#7cb518', '#5fa8d3', '#c77dff', '#f28482', '#84a59d', '#ffd166'],
-  NAZWY: { prostopadloscian: 'Prostopadłościan', walec: 'Walec', kula: 'Kula', wyciagniecie: 'Wyciągnięcie', boolean: 'Bryła' },
+  NAZWY: { prostopadloscian: 'Prostopadłościan', walec: 'Walec', kula: 'Kula', wyciagniecie: 'Wyciągnięcie', obrot: 'Obrót', boolean: 'Bryła' },
   NAZWA_NOWYCH: 'Szkicownik',     // podzłożenie z nowymi bryłami w eksporcie STEP
   NAZWA_PROJEKTU: 'Szkicownik',   // nazwa złożenia, gdy nie ma oryginału
   NAZWA_GRUPY: 'Grupa',           // „Grupa 1”, „Grupa 2”…
@@ -246,6 +246,37 @@ export class Projekt {
   async eksportSTEP(opcje) {
     const w = await this.silnik.wykonaj('eksport', { drzewo: this.drzewoEksportu(opcje) });
     return w.bajty;
+  }
+
+  // ---- cofanie: migawka stanu przed operacją i przywrócenie ----
+  // Pola brył są zawsze podmieniane (nigdy zmieniane w miejscu), więc płytka kopia obiektów wystarcza.
+  migawka() {
+    return { bryly: this.bryly.map((b) => ({ ...b })), grupy: this.grupy.map((g) => ({ ...g })), licznikGrup: this.licznikGrup };
+  }
+
+  async przywroc(m) {
+    const teraz = new Map(this.bryly.map((b) => [b.id, b]));
+    const cel = m.bryly.map((b) => ({ ...b }));
+    const celIds = new Set(cel.map((b) => b.id));
+    const usun = [...teraz.keys()].filter((id) => !celIds.has(id));
+    if (usun.length) await this.silnik.wykonaj('usun', { ids: usun });
+    const siatki = new Map();
+    for (const b of cel) {                       // odbuduj w wątku tylko bryły brakujące albo o innym kształcie
+      const t = teraz.get(b.id);
+      if (t && JSON.stringify(t.def) === JSON.stringify(b.def) && JSON.stringify(t.lok) === JSON.stringify(b.lok)) continue;
+      const w = await this.silnik.wykonaj('odtworzJedna', { id: b.id, def: b.def, lok: b.lok, brep: b.brep || null });
+      siatki.set(b.id, { siatka: w.siatka, nowa: !t });
+    }
+    this.bryly = cel;
+    this.grupy = m.grupy.map((g) => ({ ...g }));
+    this.licznikGrup = Math.max(this.licznikGrup, m.licznikGrup || 0);
+    if (usun.length) this.przyZmianie('usunieto', { ids: usun });
+    for (const b of cel) {
+      const s = siatki.get(b.id);
+      if (s) this.przyZmianie(s.nowa ? 'dodano' : 'przebudowano', { bryla: b, siatka: s.siatka });
+      else this.przyZmianie('zmieniono', { bryla: b });
+    }
+    this.przyZmianie('grupy', {});
   }
 
   // ---- stan w JSON (zapis projektu) ----

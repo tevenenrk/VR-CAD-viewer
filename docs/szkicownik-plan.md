@@ -126,5 +126,6 @@ z odtworzeniem stanu; szkic: domykanie i wykrywanie samoprzecięć. Istniejący 
 2. Worker z geometrią, prymitywy, boolean, watchdog, eksport STEP, testy w Node. ✔
 3. Bryły w VR, lista, przesuw/obrót/skala, snap, panel numeryczny, tryb PC, kopiowanie i grupy (także części oryginału). ✔
    Decyzja robocza: po „Wróć do podglądu” nowe bryły zostają widoczne z modelem; przesunięte części oryginału widać tylko w Szkicowniku i w eksporcie (viewer pokazuje plik bez zmian).
-4. Szkic 2D (linie, łuki) i wyciągnięcie.
-5. Cofanie, zapis/odczyt JSON, zapis STEP na Drive.
+4. Szkic 2D (linie, łuki) i wyciągnięcie. ✔ (13.11.2026) — dodatkowo obrót obrysu wokół jego prostej krawędzi (360 / 270 / 180 / 90°),
+   wyciągnięcie rozciąganiem ręką (odległość czubka od płaszczyzny) albo wpisaną wysokością.
+5. Cofanie ✔ (zrobione razem z etapem 4: migawka projektu przed każdą operacją, B / Ctrl+Z, 40 kroków), zapis/odczyt JSON, zapis STEP na Drive.
