@@ -51,7 +51,7 @@ src = src.replace("https://cdn.jsdelivr.net/npm/three@0.187.0/", f"http://localh
 src = re.sub(r"https://cdn\.jsdelivr\.net/npm/occt-import-js@[\d.]+/", f"http://localhost:{PORT}/node_modules/occt-import-js/", src)
 src = re.sub(r"https://cdn\.jsdelivr\.net/npm/three-mesh-bvh@[\d.]+/", f"http://localhost:{PORT}/node_modules/three-mesh-bvh/", src)
 src = src.replace("import('./szkicownik/", "import('../szkicownik/")   # kopia strony leży w test/
-src = src.replace("from './ikony.js'", "from '../ikony.js'")
+src = src.replace("from './ikony.js'", "from '../ikony.js'").replace("from './tla.js'", "from '../tla.js'")
 (OUT / "index_local.html").write_text(src, encoding="utf-8")
 
 IWER_JS = (ROOT / "node_modules" / "iwer" / "build" / "iwer.min.js").read_text(encoding="utf-8")
@@ -86,6 +86,7 @@ class GoogleMock:
             "s1": {"id": "s1", "name": "test_zlozenie.step", "mimeType": "application/octet-stream", "parents": ["fC"], "size": str(STEP.stat().st_size)},
             "s2": {"id": "s2", "name": "Rama.SLDASM", "mimeType": "application/octet-stream", "parents": ["fC"], "size": "123456"},
             "x1": {"id": "x1", "name": "notatki.txt", "mimeType": "text/plain", "parents": ["fC"], "size": "10"},
+            "p1": {"id": "p1", "name": "panorama.jpg", "mimeType": "image/jpeg", "parents": ["fC"], "size": "137316"},
         }
         self.uploads, self.gemini, self.n = [], [], 0
 
@@ -118,6 +119,8 @@ class GoogleMock:
             return self.ok(route, {"id": fid, "name": meta["name"]})
         m = re.match(r"/drive/v3/files/([^/]+)$", u.path)
         if m and qs.get("alt") == ["media"]:
+            if m.group(1) == "p1":           # zdjęcie 360° na tło
+                return self.ok(route, (ROOT / "tla" / "kosmos_planeta.jpg").read_bytes(), "image/jpeg")
             return self.ok(route, STEP.read_bytes(), "application/octet-stream")
         if u.path == "/drive/v3/files" and req.method == "POST":
             meta = json.loads(req.post_data)
@@ -144,6 +147,9 @@ class GoogleMock:
 
 # Ostrzeżenia znane i nieszkodliwe: odczyt pikseli przy zrzucie (Chrome bez GPU) oraz brak animacji
 # przycisku menu w modelu kontrolera z emulatora.
+# Atrapa panoramy z Poly Haven: najmniejszy poprawny plik Radiance HDR (4 × 2 piksele, bez kompresji)
+HDR_TEST = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 2 +X 4\n" + bytes([128, 160, 200, 129] * 8)
+
 HARMLESS = [r"GPU stall due to ReadPixels", r"Could not find \w+ in the model"]
 # Środowisko w chmurze bez dostępu do CDN modeli kontrolerów (na PC Roberta nie dotyczy)
 if os.environ.get("HTTPS_PROXY"):
@@ -346,6 +352,23 @@ def test_pc(browser):
     check("zapis STEP: przesunięta część i kopia w nowym położeniu", slupy == [-175, -75] and wsp == [50, 50, 250], f"słupy X {slupy}, wsporniki X {wsp}")
     check("zapis STEP: STL jako bryła w swoim miejscu", len(szes) == 1 and [round(v) for v in szes[0]["min"]] == [500, 0, 0], str(szes[:1]))
 
+    # PC: „Bez przekroju”, tło z listy, suwak rozstrzelenia, błysk przy zrzucie
+    page.evaluate("window.__viewer.selectObject(window.__viewer.parts.find(p => p.name === 'Slup').mesh)")
+    page.click("#partNoSection")
+    r1 = page.evaluate("({ bez: window.__viewer.parts.find(p => p.name === 'Slup').bezPrzekroju, btn: document.getElementById('secAll').disabled })")
+    page.keyboard.press("Control+z")
+    r2 = page.evaluate("window.__viewer.parts.find(p => p.name === 'Slup').bezPrzekroju")
+    check("PC: „Bez przekroju” dla wybranej części, Ctrl+Z cofa", r1["bez"] and not r1["btn"] and not r2, f"{r1} → {r2}")
+    page.evaluate("document.querySelector('#viewBox').open = true")
+    page.select_option("#bgSelect", "gory")
+    page.wait_for_function("window.__viewer.tlo.id === 'gory' && !window.__viewer.tlo.laduje", timeout=20000)
+    page.evaluate("const e = document.getElementById('explode'); e.value = '50'; e.dispatchEvent(new Event('input'))")
+    r = page.evaluate("({ f: window.__viewer.rozstrzel.f, bg: !!window.__viewer.scene.background.isTexture })")
+    page.click("#btnShot")
+    page.wait_for_function("window.__viewer.blysk", timeout=20000)
+    page.screenshot(path=str(OUT / "screenshot_tlo.png"))
+    check("PC: tło „Szczyt góry” z listy, suwak rozstrzelenia, błysk przy zrzucie", r["bg"] and abs(r["f"] - 0.5) < 1e-9, str(r))
+    page.evaluate("const e = document.getElementById('explode'); e.value = '0'; e.dispatchEvent(new Event('input'))")
     page.evaluate("document.querySelector('#treeBox').open = true; document.querySelector('#shotsBox').open = true")
     page.screenshot(path=str(OUT / "screenshot.png"))
     page.close()
@@ -398,6 +421,31 @@ window.T = (() => {
       await T.click('right', 'trigger');
       return hover;
     },
+    // okienko przy części: promień na przycisk i spust
+    async oknoClick(id) {
+      await T.frames(2);
+      const b = V.okno.buttons.find(b => b.id === id);
+      if (!b) return 'brak:' + id;
+      const g = V.okno.mesh.geometry.parameters;
+      V.okno.mesh.updateMatrixWorld(true);
+      const p = V.okno.mesh.localToWorld(new THREE.Vector3(((b.x + b.w / 2) / V.OKNO.W - 0.5) * g.width, (0.5 - (b.y + b.h / 2) / V.OKNO.H) * g.height, 0));
+      const n = new THREE.Vector3(0, 0, 1).transformDirection(V.okno.mesh.matrixWorld);
+      T.pose('right', p.clone().addScaledVector(n, 0.25).toArray(), p.toArray());
+      await T.frames(4);
+      const hover = T.ctrl('right').userData.uiHover;
+      await T.click('right', 'trigger');
+      return hover;
+    },
+    // promień z kierunku, z którego część widać jako pierwszą, i spust (narzędzie Wskaż)
+    async wskaz(n) {
+      const p = T.centerOf(n);
+      for (const k of [[0, 0.3, 0.05], [0.05, 0.05, 0.3], [0.3, 0.05, 0.05], [-0.3, 0.05, 0.05], [0.05, 0.05, -0.3], [0.05, -0.3, 0.05]]) {
+        const e = new THREE.Vector3(p.x + k[0], p.y + k[1], p.z + k[2]);
+        const hit = V.pick(e, p.clone().sub(e));
+        if (hit && hit.object.name === n) { T.pose('right', e.toArray(), p.toArray()); await T.frames(4); await T.click('right', 'trigger'); await T.frames(2); return true; }
+      }
+      return 'nie widać: ' + n;
+    },
     // punkt modelu (współrzędne CAD w metrach) → świat
     cad(x, y, z) { V.cadRoot.updateMatrixWorld(true); return V.cadRoot.localToWorld(new THREE.Vector3(x, y, z)); },
     part(name) { return V.parts.find(p => p.name === name).mesh; },
@@ -414,6 +462,8 @@ def test_xr(browser):
     ctx.add_init_script(script=IWER_INIT)
     ctx.grant_permissions(["microphone"], origin=f"http://localhost:{PORT}")
     GoogleMock().install(ctx)
+    ctx.route("https://dl.polyhaven.org/**", lambda r: r.fulfill(status=200, body=HDR_TEST, headers=CORS)
+              if r.request.url.endswith("/2k/venice_sunset_2k.hdr") else r.fulfill(status=404, body="", headers=CORS))
     page = ctx.new_page()
     watch(page, errors)
     page.goto(f"http://localhost:{PORT}/test/index_local.html?model=test_zlozenie.step")
@@ -456,6 +506,8 @@ def test_xr(browser):
     page.wait_for_function("document.getElementById('shotCount').textContent === '1'", timeout=20000)
     shot = save_last_shot(page, OUT / "zrzut_vr.jpg")
     check("przycisk A robi zrzut 1920×1080", shot["w"] == 1920 and shot["h"] == 1080, shot["name"])
+    r = E("const jest = !!V.blysk; for (let k = 0; k < 40 && V.blysk && V.blysk.mesh.visible; k++) await T.frames(2); return { jest, zgasl: !!V.blysk && !V.blysk.mesh.visible };")
+    check("zrzut: błysk po zrobieniu zdjęcia (gaśnie sam, nie ma go na zdjęciu)", r["jest"] and r["zgasl"], str(r))
 
     E("await T.click('left', 'x-button');")
     v1 = E("return V.pal.mesh.visible;")
@@ -553,24 +605,54 @@ def test_xr(browser):
              return names;""")
     check("tryb Grupa chwyta części w sferze", "Silownik_DSNU" in r and "Wspornik_L" in r and "Plyta_bazowa" not in r, str(r))
 
-    # Wskaż + spust na części → strona części: półprzezroczysta, ukryj, cofanie (B)
-    r = E("""V.paletteAction('tool:wskaz'); V.paletteAction('grab:czesc'); await T.frames(2);
-             const p0 = T.centerOf('Slup');
-             T.pose('right', [p0.x, p0.y + 0.3, p0.z + 0.05], p0.toArray()); await T.frames(4);
-             await T.click('right', 'trigger');
-             const page = V.pal.page, sel = V.selectedObj && V.selectedObj.name;
-             const h1 = await T.palClick('cz:ghost');
+    # Wskaż + spust na części → okienko przy części: półprzezroczysta, bez przekroju, ukryj; B cofa
+    r = E("""V.paletteAction('page:narzedzia'); V.paletteAction('tool:wskaz'); V.paletteAction('grab:czesc'); await T.frames(2);
+             const w = await T.wskaz('Slup');
+             const okno = V.okno.mesh.visible, page = V.pal.page, sel = V.selectedObj && V.selectedObj.name;
+             const oko = V.renderer.xr.getCamera().getWorldPosition(new V.THREE.Vector3());
+             const dOko = V.okno.mesh.position.distanceTo(oko), dCz = T.centerOf('Slup').distanceTo(oko);
+             const h1 = await T.oknoClick('okno:ghost');
              const op = T.part('Slup').material.opacity;
-             await T.palClick('cz:hide');
-             const hid = !T.part('Slup').visible;
+             const h2 = await T.oknoClick('okno:przekroj');
+             const bez = !!T.part('Slup').userData.part.bezPrzekroju && T.part('Slup').material.clippingPlanes === null;
+             const przedHide = { vis: V.okno.mesh.visible, sel: V.selectedObj && V.selectedObj.name, msg: V.pal.msg };
+             const h3 = await T.oknoClick('okno:hide');
+             const hid = !T.part('Slup').visible, zamk = !V.okno.mesh.visible;
              await T.click('right', 'b-button');
              const back = T.part('Slup').visible;
              await T.click('right', 'b-button');
+             const bez2 = !!T.part('Slup').userData.part.bezPrzekroju;
+             await T.click('right', 'b-button');
              const op2 = T.part('Slup').material.opacity;
-             await T.palClick('cz:back');
-             return { page, sel, h1, op, hid, back, op2, page2: V.pal.page };""")
-    check("Wskaż + spust na części otwiera stronę części", r["page"] == "czesc" and r["sel"] == "Slup", str(r))
-    check("strona części: półprzezroczysta, ukryj, B cofa oba", abs(r["op"] - 0.3) < 1e-6 and r["hid"] and r["back"] and r["op2"] == 1 and r["page2"] == "narzedzia", str(r))
+             await T.wskaz('Slup');
+             const otw = V.okno.mesh.visible;
+             T.pose('right', [0.6, 1.6, 0.3], [1.5, 2.5, 0.5]); await T.frames(3); await T.click('right', 'trigger');
+             return { w, okno, page, sel, dOko, dCz, h1, h2, h3, przedHide, op, bez, hid, zamk, back, bez2, op2, otw, zamk2: !V.okno.mesh.visible };""")
+    check("Wskaż + spust na części: okienko przy części (przed częścią, panel bez zmian)",
+          r["okno"] and r["page"] == "narzedzia" and r["sel"] == "Slup" and r["dOko"] < r["dCz"], str(r))
+    check("okienko: półprzezroczysta, bez przekroju, ukryj (zamyka okienko)",
+          r["h1"] == "okno:ghost" and abs(r["op"] - 0.3) < 1e-6 and r["h2"] == "okno:przekroj" and r["bez"] and r["hid"] and r["zamk"], str(r))
+    check("B ×3 cofa: ukrycie, bez przekroju, półprzezroczystość; spust obok zamyka okienko",
+          r["back"] and not r["bez2"] and r["op2"] == 1 and r["otw"] and r["zamk2"], str(r))
+
+    # przekrój, który nie tnie wybranej części (promień trafia ją po odciętej stronie)
+    r = E("""V.setSectionAxis('X', 0); await T.frames(2);
+             const c = T.centerOf('Slup');
+             if (V.section.world.distanceToPoint(c) > 0) { V.paletteAction('sec:flip'); await T.frames(2); }
+             const odcieta = V.section.world.distanceToPoint(c) < 0;
+             const e = new V.THREE.Vector3(c.x, c.y + 0.4, c.z), d = new V.THREE.Vector3(0, -1, 0);
+             const h0 = V.pick(e, d);
+             V.ustawBezPrzekroju([T.part('Slup')], true); await T.frames(2);
+             const h1 = V.pick(e, d);
+             V.paletteAction('tool:przekroj'); await T.frames(3);
+             const btn = V.pal.buttons.find(b => b.id === 'sec:wszystkie');
+             const hv = await T.palClick('sec:wszystkie');
+             const po = !!T.part('Slup').userData.part.bezPrzekroju;
+             V.setSectionOn(false); V.paletteAction('tool:wskaz'); await T.frames(2);
+             return { odcieta, h0: h0 && h0.object.name, h1: h1 && h1.object.name, btn: btn && btn.text, hv, po };""")
+    check("przekrój: część „bez przekroju” jest cała i da się ją wskazać, „Tnij wszystko” przywraca",
+          r["odcieta"] and r["h0"] != "Slup" and r["h1"] == "Slup" and r["hv"] == "sec:wszystkie" and not r["po"], str(r))
+
     r = E("""await T.palClick('page:drzewo');
              const i = V.treeRows.findIndex(x => x.name === 'Wspornik_L');
              const h = await T.palClick('tghost:' + i);
@@ -584,25 +666,15 @@ def test_xr(browser):
     # grupowanie części w podglądzie: Wskaż + spust na części, „Zaznaczaj wiele”, druga część z drzewa, „Grupuj”;
     # grip na jednej przesuwa całą grupę; B cofa przesunięcie; „Rozgrupuj” rozbija grupę
     r = E("""V.paletteAction('tool:wskaz'); V.paletteAction('grab:czesc'); await T.frames(2);
-             const wskaz = async (n) => {             // promień z kierunku, z którego część widać jako pierwszą
-               const p = T.centerOf(n);
-               let eye = null;
-               for (const k of [[0, 0.3, 0.05], [0.05, 0.05, 0.3], [0.3, 0.05, 0.05], [-0.3, 0.05, 0.05], [0.05, 0.05, -0.3], [0.05, -0.3, 0.05]]) {
-                 const e = new V.THREE.Vector3(p.x + k[0], p.y + k[1], p.z + k[2]);
-                 const hit = V.pick(e, p.clone().sub(e));
-                 if (hit && hit.object.name === n) { eye = e; break; }
-               }
-               if (!eye) return 'nie widać: ' + n;
-               T.pose('right', eye.toArray(), p.toArray()); await T.frames(4); await T.click('right', 'trigger');
-             };
+             const wskaz = T.wskaz;
              await wskaz('Slup');
-             const h = await T.palClick('grp:wiele');
+             const h = await T.oknoClick('okno:wiele');
              const w2 = await wskaz('Wspornik_L');
              const zazn = V.selectedMeshes.map(m => m.name).sort();
-             const strona = V.pal.page;
-             await T.palClick('grp:grupuj');
+             const strona = V.okno.mesh.visible ? 'okno' : V.pal.page;
+             await T.oknoClick('okno:grupuj');
              const g = V.grupyCzesci.length, wiele = V.S.wiele, wDrzewie = V.treeRows.some(x => x.name === 'Wspornik_L' && x.isPart);
-             await T.palClick('cz:back');
+             await T.oknoClick('okno:zamknij');
              const a0 = T.centerOf('Slup'), b0 = T.centerOf('Wspornik_L'), c0 = T.centerOf('Plyta_bazowa');
              T.tipAt('right', a0.toArray()); await T.frames(4);
              T.btn('right', 'squeeze', 1); await T.frames(4);
@@ -615,14 +687,90 @@ def test_xr(browser):
              const cofX = T.centerOf('Slup').x - a0.x;
              await wskaz('Slup');
              const zaznGr = V.selectedMeshes.length;
-             await T.palClick('grp:rozgrupuj');
+             await T.oknoClick('okno:rozgrupuj');
              const g2 = V.grupyCzesci.length;
-             await T.palClick('cz:back');
+             await T.oknoClick('okno:zamknij');
              return { h, w2, zazn, strona, g, wiele, trzyma, da, db, dc, cofX, zaznGr, g2 };""")
-    check("podgląd: zaznaczanie wielu części (spust + drzewo) i „Grupuj”", r["h"] == "grp:wiele" and r["zazn"] == ["Slup", "Wspornik_L"] and r["g"] == 1 and not r["wiele"], str(r))
+    check("podgląd: okienko — „Zaznaczaj wiele”, druga część spustem, „Grupuj”", r["h"] == "okno:wiele" and r["zazn"] == ["Slup", "Wspornik_L"] and r["g"] == 1 and not r["wiele"], str(r))
     check("podgląd: grip na części z grupy przesuwa całą grupę (reszta stoi)", r["trzyma"] == ["Slup", "Wspornik_L"] and abs(r["da"] - r["db"]) < 1e-6 and r["da"] > 0.01 and abs(r["dc"]) < 1e-9, str(r))
     check("podgląd: B cofa przesunięcie grupy, klik w część zaznacza całą grupę, „Rozgrupuj” ją rozbija",
           abs(r["cofX"]) < 1e-6 and r["zaznGr"] == 2 and r["g2"] == 0, str(r))
+
+    # sfera łapie kilka części → zostają zaznaczone → „Grupuj zaznaczone” w panelu
+    r = E("""V.paletteAction('page:narzedzia'); V.paletteAction('tool:wskaz'); V.paletteAction('grab:grupa'); V.S.sphere = 0.06; await T.frames(2);
+             const c = T.centerOf('Silownik_DSNU').add(T.centerOf('Wspornik_L')).multiplyScalar(0.5);
+             T.tipAt('right', c.toArray()); await T.frames(4);
+             T.btn('right', 'squeeze', 1); await T.frames(4); T.btn('right', 'squeeze', 0); await T.frames(3);
+             const zazn = V.selectedMeshes.map(m => m.name).sort();
+             const hv = await T.palClick('grp:grupuj');
+             const g = V.grupyCzesci.length, cz = V.parts.filter(p => p.grupa).map(p => p.name).sort();
+             await T.palClick('grp:rozgrupuj');
+             const g2 = V.grupyCzesci.length;
+             await T.palClick('grp:odznacz');
+             V.paletteAction('grab:czesc');
+             return { zazn, hv, g, cz, g2, sel: V.selectedMeshes.length };""")
+    check("sfera: złapane części zostają zaznaczone, „Grupuj zaznaczone” robi z nich grupę",
+          r["zazn"] == ["Silownik_DSNU", "Wspornik_L"] and r["hv"] == "grp:grupuj" and r["g"] == 1 and r["cz"] == r["zazn"] and r["g2"] == 0 and r["sel"] == 0, str(r))
+
+    # rysunek (Rysuj) chwytany gripem jak część; gumka działa po przesunięciu; B cofa
+    r = E("""V.paletteAction('tool:rysuj'); await T.frames(2);
+             const c = T.centerOf('Plyta_bazowa').add(new V.THREE.Vector3(0, 0.15, 0.1));
+             T.tipAt('right', c.toArray()); await T.frames(3);
+             T.btn('right', 'trigger', 1); await T.frames(3);
+             for (let i = 1; i <= 10; i++) { T.tipAt('right', [c.x + i * 0.008, c.y, c.z]); await T.frames(2); }
+             T.btn('right', 'trigger', 0); await T.frames(3);
+             const s = V.strokes[V.strokes.length - 1];
+             const mid = s.root.localToWorld(s.points[Math.floor(s.points.length / 2)].clone());
+             V.paletteAction('tool:wskaz'); V.paletteAction('grab:czesc'); await T.frames(2);
+             T.tipAt('right', mid.toArray()); await T.frames(4);
+             const pod = T.ctrl('right').userData.grabHover.includes(s.root);
+             T.btn('right', 'squeeze', 1); await T.frames(4);
+             const held = T.ctrl('right').userData.held;
+             const trzyma = !!(held && held.meshes && held.meshes.includes(s.root));
+             T.tipAt('right', [mid.x, mid.y + 0.1, mid.z]); await T.frames(4);
+             T.btn('right', 'squeeze', 0); await T.frames(3);
+             const nowy = s.root.localToWorld(s.points[Math.floor(s.points.length / 2)].clone());
+             const dy = nowy.y - mid.y;
+             await T.click('right', 'b-button');
+             const cof = s.root.localToWorld(s.points[Math.floor(s.points.length / 2)].clone()).y - mid.y;
+             await T.click('right', 'b-button');
+             return { pod, trzyma, dy, cof, n: V.strokes.length };""")
+    check("rysunek chwytany gripem i przesuwany (B cofa przesunięcie)", r["pod"] and r["trzyma"] and abs(r["dy"] - 0.1) < 0.005 and abs(r["cof"]) < 1e-6, str(r))
+
+    # rozstrzelenie modelu (zakładka Widok) i złożenie z powrotem
+    r = E("""const h = await T.palClick('page:widok');
+             const c0 = Object.fromEntries(V.parts.map(p => [p.name, T.centerOf(p.name)]));
+             for (let k = 0; k < 3; k++) await T.palClick('roz:+');
+             const f = V.rozstrzel.f;
+             const sr = V.parts.reduce((s, p) => s.add(c0[p.name]), new V.THREE.Vector3()).divideScalar(V.parts.length);
+             const dalej = V.parts.every(p => T.centerOf(p.name).distanceTo(sr) >= c0[p.name].distanceTo(sr) - 1e-6);
+             const ruch = Math.max(...V.parts.map(p => T.centerOf(p.name).distanceTo(c0[p.name])));
+             await T.palClick('roz:0');
+             const wrocily = Math.max(...V.parts.map(p => T.centerOf(p.name).distanceTo(c0[p.name])));
+             return { h, f, dalej, ruch, wrocily };""")
+    check("rozstrzelenie: części odsuwają się od środka, „Złóż” wraca na miejsce",
+          r["h"] == "page:widok" and abs(r["f"] - 0.3) < 1e-9 and r["dalej"] and r["ruch"] > 0.01 and r["wrocily"] < 1e-6, str(r))
+
+    # tła: generowane (kosmos), zdjęcie z repozytorium (planeta), z internetu (atrapa Poly Haven)
+    r = E("""const w = async (warunek) => { for (let k = 0; k < 200 && !warunek(); k++) await new Promise(r => setTimeout(r, 50)); await T.frames(2); };
+             const h1 = await T.palClick('tlo:kosmos'); await w(() => !V.tlo.laduje);
+             const kosmos = V.tlo.id === 'kosmos' && V.scene.background && V.scene.background.isTexture && V.scene.background.image.width === 4096;
+             await T.palClick('tlo:planeta'); await w(() => !V.tlo.laduje);
+             const planeta = V.tlo.id === 'planeta' && V.scene.background.image.width === 2048;
+             const mini = V.pal.buttons.filter(b => b.kind === 'thumb' && b.img).length;
+             await T.palClick('widok:net'); await T.frames(2);
+             const h3 = await T.palClick('tlonet:venice_sunset'); await w(() => !V.tlo.laduje);
+             const net = V.tlo.id === 'net:venice_sunset' && V.scene.background.isDataTexture;
+             await T.palClick('widok:glowne');
+             await T.palClick('tloobrot');
+             const obrot = Math.round(V.scene.backgroundRotation.y * 180 / Math.PI);
+             const pamiec = JSON.parse(localStorage.getItem('cad-vr-viewer-ustawienia')).tlo;
+             await T.palClick('tlo:szary'); await w(() => !V.tlo.laduje);
+             const szary = !V.scene.background.isTexture;
+             await T.palClick('page:narzedzia');
+             return { h1, kosmos, planeta, mini, h3, net, obrot, pamiec, szary };""")
+    check("tło: Kosmos (rysowane), Planeta (zdjęcie), miniatury w panelu", r["h1"] == "tlo:kosmos" and r["kosmos"] and r["planeta"] and r["mini"] >= 7, str(r))
+    check("tło z internetu (Poly Haven, HDR) + obrót tła, wybór zapamiętany", r["net"] and r["obrot"] == 45 and r["pamiec"] == "net:venice_sunset" and r["szary"], str(r))
 
     # trzymasz część: prawy spust = kopia w tym miejscu (dalej trzymasz oryginał), A = ukryj; B cofa
     shots0 = page.inner_text("#shotCount")
@@ -776,6 +924,16 @@ def test_xr_menu(browser):
         if gm.uploads: break
         page.wait_for_timeout(100)
     check("zrzut z gogli (A) od razu w Projekt_A/vr/screeny", len(gm.uploads) == 1 and gm.uploads[0]["path"].startswith("Projekt_A/vr/screeny/"), str(gm.uploads))
+    r = E(f"""await T.palClick('page:widok');
+              const h = await T.palClick('tlodrive'); {wait_items}
+              const names = V.browser.items.map(i => i.name), tryb = V.browser.tryb;
+              await T.palClick('drvi:' + names.indexOf('panorama.jpg'));
+              for (let k = 0; k < 200 && V.tlo.id !== 'wlasne'; k++) await new Promise(r => setTimeout(r, 50));
+              await T.frames(3);
+              return {{ h, names, tryb, id: V.tlo.id, page: V.pal.page, bg: !!(V.scene.background && V.scene.background.isTexture) }};""")
+    check("tło: własne zdjęcie 360° z Google Drive (lista pokazuje zdjęcia)",
+          r["h"] == "tlodrive" and r["tryb"] == "obraz" and "panorama.jpg" in r["names"] and "test_zlozenie.step" not in r["names"]
+          and r["id"] == "wlasne" and r["bg"] and r["page"] == "widok", str(r))
     E("V.paletteAction('page:menu'); await T.frames(3);")
     page.screenshot(path=str(OUT / "screenshot_vr_menu.png"))
     page.close()
@@ -1285,7 +1443,9 @@ time.sleep(1)
 try:
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=CHROME, args=CHROME_ARGS)
-        for t in (test_pc, test_xr, test_xr_menu, test_szkicownik_browser, test_szkicownik_pc, test_szkicownik_vr):
+        wszystkie = (test_pc, test_xr, test_xr_menu, test_szkicownik_browser, test_szkicownik_pc, test_szkicownik_vr)
+        tylko = os.environ.get("TYLKO", "")      # np. TYLKO=test_xr — tylko wybrane części testu
+        for t in [t for t in wszystkie if not tylko or t.__name__ in tylko.split(",")]:
             try:
                 t(browser)
             except Exception as e:
