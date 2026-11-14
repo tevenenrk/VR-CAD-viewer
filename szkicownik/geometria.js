@@ -20,6 +20,9 @@ export const GEO = {
   KOLOR_DOMYSLNY: '#8fa3b8',
   STL_TOLERANCJA_MM: 0.01,        // STL: tolerancja zszywania trójkątów w zamkniętą powłokę
   NAZWA_NOWYCH: 'Szkicownik',     // podzłożenie z nowymi bryłami w eksporcie STEP
+  KRZYWA_MAX_PUNKTOW: 40,         // krzywa z ręki: tyle punktów (równo rozłożonych) trafia do splajnu
+  KRZYWA_TOLERANCJA_MM: 0.5,      // dokładność przybliżenia splajnem
+  MIN_POLE_MM2: 1,                // powierzchnia mniejsza niż to = pusta
   // Płaszczyzny szkicu jak w SolidWorksie (oś u = „w prawo”, v = „w górę” na szkicu, n = kierunek wyciągnięcia)
   PLASZCZYZNY: {
     XY: { nazwa: 'Przednia', u: [1, 0, 0], v: [0, 1, 0], n: [0, 0, 1] },
@@ -102,6 +105,10 @@ export function dopasujCzesci(bryly, czesci) {
 //    | { typ: 'obrot', plaszczyzna, odsuniecie, obrys, os: { a: [u,v], b: [u,v] }, kat (stopnie, domyślnie 360) }
 //    | { typ: 'boolean', op: 'suma'|'roznica'|'wspolna', a: bryla, b: bryla }
 //    | { typ: 'oryginal', plik: id pliku, indeksy: [nr brył w pliku] }
+//    | { typ: 'powierzchnia', rodzaj: 'plaska', plaszczyzna, odsuniecie, obrys }      (powierzchnia z zamkniętego szkicu)
+//    | { typ: 'powierzchnia', rodzaj: 'krzywe', a: [[x,y,z]…], b: [[x,y,z]…] }        (pomiędzy dwiema krzywymi, np. wstążka z dwóch rąk)
+//    | { typ: 'pogrubienie', z: bryla (powierzchnia), grubosc }                          (powierzchnia → bryła o grubości, w stronę normalnej)
+//    | { typ: 'podzial', strona: 'gora'|'dol', a: bryla, b: bryla (powierzchnia) }       (część bryły nad / pod powierzchnią)
 // Prymitywy są wyśrodkowane w swoim początku układu; oś walca = oś góry (Y).
 // bryla: { def, lok: [mm] (przesunięcie geometrii przed obrotem), poz, obr, skala }
 // pobierzOryginal(plik, indeks) → bryła z wczytanego pliku (w układzie pliku)
@@ -129,6 +136,14 @@ export function zbudujDef(def, pobierzOryginal) {
       return zbudujObrot(def);
     case 'boolean':
       return operacjaBoolean(def.op, zbudujBryle(def.a, pobierzOryginal), zbudujBryle(def.b, pobierzOryginal)).ksztalt;
+    case 'powierzchnia':
+      return zbudujPowierzchnie(def);
+    case 'pogrubienie':
+      return pogrub(zbudujBryle(def.z, pobierzOryginal), def.grubosc);
+    case 'podzial': {
+      const czesci = podziel(zbudujBryle(def.a, pobierzOryginal), zbudujBryle(def.b, pobierzOryginal));
+      return def.strona === 'dol' ? czesci.dol : czesci.gora;
+    }
     case 'oryginal': {                    // jedna część z pliku STEP (może składać się z kilku brył)
       const indeksy = def.indeksy || [def.indeks];
       const lista = indeksy.map((i) => {
@@ -164,6 +179,116 @@ export function przeksztalc(ksztalt, { poz = [0, 0, 0], obr = [0, 0, 0], skala =
 export function punktPlaszczyzny(plaszczyzna, o, [u, v]) {
   const pl = GEO.PLASZCZYZNY[plaszczyzna];
   return [0, 1, 2].map((i) => pl.n[i] * o + pl.u[i] * u + pl.v[i] * v);
+}
+
+// ---------------------------------------------------------------------------
+// POWIERZCHNIE: płaska ze szkicu, pomiędzy dwiema krzywymi; pogrubienie; podział bryły powierzchnią
+// ---------------------------------------------------------------------------
+export const jestPowierzchnia = (def) => !!def && def.typ === 'powierzchnia';
+
+// Punkty z ręki → najwyżej KRZYWA_MAX_PUNKTOW punktów równo rozłożonych wzdłuż krzywej (bez powtórzeń)
+export function rozrzedz(punkty, n = GEO.KRZYWA_MAX_PUNKTOW) {
+  const p = punkty.filter((q, i) => i === 0 || Math.hypot(q[0] - punkty[i - 1][0], q[1] - punkty[i - 1][1], q[2] - punkty[i - 1][2]) > 1e-6);
+  if (p.length <= n) return p;
+  const dl = [0];
+  for (let i = 1; i < p.length; i++) dl.push(dl[i - 1] + Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1], p[i][2] - p[i - 1][2]));
+  const out = [];
+  for (let k = 0, j = 0; k < n; k++) {
+    const t = dl[dl.length - 1] * k / (n - 1);
+    while (j < p.length - 2 && dl[j + 1] < t) j++;
+    const u = (t - dl[j]) / ((dl[j + 1] - dl[j]) || 1);
+    out.push([0, 1, 2].map((i) => p[j][i] + (p[j + 1][i] - p[j][i]) * u));
+  }
+  return out;
+}
+
+function krzywaWire(punkty) {
+  const p = rozrzedz(punkty);
+  if (p.length < 2) throw new Error('Krzywa jest za krótka');
+  const krawedz = p.length === 2 ? R.makeLine(p[0], p[1]) : R.makeBSplineApproximation(p, { tolerance: GEO.KRZYWA_TOLERANCJA_MM, degMax: 3 });
+  return R.assembleWire([krawedz]);
+}
+
+function zbudujPowierzchnie(def) {
+  let s;
+  try {
+    if (def.rodzaj === 'plaska') s = rysunekObrysu(def).face();
+    else if (def.rodzaj === 'krzywe') {
+      const ts = new oc.BRepOffsetAPI_ThruSections(false, false, 1e-6);
+      const wa = krzywaWire(def.a || []), wb = krzywaWire(def.b || []);
+      ts.AddWire(wa.wrapped); ts.AddWire(wb.wrapped);
+      ts.Build(new oc.Message_ProgressRange());
+      s = R.cast(ts.Shape());
+      ts.delete();
+    } else throw new Error('Nieznany rodzaj powierzchni: ' + def.rodzaj);
+  } catch (e) {
+    throw new Error('Nie udało się zbudować powierzchni: ' + komunikatOC(e));
+  }
+  if (pole(s) < GEO.MIN_POLE_MM2) throw new Error('Powierzchnia ma zerowe pole (krzywe za blisko siebie?)');
+  return s;
+}
+
+export function pole(ksztalt) {
+  try { return R.measureArea(ksztalt); } catch { return 0; }
+}
+
+// Powierzchnia → bryła o grubości (w stronę normalnej; ujemna grubość = w drugą stronę)
+export function pogrub(pow, grubosc) {
+  const g = Number(grubosc);
+  if (!Number.isFinite(g) || g === 0) throw new Error('Grubość musi być różna od zera');
+  let s;
+  try {
+    const th = new oc.BRepOffsetAPI_MakeThickSolid();
+    th.MakeThickSolidBySimple(pow.wrapped, g);
+    th.Build(new oc.Message_ProgressRange());
+    s = R.cast(th.Shape());
+    th.delete();
+  } catch (e) {
+    throw new Error('Pogrubienie nie powiodło się: ' + komunikatOC(e));
+  }
+  if (objetosc(s) < 0) s = R.cast(s.wrapped.Reversed());        // bryła „na lewą stronę” → odwróć
+  const info = sprawdz(s);
+  if (!info.liczbaBryl || info.objetosc < GEO.MIN_OBJETOSC_MM3) throw new Error('Pogrubienie nie dało bryły (za duża grubość przy mocno wygiętej powierzchni?)');
+  return s;
+}
+
+// Średnia normalna powierzchni (ważona polem trójkątów) — kierunek „nad” powierzchnią
+function normalnaSrednia(pow) {
+  const m = pow.mesh({ tolerance: 1, angularTolerance: 0.5 });
+  const v = m.vertices, t = m.triangles, n = [0, 0, 0];
+  for (let i = 0; i < t.length; i += 3) {
+    const a = t[i] * 3, b = t[i + 1] * 3, c = t[i + 2] * 3;
+    const u = [v[b] - v[a], v[b + 1] - v[a + 1], v[b + 2] - v[a + 2]], w = [v[c] - v[a], v[c + 1] - v[a + 1], v[c + 2] - v[a + 2]];
+    n[0] += u[1] * w[2] - u[2] * w[1]; n[1] += u[2] * w[0] - u[0] * w[2]; n[2] += u[0] * w[1] - u[1] * w[0];
+  }
+  const L = Math.hypot(...n);
+  if (L < 1e-9) throw new Error('Nie da się ustalić strony powierzchni (zamknięta albo zwinięta?)');
+  return n.map((x) => x / L);
+}
+
+// Podział bryły powierzchnią: „góra” = część po stronie normalnej (w obrysie powierzchni), „dół” = reszta.
+// Powierzchnia jest przeciągana w stronę normalnej daleko poza bryłę i odejmowana / przecinana z bryłą.
+export function podziel(bryla, pow) {
+  if (!liczBryly(bryla)) throw new Error('Ciąć można tylko bryłę (nie powierzchnię)');
+  const n = normalnaSrednia(pow);
+  const rb = ramka(bryla), rp = ramka(pow);
+  const przek = (r) => Math.hypot(r.max[0] - r.min[0], r.max[1] - r.min[1], r.max[2] - r.min[2]);
+  const L = 4 * (przek(rb) + przek(rp)) + 10;
+  let gora, dol;
+  try {
+    const pm = new oc.BRepPrimAPI_MakePrism(pow.wrapped, new R.Vector(n.map((x) => x * L)).wrapped, false, true);
+    const pryzma = R.cast(pm.Shape());
+    pm.delete();
+    gora = bryla.clone().intersect(pryzma);
+    dol = bryla.clone().cut(pryzma);
+  } catch (e) {
+    throw new Error('Cięcie nie powiodło się: ' + komunikatOC(e));
+  }
+  const vg = objetosc(gora), vd = objetosc(dol);
+  if (!liczBryly(gora) || !liczBryly(dol) || vg < GEO.MIN_OBJETOSC_MM3 || vd < GEO.MIN_OBJETOSC_MM3) {
+    throw new Error('Powierzchnia nie przecina tej bryły — przesuń ją tak, żeby przechodziła przez bryłę');
+  }
+  return { gora, dol, objetosci: [vg, vd] };
 }
 
 function rysunekObrysu(def) {

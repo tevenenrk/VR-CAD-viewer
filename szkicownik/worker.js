@@ -61,7 +61,8 @@ function lokalna(id) {
 // Wynik dla głównego wątku: siatka + pomiary, z listą buforów do przekazania bez kopiowania
 function pakuj(ksztalt, { bezSiatki = false } = {}) {
   const info = G.sprawdz(ksztalt);
-  const w = { objetosc: info.objetosc, liczbaBryl: info.liczbaBryl, poprawna: info.poprawna, ramka: G.ramka(ksztalt), siatka: null };
+  const w = { objetosc: info.objetosc, liczbaBryl: info.liczbaBryl, poprawna: info.poprawna, ramka: G.ramka(ksztalt), siatka: null,
+              pole: info.liczbaBryl ? 0 : G.pole(ksztalt) };       // powierzchnia: pole zamiast objętości
   const transfer = [];
   if (!bezSiatki) {
     w.siatka = G.siatka(ksztalt);
@@ -83,6 +84,18 @@ function zbudujJedna({ id, def, lok, wysrodkuj, bezSiatki }) {
   zapamietaj(id, s);
   const { w, transfer } = pakuj(s, { bezSiatki });
   return { w: { ...w, id, lok, srodek }, transfer };
+}
+
+// Wynik operacji: wyśrodkowany, zapamiętany, z siatką i zapisem BREP (szybkie odtworzenie po restarcie wątku)
+function wynikWysrodkowany(id, ksztalt) {
+  const srodek = G.ramka(ksztalt).srodek;
+  const lok = srodek.map((v) => -v);
+  const s = ksztalt.translate(lok);
+  zapamietaj(id, s);
+  const { w, transfer } = pakuj(s);
+  let brep = null;
+  try { brep = s.serialize(); } catch { brep = null; }
+  return { wynik: { ...w, id, lok, srodek, brep }, transfer };
 }
 
 const KOMENDY = {
@@ -109,15 +122,23 @@ const KOMENDY = {
   boolean({ idWyniku, op, a, b }) {
     const A = G.przeksztalc(lokalna(a.id), a);
     const B = G.przeksztalc(lokalna(b.id), b);
+    if (!G.liczBryly(A) || !G.liczBryly(B)) throw new Error('To jest powierzchnia — użyj „Tnij bryłę” albo „Pogrub”');
     const r = G.operacjaBoolean(op, A, B);
-    const srodek = G.ramka(r.ksztalt).srodek;
-    const lok = srodek.map((v) => -v);
-    const s = r.ksztalt.translate(lok);
-    zapamietaj(idWyniku, s);
-    const { w, transfer } = pakuj(s);
-    let brep = null;
-    try { brep = s.serialize(); } catch { brep = null; }   // szybkie odtworzenie po restarcie wątku
-    return { wynik: { ...w, id: idWyniku, lok, srodek, brep }, transfer };
+    return wynikWysrodkowany(idWyniku, r.ksztalt);
+  },
+
+  // podział bryły a powierzchnią b → dwie bryły (nad i pod powierzchnią)
+  podziel({ idGora, idDol, a, b }) {
+    const A = G.przeksztalc(lokalna(a.id), a);
+    const B = G.przeksztalc(lokalna(b.id), b);
+    const { gora, dol } = G.podziel(A, B);
+    const g = wynikWysrodkowany(idGora, gora), d = wynikWysrodkowany(idDol, dol);
+    return { wynik: [g.wynik, d.wynik], transfer: [...g.transfer, ...d.transfer] };
+  },
+
+  // powierzchnia a → bryła o grubości
+  pogrub({ idWyniku, a, grubosc }) {
+    return wynikWysrodkowany(idWyniku, G.pogrub(G.przeksztalc(lokalna(a.id), a), grubosc));
   },
 
   // cofanie: bryła z zapisu BREP albo z parametrów, z siatką do wyświetlenia

@@ -128,4 +128,6 @@ z odtworzeniem stanu; szkic: domykanie i wykrywanie samoprzecięć. Istniejący 
    Decyzja robocza: po „Wróć do podglądu” nowe bryły zostają widoczne z modelem; przesunięte części oryginału widać tylko w Szkicowniku i w eksporcie (viewer pokazuje plik bez zmian).
 4. Szkic 2D (linie, łuki) i wyciągnięcie. ✔ (13.11.2026) — dodatkowo obrót obrysu wokół jego prostej krawędzi (360 / 270 / 180 / 90°),
    wyciągnięcie rozciąganiem ręką (odległość czubka od płaszczyzny) albo wpisaną wysokością.
+4b. (14.11.2026, prośba Roberta) Łuk styczny, zaokrąglenie narożników szkicu; powierzchnie: płaska ze szkicu, wstążka z dwóch rąk,
+   między dwiema krzywymi; cięcie bryły powierzchnią (dwie części), pogrubianie powierzchni do bryły. ✔
 5. Cofanie ✔ (zrobione razem z etapem 4: migawka projektu przed każdą operacją, B / Ctrl+Z, 40 kroków), zapis/odczyt JSON, zapis STEP na Drive.

@@ -11,7 +11,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { SilnikGeometrii } from './klient.js';
 import { Projekt, PROJEKT } from './projekt.js';
 import { Panel3D, Uklad, PANEL } from './panel.js';
-import { Szkic, SZKIC, przyciagnij as przyciagnijPunkt, kolizja as kolizjaOdcinka, punktyOdcinka, odlOdOdcinka, poJednejStronie } from './szkic2d.js';
+import { Szkic, SZKIC, przyciagnij as przyciagnijPunkt, kolizja as kolizjaOdcinka, punktyOdcinka, odlOdOdcinka, poJednejStronie, lukStyczny } from './szkic2d.js';
 
 // ---------------------------------------------------------------------------
 // KONFIGURACJA
@@ -51,7 +51,16 @@ export const SZK = {
   SZKIC_POLE_SIATKI: 40,          // siatka płaszczyzny szkicu: tyle kratek (krok = snap)
   SZKIC_BLAD_S: 2.5,              // jak długo błędny odcinek świeci na czerwono
   KATY_OBROTU: [360, 270, 180, 90],  // obrót obrysu wokół osi (do wyboru w panelu)
+  PROMIEN_ZAOKR_MM: 10,           // zaokrąglenie narożnika szkicu (domyślny promień)
+  PROMIENIE_MM: [2, 5, 10, 20, 50],
+  // powierzchnie
+  GRUBOSC_MM: 5,                  // pogrubienie powierzchni (domyślnie)
+  GRUBOSCI_MM: [1, 2, 3, 5, 10, 20],
+  KRZYWA_KROK_M: 0.008,           // krzywa / wstążka z ręki: nowy punkt co tyle (m w świecie)
+  KOLOR_KRZYWEJ: 0xbf5af2,        // narysowana krzywa (czeka na drugą)
+  POWIERZCHNIA_PRZEZROCZYSTOSC: 0.8,
 };
+const PRYMITYWY = ['prostopadloscian', 'walec', 'kula'];
 const PLASZCZYZNY = {             // jak GEO.PLASZCZYZNY w geometria.js (u × v = n)
   XY: { u: [1, 0, 0], v: [0, 1, 0], n: [0, 0, 1] },
   XZ: { u: [1, 0, 0], v: [0, 0, -1], n: [0, 1, 0] },
@@ -67,9 +76,10 @@ function polaTypu(typ, osGory = 'Y') {
     kula: [['d', 'Średnica Ø']],
     wyciagniecie: [['h', 'Wysokość wyciągnięcia']],
     obrot: [['kat', 'Kąt obrotu']],
+    pogrubienie: [['grubosc', 'Grubość']],
   }[typ] || null;
 }
-const NAZWY_OP = { suma: 'Suma', roznica: 'Różnica', wspolna: 'Część wspólna' };
+const NAZWY_OP = { suma: 'Suma', roznica: 'Różnica', wspolna: 'Część wspólna', tnij: 'Cięcie powierzchnią' };
 const DEG = Math.PI / 180;
 
 const fmt = (v, miejsc = 2) => {
@@ -91,6 +101,7 @@ function defZPol(typ, wartosci, staraDef) {
   if (typ === 'kula') return { typ, r: wartosci.d / 2 };
   if (typ === 'wyciagniecie') return { ...staraDef, h: wartosci.h };
   if (typ === 'obrot') return { ...staraDef, kat: wartosci.kat };
+  if (typ === 'pogrubienie') return { ...staraDef, grubosc: wartosci.grubosc };
   return staraDef;
 }
 
@@ -130,6 +141,11 @@ export class Szkicownik {
     this.plSzkicu = null;          // płaszczyzna nowego szkicu (domyślnie pozioma wg osi góry)
     this.narzSzkicu = 'linia';
     this.katObrotu = 360;
+    this.promienZaokr = SZK.PROMIEN_ZAOKR_MM;
+    this.gruboscPow = SZK.GRUBOSC_MM;
+    this.krzywe = null;            // powierzchnia między krzywymi: { a: [punkty] | null, biezaca: [punkty] | null, zrodlo }
+    this.wstazka = null;           // wstążka z dwóch rąk: { lewa: [], prawa: [] }
+    this.krzyweWidok = null;
     this.szkicWidok = null;        // obiekty three.js podglądu szkicu
 
     this.root = new THREE.Group();             // układ CAD w milimetrach
@@ -203,6 +219,8 @@ export class Szkicownik {
     this.etykieta.sprite.visible = false;
     this.znaczniki.forEach((z) => { z.visible = false; });
     if (this.szkicWidok) this.szkicWidok.grupa.visible = false;
+    if (this.krzyweWidok) this.krzyweWidok.grupa.visible = false;
+    this.krzywe = null; this.wstazka = null;
     this.przerwijTworzenie();
     for (const c of this.api.controllers) if (c.userData.szk) c.userData.szk.chwyt = null;
     this.dwieRece = null;
@@ -352,6 +370,7 @@ export class Szkicownik {
     this.ustawPanel();
     this.odswiezPodswietlenia();
     this.odswiezSzkic(dt);
+    this.odswiezKrzywe();
     this.aktualizujEtykiete();
     this.panel.odswiez(this.uklad().B, this.hoverPanelu, this.stopka());
   }
@@ -432,6 +451,7 @@ export class Szkicownik {
     holder.userData.szkId = b.id;
     const mat = new THREE.MeshStandardMaterial({ color: b.kolor, roughness: 0.6, metalness: 0.1, side: THREE.DoubleSide,
                                                  polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+    if (b.def.typ === 'powierzchnia') { mat.transparent = true; mat.opacity = SZK.POWIERZCHNIA_PRZEZROCZYSTOSC; mat.depthWrite = false; }
     let mesh = null, krawedzie = null;
     if (siatka) {
       mesh = new THREE.Mesh(this.uzyjGeo(this.geometriaZSiatki(siatka)), mat);
@@ -604,7 +624,10 @@ export class Szkicownik {
     this.przerwijTworzenie();
     this.przypnijUchwyty();
     const vr = this.api.renderer.xr.isPresenting;
+    this.krzywe = null; this.wstazka = null;
     if (n === 'szkic') { this.zacznijSzkic(); this.powiedz(`Szkic na płaszczyźnie ${this.plaszczyznaSzkicu()}: ` + (vr ? 'spust = punkt' : 'klik = punkt')); return; }
+    if (n === 'krzywe') { this.krzywe = { a: null, biezaca: null, zrodlo: null }; this.powiedz(vr ? 'Krzywa 1: trzymaj spust i prowadź rękę, puść = koniec' : 'Krzywa 1: klikaj punkty, Enter = koniec krzywej'); return; }
+    if (n === 'wstazka') { this.powiedz(vr ? 'Wstążka: trzymaj OBA spusty i prowadź ręce — powierzchnia rozpina się między nimi' : 'Wstążka działa w goglach (dwie ręce)'); return; }
     this.powiedz(n === 'wybierz' ? 'Narzędzie: wybierz / chwyć'
       : `${PROJEKT.NAZWY[n]}: ` + (vr ? 'spust w punkcie początkowym, przeciągnij, puść' : 'przeciągnij myszą (Esc = wybierz)'));
   }
@@ -736,7 +759,7 @@ export class Szkicownik {
     if (!pola) { this.powiedz('Ta bryła nie ma wymiarów — użyj skali'); return; }
     this.otworzNumpad({
       tytul: `${b.nazwa}: wymiary`,
-      pola: pola.map(([k, et]) => ({ klucz: k, etykieta: et, wartosc: poleZDef(b.def, k), jednostka: k === 'kat' ? '°' : 'mm', dodatnia: k !== 'h' })),
+      pola: pola.map(([k, et]) => ({ klucz: k, etykieta: et, wartosc: poleZDef(b.def, k), jednostka: k === 'kat' ? '°' : 'mm', dodatnia: k !== 'h' && k !== 'grubosc' })),
       gotowe: (w) => this.zadanie('Przeliczam bryłę…', async () => {
         await this.projekt.zmienDef(b.id, defZPol(b.def.typ, w, b.def));
         this.powiedz(`Zmieniono wymiary: ${b.nazwa}`);
@@ -771,7 +794,13 @@ export class Szkicownik {
 
   wskazanoB(id) {
     const { op, a } = this.oczekujeB;
-    if (id === a) { this.powiedz('Wskaż inną bryłę jako B'); return; }
+    if (id === a) { this.powiedz(op === 'tnij' ? 'Wskaż bryłę do pocięcia (nie powierzchnię)' : 'Wskaż inną bryłę jako B'); return; }
+    if (op === 'tnij') {
+      if (this.bryla(id) && this.bryla(id).def.typ === 'powierzchnia') { this.powiedz('To powierzchnia — wskaż bryłę do pocięcia'); return; }
+      this.oczekujeB = null;
+      this.wykonajPodzial(id, a);
+      return;
+    }
     this.oczekujeB = null;
     this.wykonajBoolean(a, id, op);
   }
@@ -1014,7 +1043,9 @@ export class Szkicownik {
         }
         else if (glowna && this.trzymane()) { this.kopiujTrzymane(); a.pulse(c, 0.6, 40); }
         else if (this.trybSzkicu()) { if (!this.numpad && glowna) { this.szkicKlik(); a.pulse(c, 0.25, 15); } }
-        else if (this.narzedzie !== 'wybierz' && !this.tworzenie && !this.numpad) {
+        else if (this.narzedzie === 'krzywe') { if (glowna && !this.numpad && this.gotowy()) this.zacznijKrzywa(c); }
+        else if (this.narzedzie === 'wstazka') { if (!this.numpad && this.gotowy()) this.sprobujWstazke(); }
+        else if (PRYMITYWY.includes(this.narzedzie) && !this.tworzenie && !this.numpad) {
           if (this.gotowy()) this.zacznijTworzenie(this.naSiatke(this.swiatDoCad(this.czubek(c))), c);
         }
         else if (s.traf) { this.wybierz(s.traf.id); a.pulse(c, 0.3, 20); }
@@ -1045,6 +1076,7 @@ export class Szkicownik {
       const pT = !tworzy ? null : this.cadDoSwiata(this.tworzenie && this.tworzenie.zrodlo === c ? this.tworzenie.B : this.naSiatke(this.swiatDoCad(this.czubek(c))));
       this.ustawZnacznik(this.znaczniki[i * 2 + 1], pT, SZK.KOLOR_PODGLADU);
     }
+    this.rysowaniePowXR();
     this.hoverPanelu = a.controllers.map((c) => c.userData.szk && c.userData.szk.hover).find(Boolean) || null;
     this.nad = a.controllers.map((c) => c.userData.szk && c.userData.szk.traf && c.userData.szk.traf.id).find(Boolean) || null;
     this.aktualizujChwyty();
@@ -1200,7 +1232,7 @@ export class Szkicownik {
           if (id !== 'panel') this.akcja(id);
           return;
         }
-        if (this.narzedzie !== 'wybierz' && this.narzedzie !== 'szkic' && e.button === 0 && !this.numpad && this.gotowy()) {
+        if (PRYMITYWY.includes(this.narzedzie) && e.button === 0 && !this.numpad && this.gotowy()) {
           const pl = plaszczyznaPod(this.trafBryle(this.rc));
           const A = naPlaszczyznie(pl);
           if (A) { this.zacznijTworzenie(A, 'pc', true, pl); e.stopImmediatePropagation(); e.preventDefault(); }
@@ -1241,6 +1273,13 @@ export class Szkicownik {
         if (Math.hypot(e.clientX - m.x, e.clientY - m.y) > 5) return;
         if (this.pc.tc.axis) return;                // klik w uchwyt
         if (this.trybSzkicu()) { if (!this.numpad) { promien(e); szkicMysz(); this.szkicKlik(); } return; }
+        if (this.narzedzie === 'krzywe') {          // PC: punkty krzywej na płaszczyźnie poziomej (Enter = koniec krzywej)
+          promien(e);
+          const p = naPlaszczyznie(plaszczyznaPod(null));
+          if (p && this.gotowy()) this.punktKrzywejPC(p);
+          return;
+        }
+        if (this.narzedzie === 'wstazka') { this.powiedz('Wstążka działa w goglach (dwie ręce). Na PC: „Między 2 krzywymi”'); return; }
         if (this.narzedzie !== 'wybierz') return;
         promien(e);
         const t = this.trafBryle(this.rc);
@@ -1318,6 +1357,10 @@ export class Szkicownik {
     const kroki = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: z ? [1, 1] : [2, -1], ArrowDown: z ? [1, -1] : [2, 1],
                     PageUp: [z ? 2 : 1, 1], PageDown: [z ? 2 : 1, -1] };
     if (this.szkic && this.klawiszSzkicu(k, ctrl)) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+    if (this.narzedzie === 'krzywe' && (k === 'Enter' || k === 'Escape')) {
+      if (k === 'Enter') this.zakonczKrzywa(); else this.ustawNarzedzie('wybierz');
+      e.preventDefault(); e.stopImmediatePropagation(); return;
+    }
     if (kroki[k] && this.zazn.length) {
       this.zapiszHistorie('przesunięcie');
       const [os, zn] = kroki[k];
@@ -1468,7 +1511,14 @@ export class Szkicownik {
       return;
     }
     if (!S.kursor) return;
-    if (s.zamkniety) { this.powiedz('Obrys zamknięty — wybierz „Wyciągnij” albo „Obrót”'); return; }
+    if (this.narzSzkicu === 'zaokraglij') {
+      const i = s.start ? s.wierzcholek(S.kursor) : -1;
+      if (i < 0) { this.powiedz('Wskaż narożnik obrysu (punkt między dwiema liniami)'); return; }
+      const r = s.zaokraglij(i, this.promienZaokr);
+      this.powiedz(r.ok ? `Zaokrąglono narożnik R${fmt(this.promienZaokr)} mm (B = cofnij)` : r.blad);
+      return;
+    }
+    if (s.zamkniety) { this.powiedz('Obrys zamknięty — „Wyciągnij”, „Obrót” albo „Powierzchnia”; „Zaokrąglij” działa dalej'); return; }
     if (!s.start) {
       s.odsuniecie = S.oPodglad;
       s.dodaj('linia', S.kursor);
@@ -1481,7 +1531,9 @@ export class Szkicownik {
       this.powiedz('Łuk: teraz wskaż punkt końcowy');
       return;
     }
-    const r = this.narzSzkicu === 'luk' ? s.dodaj('luk', S.kursor, s.lukSrodek) : s.dodaj('linia', S.kursor);
+    let typ = this.narzSzkicu === 'luk' ? 'luk' : this.narzSzkicu === 'lukStyczny' ? 'lukStyczny' : 'linia';
+    if (typ === 'lukStyczny' && !s.segmenty.length) { typ = 'linia'; this.powiedz('Pierwszy odcinek to linia — łuk styczny ciągnie się dalej od niej'); }
+    const r = typ === 'luk' ? s.dodaj('luk', S.kursor, s.lukSrodek) : s.dodaj(typ, S.kursor);
     s.lukSrodek = null;
     if (r.ok) { if (r.zamknieto) this.powiedz('Obrys zamknięty ✓ — „Wyciągnij” albo „Obrót”'); }
     else {
@@ -1589,7 +1641,9 @@ export class Szkicownik {
       return true;
     }
     if (!ctrl && (k === 'l' || k === 'L')) { this.narzSzkicu = 'linia'; this.szkic.s.lukSrodek = null; return true; }
-    if (!ctrl && (k === 'a' || k === 'A')) { this.narzSzkicu = 'luk'; return true; }
+    if (!ctrl && (k === 'a' || k === 'A')) { this.narzSzkicu = 'lukStyczny'; this.szkic.s.lukSrodek = null; return true; }
+    if (!ctrl && k === '3') { this.narzSzkicu = 'luk'; return true; }
+    if (!ctrl && (k === 'r' || k === 'R')) { this.narzSzkicu = 'zaokraglij'; this.szkic.s.lukSrodek = null; return true; }
     return false;
   }
 
@@ -1653,16 +1707,22 @@ export class Szkicownik {
     s.punkty.forEach((q, i) => punkt(q, i === 0 && !s.zamkniety ? V.M.gumka : V.M.linia, i === 0 ? 3 : 2.2));
     if (s.lukSrodek) punkt(s.lukSrodek, V.M.gumka, 1.8);
     // gumka: od ostatniego punktu do kursora (czerwona, gdy odcinek przecinałby obrys)
-    if (S.faza === 'rysuj' && S.kursor && s.start && !s.zamkniety) {
+    if (S.faza === 'rysuj' && S.kursor && s.start && !s.zamkniety && this.narzSzkicu !== 'zaokraglij') {
       const a = s.ostatni;
       const n = s.segmenty.length, luk = this.narzSzkicu === 'luk' && s.lukSrodek;
+      const styczny = this.narzSzkicu === 'lukStyczny' && n > 0;
       let b = S.kursor;
-      const domyka = n >= (luk ? 1 : 2) && Math.hypot(b[0] - s.start[0], b[1] - s.start[1]) <= SZKIC.TOL_DOMKNIECIA_MM;
+      const domyka = n >= (luk || styczny ? 1 : 2) && Math.hypot(b[0] - s.start[0], b[1] - s.start[1]) <= SZKIC.TOL_DOMKNIECIA_MM;
       if (domyka) b = s.start;
-      const nowy = luk ? { typ: 'luk', a, m: s.lukSrodek, b } : { typ: 'linia', a, b };
+      const ms = styczny ? lukStyczny(a, s.kierunek, b) : null;
+      const nowy = luk ? { typ: 'luk', a, m: s.lukSrodek, b } : ms ? { typ: 'luk', a, m: ms, b } : { typ: 'linia', a, b };
       const zly = (Math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-6) &&
         kolizjaOdcinka(s.segmenty, nowy, [n - 1, ...(domyka ? [0] : [])].filter((x) => x >= 0)) >= 0;
       lamana(nowy, zly ? V.M.blad : V.M.gumka);
+    }
+    if (this.narzSzkicu === 'zaokraglij' && S.kursor && s.start) {   // narożnik, który zostanie zaokrąglony
+      const i = s.wierzcholek(S.kursor);
+      if (i >= 0) punkt(s.punkty[i], V.M.os, 4);
     }
     if (S.kursor && S.faza !== 'wyciagnij') punkt(S.kursor, V.M.gumka, 2.6);
     for (let i = ni; i < V.odcinki.length; i++) V.odcinki[i].visible = false;
@@ -1691,6 +1751,216 @@ export class Szkicownik {
   }
 
   // ==========================================================================
+  // POWIERZCHNIE: płaska ze szkicu, wstążka z dwóch rąk, między dwiema krzywymi; cięcie bryły i pogrubienie
+  // ==========================================================================
+  powierzchniaZeSzkicu() {
+    const S = this.szkic;
+    if (!S || !S.s.zamkniety) { this.powiedz('Najpierw narysuj zamknięty obrys w zakładce Szkic'); return null; }
+    const s = S.s;
+    const def = { typ: 'powierzchnia', rodzaj: 'plaska', plaszczyzna: s.plaszczyzna, odsuniecie: s.odsuniecie, obrys: s.obrys() };
+    return this.zadanie('Tworzę powierzchnię…', async () => {
+      const b = await this.projekt.dodaj(def);
+      this.poSzkicu(b, `Powierzchnia gotowa: ${b.nazwa} (${fmt(b.pole / 100, 1)} cm²) — Tnij bryłę albo Pogrub`);
+      return b;
+    }, 'powierzchnia');
+  }
+
+  dodajPowierzchnieKrzywe(a, b, opis) {
+    return this.zadanie('Tworzę powierzchnię…', async () => {
+      const p = await this.projekt.dodaj({ typ: 'powierzchnia', rodzaj: 'krzywe', a, b });
+      this.wiele = false; this.zazn = [p.id]; this.prowadzaca = p.id; this.przypnijUchwyty();
+      this.powiedz(`${opis}: ${p.nazwa} (${fmt(p.pole / 100, 1)} cm²) — Tnij bryłę albo Pogrub`);
+      return p;
+    }, opis.toLowerCase());
+  }
+
+  // krok zapisu punktów z ręki: SZK.KRZYWA_KROK_M w świecie → mm w układzie CAD
+  krokKrzywejMM() {
+    const sw = new THREE.Vector3();
+    this.root.getWorldScale(sw);
+    return SZK.KRZYWA_KROK_M / Math.max(sw.x, 1e-9);
+  }
+
+  zacznijKrzywa(c) {
+    if (!this.krzywe) this.krzywe = { a: null, biezaca: null, zrodlo: null };
+    this.krzywe.biezaca = [this.swiatDoCad(this.czubek(c))];
+    this.krzywe.zrodlo = c;
+  }
+
+  punktKrzywejPC(p) {
+    if (!this.krzywe) this.krzywe = { a: null, biezaca: null, zrodlo: null };
+    const K = this.krzywe;
+    if (!K.biezaca) { K.biezaca = []; K.zrodlo = 'pc'; }
+    K.biezaca.push(p);
+    this.powiedz(`Krzywa ${K.a ? 2 : 1}: punktów ${K.biezaca.length} (Enter = koniec)`);
+  }
+
+  zakonczKrzywa() {
+    const K = this.krzywe;
+    if (!K || !K.biezaca) return null;
+    const pts = K.biezaca;
+    K.biezaca = null; K.zrodlo = null;
+    const dl = pts.reduce((sum, p, i) => (i ? sum + Math.hypot(...p.map((v, k) => v - pts[i - 1][k])) : 0), 0);
+    if (pts.length < 2 || dl < 3 * this.krok()) { this.powiedz('Krzywa za krótka — narysuj dłuższą'); return null; }
+    if (!K.a) { K.a = pts; this.powiedz('Krzywa 1 gotowa — narysuj krzywą 2'); return null; }
+    const a = K.a;
+    this.krzywe = { a: null, biezaca: null, zrodlo: null };
+    return this.dodajPowierzchnieKrzywe(a, pts, 'Powierzchnia między krzywymi');
+  }
+
+  // Wstążka startuje, gdy oba spusty są wciśnięte (żadna ręka nie celuje w panel)
+  sprobujWstazke() {
+    const a = this.api;
+    if (this.wstazka) return;
+    const wolne = a.controllers.filter((c) => c.userData.inputSource && c.userData.selecting && !(c.userData.szk && c.userData.szk.hover));
+    if (wolne.length < 2) { this.powiedz('Wstążka: wciśnij spust także drugą ręką'); return; }
+    this.wstazka = { lewa: [], prawa: [] };
+    this.dodajPareWstazki(true);
+  }
+
+  rekaWstazki(strona) { return this.api.controllers.find((c) => c.userData.handed === strona) || null; }
+
+  dodajPareWstazki(zawsze = false) {
+    const W = this.wstazka, L = this.rekaWstazki('left'), P = this.rekaWstazki('right');
+    if (!W || !L || !P) return;
+    const pl = this.swiatDoCad(this.czubek(L)), pp = this.swiatDoCad(this.czubek(P));
+    const o = W.lewa.length - 1, k = this.krokKrzywejMM();
+    if (!zawsze && o >= 0 && Math.hypot(...pl.map((v, i) => v - W.lewa[o][i])) < k && Math.hypot(...pp.map((v, i) => v - W.prawa[o][i])) < k) return;
+    W.lewa.push(pl); W.prawa.push(pp);
+  }
+
+  rysowaniePowXR() {
+    const a = this.api;
+    const K = this.krzywe;
+    if (K && K.biezaca && K.zrodlo && K.zrodlo !== 'pc') {
+      const c = K.zrodlo;
+      if (c.userData.selecting) {
+        const p = this.swiatDoCad(this.czubek(c)), o = K.biezaca[K.biezaca.length - 1];
+        if (Math.hypot(...p.map((v, i) => v - o[i])) >= this.krokKrzywejMM()) K.biezaca.push(p);
+      } else this.zakonczKrzywa();
+    }
+    if (this.wstazka) {
+      const L = this.rekaWstazki('left'), P = this.rekaWstazki('right');
+      if (L && P && L.userData.selecting && P.userData.selecting) this.dodajPareWstazki();
+      else {
+        const W = this.wstazka;
+        this.wstazka = null;
+        const dl = W.lewa.reduce((sum, p, i) => (i ? sum + Math.hypot(...p.map((v, k) => v - W.lewa[i - 1][k])) : 0), 0);
+        if (W.lewa.length < 3 || dl < 3 * this.krokKrzywejMM()) this.powiedz('Wstążka za krótka — przeciągnij ręce dalej');
+        else this.dodajPowierzchnieKrzywe(W.lewa, W.prawa, 'Wstążka');
+      }
+    }
+    // czubki rąk przy narzędziach powierzchni
+    if (this.narzedzie === 'krzywe' || this.narzedzie === 'wstazka') {
+      a.controllers.forEach((c, i) => {
+        const glowna = a.isMain(c);
+        const widac = c.userData.inputSource && !(c.userData.szk && c.userData.szk.hover) && (this.narzedzie === 'wstazka' || glowna);
+        this.ustawZnacznik(this.znaczniki[i * 2 + 1], widac ? this.czubek(c) : null, SZK.KOLOR_PODGLADU);
+      });
+    }
+  }
+
+  // podgląd: krzywe (walce o stałej grubości) i rozciągana wstążka
+  odswiezKrzywe() {
+    if (!this.krzyweWidok) {
+      const grupa = new THREE.Group();
+      grupa.name = 'Krzywe';
+      const walec = new THREE.CylinderGeometry(1, 1, 1, 6, 1, true);
+      const M = { gotowa: new THREE.MeshBasicMaterial({ color: SZK.KOLOR_KRZYWEJ, depthTest: false, transparent: true }),
+                  biezaca: new THREE.MeshBasicMaterial({ color: SZK.KOLOR_PODGLADU, depthTest: false, transparent: true }) };
+      const wst = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: SZK.KOLOR_PODGLADU, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false }));
+      wst.frustumCulled = false;
+      grupa.add(wst);
+      this.krzyweWidok = { grupa, walec, M, wst, odcinki: [], klucz: '' };
+    }
+    const V = this.krzyweWidok;
+    if (V.grupa.parent !== this.root) this.root.add(V.grupa);
+    const K = this.krzywe, W = this.wstazka;
+    V.grupa.visible = !!((K && (K.a || K.biezaca)) || W);
+    if (!V.grupa.visible) return;
+    const sw = new THREE.Vector3(); this.root.getWorldScale(sw);
+    const r = SZK.SZKIC_GRUBOSC_M / Math.max(sw.x, 1e-9);
+    let ni = 0;
+    const Y = new THREE.Vector3(0, 1, 0);
+    const lamana = (pts, mat) => {
+      for (let i = 0; i < pts.length - 1; i++) {
+        let m = V.odcinki[ni];
+        if (!m) { m = new THREE.Mesh(V.walec, mat); m.renderOrder = 995; V.grupa.add(m); V.odcinki.push(m); }
+        ni++;
+        const A = new THREE.Vector3(...pts[i]), B = new THREE.Vector3(...pts[i + 1]), d = B.clone().sub(A), L = d.length();
+        m.visible = L > 1e-9; m.material = mat;
+        if (!m.visible) continue;
+        m.position.copy(A).add(B).multiplyScalar(0.5);
+        m.quaternion.setFromUnitVectors(Y, d.divideScalar(L));
+        m.scale.set(r, L, r);
+      }
+    };
+    if (K && K.a) lamana(K.a, V.M.gotowa);
+    if (K && K.biezaca) lamana(K.biezaca, V.M.biezaca);
+    if (W) { lamana(W.lewa, V.M.biezaca); lamana(W.prawa, V.M.biezaca); }
+    for (let i = ni; i < V.odcinki.length; i++) V.odcinki[i].visible = false;
+    // wstążka: pasek trójkątów między parami punktów
+    const n = W ? W.lewa.length : 0;
+    V.wst.visible = n >= 2;
+    if (n >= 2 && V.klucz !== 'w' + n) {
+      V.klucz = 'w' + n;
+      const poz = new Float32Array(n * 2 * 3), ind = [];
+      for (let i = 0; i < n; i++) { poz.set(W.lewa[i], i * 6); poz.set(W.prawa[i], i * 6 + 3); }
+      for (let i = 0; i < n - 1; i++) { const a = 2 * i; ind.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+      V.wst.geometry.dispose();
+      V.wst.geometry = new THREE.BufferGeometry();
+      V.wst.geometry.setAttribute('position', new THREE.BufferAttribute(poz, 3));
+      V.wst.geometry.setIndex(ind);
+    }
+    if (!W) V.klucz = '';
+  }
+
+  wybranaPowierzchnia() {
+    const b = this.wybrana();
+    return b && b.def.typ === 'powierzchnia' ? b : null;
+  }
+
+  zacznijCiecie() {
+    const p = this.wybranaPowierzchnia();
+    if (!p) { this.powiedz('Najpierw wybierz powierzchnię'); return; }
+    if (this.oczekujeB && this.oczekujeB.op === 'tnij') { this.oczekujeB = null; this.powiedz('Anulowano cięcie'); return; }
+    if (this.narzedzie !== 'wybierz') this.ustawNarzedzie('wybierz');
+    this.oczekujeB = { op: 'tnij', a: p.id };
+    this.powiedz(`Cięcie powierzchnią „${p.nazwa}”: wskaż bryłę`);
+  }
+
+  wykonajPodzial(idBryly, idPow) {
+    const A = this.bryla(idBryly);
+    return this.zadanie('Tnę bryłę…', async () => {
+      const [g, d] = await this.projekt.podziel(idBryly, idPow);
+      this.wiele = false; this.zazn = [g.id]; this.prowadzaca = g.id; this.przypnijUchwyty();
+      this.powiedz(`Pocięto „${A.nazwa}”: ${g.nazwa} (${fmt(g.objetosc / 1000, 1)} cm³) i ${d.nazwa} (${fmt(d.objetosc / 1000, 1)} cm³)`);
+      return [g, d];
+    }, 'cięcie');
+  }
+
+  pogrubWybrana(grubosc) {
+    const p = this.wybranaPowierzchnia();
+    if (!p) { this.powiedz('Najpierw wybierz powierzchnię'); return null; }
+    return this.zadanie('Pogrubiam…', async () => {
+      const b = await this.projekt.pogrub(p.id, grubosc);
+      this.wiele = false; this.zazn = [b.id]; this.prowadzaca = b.id; this.przypnijUchwyty();
+      this.powiedz(`Pogrubiono o ${fmt(grubosc)} mm: ${b.nazwa} (${fmt(b.objetosc / 1000, 1)} cm³)`);
+      return b;
+    }, 'pogrubienie');
+  }
+
+  wpiszGrubosc() {
+    const p = this.wybranaPowierzchnia();
+    if (!p) { this.powiedz('Najpierw wybierz powierzchnię'); return; }
+    this.otworzNumpad({
+      tytul: `${p.nazwa}: pogrubienie`,
+      pola: [{ klucz: 'g', etykieta: 'Grubość (minus = w drugą stronę)', wartosc: this.gruboscPow, jednostka: 'mm' }],
+      gotowe: (w) => { if (w.g) { this.gruboscPow = Math.abs(w.g); this.pogrubWybrana(w.g); } else this.powiedz('Grubość musi być różna od zera'); },
+    });
+  }
+
+  // ==========================================================================
   // PANEL: układ zakładek i reakcje na przyciski
   // ==========================================================================
   stopka() {
@@ -1704,9 +1974,18 @@ export class Szkicownik {
       if (S.faza === 'os') return `Wskaż odcinek-oś (żółty), ${spust} = obrót ${this.katObrotu}°, B = wróć`;
       if (s.zamkniety) return 'Obrys zamknięty — „Wyciągnij” albo „Obrót”';
       if (!s.start) return vr ? 'Spust: pierwszy punkt (płaszczyzna przechodzi przez czubek)' : 'Klik: pierwszy punkt na płaszczyźnie';
+      if (this.narzSzkicu === 'zaokraglij') return `Zaokrąglenie R${fmt(this.promienZaokr)}: ${spust} przy narożniku (żółty) · B = cofnij`;
+      if (this.narzSzkicu === 'lukStyczny') return `Łuk styczny: ${spust} = koniec łuku (przedłuża poprzedni odcinek)`;
       if (this.narzSzkicu === 'luk') return s.lukSrodek ? `Łuk: ${spust} = punkt końcowy` : `Łuk: ${spust} = punkt na łuku`;
       return `Linia: ${spust} = następny punkt · na pierwszym punkcie = zamknij · B = usuń ostatni`;
     }
+    if (this.narzedzie === 'krzywe') {
+      const K = this.krzywe || {};
+      const nr = K.a ? 2 : 1;
+      return vr ? `Krzywa ${nr}: trzymaj spust i prowadź rękę, puść = koniec` + (nr === 2 ? ' → powierzchnia' : '')
+                : `Krzywa ${nr}: klikaj punkty, Enter = koniec krzywej` + (nr === 2 ? ' → powierzchnia' : '');
+    }
+    if (this.narzedzie === 'wstazka') return vr ? (this.wstazka ? 'Rozciągasz wstążkę — puść spust = gotowe' : 'Trzymaj OBA spusty i prowadź ręce') : 'Wstążka działa w goglach';
     if (this.narzedzie !== 'wybierz') return vr ? 'Spust w punkcie A → przeciągnij → puść' : 'Przeciągnij myszą po płaszczyźnie · Esc = wybierz';
     return vr ? 'Spust: wybierz · Grip: chwyć (prawy spust = kopia, A = usuń) · B: cofnij' : 'Klik: wybierz · Ctrl+Z: cofnij';
   }
@@ -1714,10 +1993,12 @@ export class Szkicownik {
   uklad() {
     const U = new Uklad();
     if (this.numpad) return this.ukladNumpada(U);
-    U.rzad(20, 80, [['bryly', 'Bryły', 'prostopadloscian'], ['szkic', 'Szkic', 'szkic'], ['edycja', 'Edycja', 'numer'], ['plik', 'Plik', 'plik']]
-      .map(([id, text, icon]) => ({ id: 'tab:' + id, text, icon, active: this.strona === id, tab: true })));
+    U.rzad(20, 80, [['bryly', 'Bryły', 'prostopadloscian', 1], ['szkic', 'Szkic', 'szkic', 0.95], ['pow', 'Powierzchnie', 'powierzchnia', 1.65],
+                    ['edycja', 'Edycja', 'numer', 1], ['plik', 'Plik', 'plik', 0.8]]
+      .map(([id, text, icon, flex]) => ({ id: 'tab:' + id, text, icon, flex, active: this.strona === id, tab: true })));
     if (this.strona === 'bryly') this.ukladBryly(U);
     else if (this.strona === 'szkic') this.ukladSzkic(U);
+    else if (this.strona === 'pow') this.ukladPowierzchnie(U);
     else if (this.strona === 'edycja') this.ukladEdycja(U);
     else this.ukladPlik(U);
     return U;
@@ -1768,27 +2049,61 @@ export class Szkicownik {
     U.ramka(112, 196, 'Płaszczyzna szkicu');
     U.rzadW(150, 140, ['XY', 'XZ', 'YZ'].map((p) => ({ id: 'pl:' + p, icon: 'pl' + p, text: p + (p === poz ? ' · poziom' : ' · pion'),
                                                     active: pl === p, disabled: ma && pl !== p })));
-    U.ramka(322, 196, 'Rysowanie obrysu' + (s ? ` · odcinki: ${s.segmenty.length}` + (zamk ? ' · zamknięty ✓' : '') : ''));
-    U.rzadW(360, 140, [{ id: 'sz:linia', text: 'Linia', icon: 'linia', active: this.narzSzkicu === 'linia' },
-                       { id: 'sz:luk', text: 'Łuk', icon: 'luk', active: this.narzSzkicu === 'luk' },
-                       { id: 'sz:wstecz', text: 'Usuń ostatni', icon: 'wstecz', disabled: !ma, flex: 1.25 },
-                       { id: 'sz:zamknij', text: 'Zamknij', icon: 'ok', disabled: zamk || !(s && s.segmenty.length >= 2) },
-                       { id: 'sz:anuluj', text: 'Anuluj', icon: 'anuluj', disabled: !ma }]);
-    U.ramka(532, 196, 'Bryła z zamkniętego obrysu');
-    U.rzadW(570, 140, [{ id: 'sz:wyciagnij', text: 'Wyciągnij', icon: 'wyciagnij', disabled: !zamk, active: S && S.faza === 'wyciagnij' },
-                       { id: 'sz:wysokosc', text: 'Wpisz wysokość', icon: 'numer', disabled: !zamk, flex: 1.2 },
+    U.ramka(322, 300, 'Rysowanie obrysu' + (s ? ` · odcinki: ${s.segmenty.length}` + (zamk ? ' · zamknięty ✓' : '') : ''));
+    const N = (id, text, icon, flex = 1) => ({ id: 'sz:' + id, text, icon, active: this.narzSzkicu === id, flex });
+    U.rzadW(360, 128, [N('linia', 'Linia', 'linia'), N('lukStyczny', 'Łuk styczny', 'lukStyczny', 1.2), N('luk', 'Łuk 3 pkt', 'luk'),
+                       N('zaokraglij', 'Zaokrąglij', 'zaokraglij', 1.1)]);
+    U.rzadW(500, 96, [{ id: 'sz:promien', sub: 'Promień', text: `R ${fmt(this.promienZaokr)} mm`, active: this.narzSzkicu === 'zaokraglij' },
+                      { id: 'sz:wstecz', text: 'Usuń ostatni', icon: 'wstecz', disabled: !ma, flex: 1.25 },
+                      { id: 'sz:zamknij', text: 'Zamknij', icon: 'ok', disabled: zamk || !(s && s.segmenty.length >= 2) },
+                      { id: 'sz:anuluj', text: 'Anuluj', icon: 'anuluj', disabled: !ma }]);
+    U.ramka(636, 196, 'Z zamkniętego obrysu');
+    U.rzadW(674, 140, [{ id: 'sz:wyciagnij', text: 'Wyciągnij', icon: 'wyciagnij', disabled: !zamk, active: S && S.faza === 'wyciagnij' },
+                       { id: 'sz:wysokosc', text: 'Wpisz wys.', icon: 'numer', disabled: !zamk },
                        { id: 'sz:obrot', text: `Obrót ${this.katObrotu}°`, icon: 'obrot', disabled: !zamk, active: S && S.faza === 'os' },
-                       { id: 'sz:kat', text: 'Zmień kąt', icon: 'reset' }]);
-    U.ramka(742, 160, 'Snap (przyciąganie do siatki i punktów)');
-    this.rzadSnapu(U, 780);
+                       { id: 'sz:kat', text: 'Zmień kąt', icon: 'reset', flex: 0.9 },
+                       { id: 'sz:powierzchnia', text: 'Powierzchnia', icon: 'powierzchnia', disabled: !zamk, flex: 1.1 }]);
+    U.ramka(846, 150, 'Snap (przyciąganie do siatki i punktów)');
+    this.rzadSnapu(U, 884);
     const vr = this.api.renderer.xr.isPresenting;
     const pomoc = vr
-      ? ['Spust: kolejny punkt (czubek kontrolera, rzut na płaszczyznę)', 'Pierwszy punkt ustala, na jakiej wysokości leży płaszczyzna',
-         'Ostatni punkt na pierwszym = obrys zamknięty', 'Czerwony odcinek = przecina obrys (niedozwolone)', 'B: usuń ostatni odcinek · Grip: chwyć model']
-      : ['Klik: kolejny punkt · przeciąganie: obrót widoku', 'Płaszczyzna przez wskazaną bryłę albo środek widoku',
-         'Ostatni punkt na pierwszym albo Enter = zamknij', 'Czerwony odcinek = przecina obrys (niedozwolone)', 'Backspace / Ctrl+Z: usuń ostatni · L / A: linia / łuk · Esc'];
-    U.ramka(916, 244, 'Jak rysować');
-    pomoc.forEach((t, i) => U.dodaj({ kind: 'info', x: PANEL.PAD + 14, y: 952 + i * 40, w: PANEL.W - 2 * PANEL.PAD - 28, h: 40, text: t, color: PANEL.KOLORY.szary }));
+      ? ['Spust: punkt (czubek kontrolera) · pierwszy punkt ustala płaszczyznę', 'Łuk styczny płynnie przedłuża poprzedni odcinek',
+         'Czerwony odcinek = przecina obrys · B: usuń ostatni']
+      : ['Klik: punkt · L / A / 3 / R: linia / łuk styczny / łuk 3 pkt / zaokrąglij', 'Enter = zamknij · Backspace / Ctrl+Z: usuń ostatni · Esc',
+         'Czerwony odcinek = przecina obrys (niedozwolone)'];
+    U.ramka(1010, 150, 'Jak rysować');
+    pomoc.forEach((t, i) => U.dodaj({ kind: 'info', x: PANEL.PAD + 14, y: 1044 + i * 38, w: PANEL.W - 2 * PANEL.PAD - 28, h: 38, text: t, color: PANEL.KOLORY.szary }));
+  }
+
+  ukladPowierzchnie(U) {
+    const vr = this.api.renderer.xr.isPresenting;
+    const b = this.wybrana(), pow = b && b.def.typ === 'powierzchnia' ? b : null;
+    const zamk = !!(this.szkic && this.szkic.s.zamkniety);
+    U.ramka(112, 196, 'Nowa powierzchnia');
+    U.rzadW(150, 140, [{ id: 'pw:plaska', text: 'Płaska ze szkicu', icon: 'powierzchnia', disabled: !zamk, flex: 1.15 },
+                       { id: 'narz:wstazka', text: 'Wstążka (2 ręce)', icon: 'wstazka', active: this.narzedzie === 'wstazka', flex: 1.15 },
+                       { id: 'narz:krzywe', text: 'Między 2 krzywymi', icon: 'krzywe', active: this.narzedzie === 'krzywe', flex: 1.25 },
+                       { id: 'narz:wybierz', text: 'Wybierz', icon: 'wybierz', active: this.narzedzie === 'wybierz', flex: 0.8 }]);
+    const K = this.krzywe;
+    U.ramka(322, 196, this.narzedzie === 'krzywe' ? (K && K.a ? 'Krzywa 1 gotowa — narysuj krzywą 2' : 'Narysuj krzywą 1') : 'Krzywe i wstążka');
+    U.rzadW(360, 140, [{ id: 'pw:koniec', text: vr ? 'Koniec krzywej (puść spust)' : 'Koniec krzywej (Enter)', icon: 'ok', flex: 1.6,
+                         disabled: vr || this.narzedzie !== 'krzywe' || !(K && K.biezaca && K.biezaca.length >= 2) },
+                       { id: 'pw:anuluj', text: 'Anuluj krzywe', icon: 'anuluj', disabled: !(K && (K.a || K.biezaca)) && !this.wstazka }]);
+    U.ramka(532, 316, pow ? `Wybrana: ${pow.nazwa}` : 'Wybierz powierzchnię (spust na niej albo lista w Bryłach)');
+    U.rzadW(570, 140, [{ id: 'pw:tnij', text: 'Tnij bryłę', icon: 'tnij', disabled: !pow, active: !!(this.oczekujeB && this.oczekujeB.op === 'tnij') },
+                       { id: 'pw:pogrub', text: `Pogrub ${fmt(this.gruboscPow)} mm`, icon: 'pogrub', disabled: !pow, flex: 1.3 },
+                       { id: 'pw:wpisz', text: 'Wpisz grubość', icon: 'numer', disabled: !pow, flex: 1.1 }]);
+    U.rzadW(724, 96, [{ id: 'pw:grubosc', sub: 'Grubość', text: `${fmt(this.gruboscPow)} mm` },
+                      { id: 'usun', text: 'Usuń', icon: 'usun', disabled: !this.zazn.length }, this.przyciskCofnij()]);
+    const pomoc = [
+      'Płaska: zamknięty obrys z zakładki Szkic → „Płaska ze szkicu”',
+      vr ? 'Wstążka: trzymaj oba spusty, prowadź ręce, puść' : 'Wstążka: tylko w goglach (dwie ręce)',
+      vr ? 'Między krzywymi: 2× trzymaj spust i prowadź rękę' : 'Między krzywymi: 2× klikaj punkty + Enter',
+      'Tnij: wybierz powierzchnię → „Tnij bryłę” → wskaż bryłę',
+      'Powierzchnia musi przechodzić przez całą bryłę; po cięciu się chowa',
+    ];
+    U.ramka(862, 298, 'Jak to działa');
+    pomoc.forEach((t, i) => U.dodaj({ kind: 'info', x: PANEL.PAD + 14, y: 898 + i * 50, w: PANEL.W - 2 * PANEL.PAD - 28, h: 46, text: t, color: PANEL.KOLORY.szary }));
   }
 
   rzadSnapu(U, y) {
@@ -1808,7 +2123,7 @@ export class Szkicownik {
     const typ = b.def.typ;
     const nazwyTypow = { ...PROJEKT.NAZWY, boolean: 'Wynik operacji', oryginal: 'Część oryginału' };
     U.info(112, b.nazwa, 48, 'left', PANEL.KOLORY.akcent);
-    U.info(160, `${nazwyTypow[typ] || typ} · ${fmt(b.objetosc / 1000 * b.skala ** 3, 1)} cm³` + (this.zazn.length > 1 ? ` · zaznaczone: ${this.zazn.length}` : ''), 44, 'left', PANEL.KOLORY.szary);
+    U.info(160, `${nazwyTypow[typ] || typ} · ` + (typ === 'powierzchnia' ? `${fmt((b.pole || 0) / 100 * b.skala ** 2, 1)} cm²` : `${fmt(b.objetosc / 1000 * b.skala ** 3, 1)} cm³`) + (this.zazn.length > 1 ? ` · zaznaczone: ${this.zazn.length}` : ''), 44, 'left', PANEL.KOLORY.szary);
     const pola = polaTypu(typ, this.api.upAxis);
     U.ramka(212, 152, typ === 'obrot' ? 'Kąt obrotu [°]' : 'Wymiary [mm]');
     if (pola) U.rzadW(250, 96, pola.map(([k, et]) => ({ id: 'wym', sub: et, text: fmt(poleZDef(b.def, k)) })));
@@ -1877,7 +2192,7 @@ export class Szkicownik {
     if (k === 'tab') {
       this.strona = v;
       if (v === 'szkic') { this.zacznijSzkic(); if (this.narzedzie !== 'szkic') this.ustawNarzedzie('szkic'); }
-      else if (this.narzedzie === 'szkic') this.ustawNarzedzie('wybierz');
+      else if (this.narzedzie === 'szkic' || ((this.narzedzie === 'krzywe' || this.narzedzie === 'wstazka') && v !== 'pow')) this.ustawNarzedzie('wybierz');
       return;
     }
     if (k === 'wroc') { this.api.wyjdz(); return; }
@@ -1914,9 +2229,25 @@ export class Szkicownik {
       case 'eksport': this.eksport(v); break;
       // szkic
       case 'pl': this.ustawPlaszczyzne(v); break;
+      case 'pw':
+        if (v === 'plaska') this.powierzchniaZeSzkicu();
+        else if (v === 'tnij') this.zacznijCiecie();
+        else if (v === 'pogrub') this.pogrubWybrana(this.gruboscPow);
+        else if (v === 'wpisz') this.wpiszGrubosc();
+        else if (v === 'grubosc') { const L = SZK.GRUBOSCI_MM; this.gruboscPow = L[(L.indexOf(this.gruboscPow) + 1) % L.length]; this.powiedz(`Grubość: ${this.gruboscPow} mm`); }
+        else if (v === 'koniec') this.zakonczKrzywa();
+        else if (v === 'anuluj') { this.krzywe = this.narzedzie === 'krzywe' ? { a: null, biezaca: null, zrodlo: null } : null; this.wstazka = null; this.powiedz('Krzywe anulowane'); }
+        break;
       case 'sz':
         if (this.narzedzie !== 'szkic') { this.zacznijSzkic(); this.ustawNarzedzie('szkic'); }
-        if (v === 'linia' || v === 'luk') { this.narzSzkicu = v; if (this.szkic) this.szkic.s.lukSrodek = null; this.powiedz(v === 'luk' ? 'Łuk przez 3 punkty: początek, punkt na łuku, koniec' : 'Linia'); }
+        if (['linia', 'luk', 'lukStyczny', 'zaokraglij'].includes(v)) {
+          this.narzSzkicu = v; if (this.szkic) this.szkic.s.lukSrodek = null;
+          this.powiedz({ linia: 'Linia', luk: 'Łuk przez 3 punkty: początek, punkt na łuku, koniec',
+                         lukStyczny: 'Łuk styczny: płynnie przedłuża poprzedni odcinek, wskaż koniec łuku',
+                         zaokraglij: `Zaokrąglenie: wskaż narożnik, promień ${fmt(this.promienZaokr)} mm` }[v]);
+        }
+        else if (v === 'promien') { const L = SZK.PROMIENIE_MM; this.promienZaokr = L[(L.indexOf(this.promienZaokr) + 1) % L.length]; this.narzSzkicu = 'zaokraglij'; this.powiedz(`Promień zaokrąglenia: ${this.promienZaokr} mm`); }
+        else if (v === 'powierzchnia') this.powierzchniaZeSzkicu();
         else if (v === 'wstecz') this.szkicCofnij();
         else if (v === 'zamknij') this.zamknijSzkic();
         else if (v === 'anuluj') this.anulujSzkic();

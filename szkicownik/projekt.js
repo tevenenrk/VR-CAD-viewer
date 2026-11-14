@@ -13,7 +13,8 @@
 export const PROJEKT = {
   WERSJA_PLIKU: 1,
   KOLORY: ['#8fa3b8', '#e0a458', '#7cb518', '#5fa8d3', '#c77dff', '#f28482', '#84a59d', '#ffd166'],
-  NAZWY: { prostopadloscian: 'Prostopadłościan', walec: 'Walec', kula: 'Kula', wyciagniecie: 'Wyciągnięcie', obrot: 'Obrót', boolean: 'Bryła' },
+  NAZWY: { prostopadloscian: 'Prostopadłościan', walec: 'Walec', kula: 'Kula', wyciagniecie: 'Wyciągnięcie', obrot: 'Obrót', boolean: 'Bryła',
+           powierzchnia: 'Powierzchnia', pogrubienie: 'Pogrubienie', podzial: 'Część' },
   NAZWA_NOWYCH: 'Szkicownik',     // podzłożenie z nowymi bryłami w eksporcie STEP
   NAZWA_PROJEKTU: 'Szkicownik',   // nazwa złożenia, gdy nie ma oryginału
   NAZWA_GRUPY: 'Grupa',           // „Grupa 1”, „Grupa 2”…
@@ -55,9 +56,61 @@ export class Projekt {
       widoczna: true, zrodlo: 'nowa', sciezka: opcje.sciezka || [PROJEKT.NAZWA_NOWYCH], grupa: null,
       def: kopia(def), lok: w.lok,
       poz: opcje.poz ? [...opcje.poz] : w.srodek, obr: opcje.obr ? [...opcje.obr] : [0, 0, 0], skala: opcje.skala ?? 1,
-      objetosc: w.objetosc, ramka: w.ramka,
+      objetosc: w.objetosc, pole: w.pole || 0, ramka: w.ramka,
     };
     this.bryly.push(b);
+    this.przyZmianie('dodano', { bryla: b, siatka: w.siatka });
+    return b;
+  }
+
+  // ---- powierzchnie ----
+  // Podział bryły powierzchnią: bryła zastąpiona dwiema częściami (nad / pod powierzchnią), powierzchnia zostaje schowana
+  async podziel(idBryly, idPow) {
+    const A = this.bryla(idBryly), P = this.bryla(idPow);
+    if (!A || !P) throw new Error('Wybierz bryłę i powierzchnię');
+    if (A.def.typ === 'powierzchnia') throw new Error('Wskaż bryłę do pocięcia (to jest powierzchnia)');
+    if (P.def.typ !== 'powierzchnia') throw new Error('Do cięcia wybierz powierzchnię');
+    const idG = this.nowyId(), idD = this.nowyId();
+    const [wg, wd] = await this.silnik.wykonaj('podziel', { idGora: idG, idDol: idD, a: { id: A.id, ...transformacja(A) }, b: { id: P.id, ...transformacja(P) } });
+    const operand = (x) => ({ nazwa: x.nazwa, def: kopia(x.def), lok: [...x.lok], ...transformacja(x) });
+    const czesc = (id, w, strona, nr) => ({
+      id, nazwa: `${A.nazwa} (${nr})`, kolor: nr === 1 ? A.kolor : PROJEKT.KOLORY[(PROJEKT.KOLORY.indexOf(A.kolor) + 3) % PROJEKT.KOLORY.length],
+      widoczna: true, zrodlo: A.zrodlo, sciezka: [...A.sciezka], grupa: A.grupa || null,
+      def: { typ: 'podzial', strona, a: operand(A), b: operand(P) },
+      lok: w.lok, poz: w.srodek, obr: [0, 0, 0], skala: 1, objetosc: w.objetosc, pole: 0, ramka: w.ramka, brep: w.brep,
+    });
+    const g = czesc(idG, wg, 'gora', 1), d = czesc(idD, wd, 'dol', 2);
+    const i = this.bryly.indexOf(A);
+    this.bryly = this.bryly.filter((b) => b !== A);
+    this.bryly.splice(Math.min(i, this.bryly.length), 0, g, d);
+    await this.silnik.wykonaj('usun', { ids: [A.id] });
+    P.widoczna = false;
+    this.sprzatnijGrupy();
+    this.przyZmianie('usunieto', { ids: [A.id] });
+    this.przyZmianie('dodano', { bryla: g, siatka: wg.siatka });
+    this.przyZmianie('dodano', { bryla: d, siatka: wd.siatka });
+    this.przyZmianie('zmieniono', { bryla: P });
+    return [g, d];
+  }
+
+  // Pogrubienie powierzchni: powstaje bryła, powierzchnia znika
+  async pogrub(idPow, grubosc) {
+    const P = this.bryla(idPow);
+    if (!P || P.def.typ !== 'powierzchnia') throw new Error('Wybierz powierzchnię do pogrubienia');
+    const id = this.nowyId();
+    const w = await this.silnik.wykonaj('pogrub', { idWyniku: id, a: { id: P.id, ...transformacja(P) }, grubosc });
+    const b = {
+      id, nazwa: P.nazwa.replace(PROJEKT.NAZWY.powierzchnia, PROJEKT.NAZWY.pogrubienie), kolor: P.kolor, widoczna: true,
+      zrodlo: P.zrodlo, sciezka: [...P.sciezka], grupa: P.grupa || null,
+      def: { typ: 'pogrubienie', grubosc, z: { nazwa: P.nazwa, def: kopia(P.def), lok: [...P.lok], ...transformacja(P) } },
+      lok: w.lok, poz: w.srodek, obr: [0, 0, 0], skala: 1, objetosc: w.objetosc, pole: 0, ramka: w.ramka, brep: w.brep,
+    };
+    const i = this.bryly.indexOf(P);
+    this.bryly = this.bryly.filter((x) => x !== P);
+    this.bryly.splice(Math.min(i, this.bryly.length), 0, b);
+    await this.silnik.wykonaj('usun', { ids: [P.id] });
+    this.sprzatnijGrupy();
+    this.przyZmianie('usunieto', { ids: [P.id] });
     this.przyZmianie('dodano', { bryla: b, siatka: w.siatka });
     return b;
   }
