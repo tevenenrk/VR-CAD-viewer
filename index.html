@@ -105,6 +105,7 @@
     <div class="row">
       <button id="partHide">Ukryj</button>
       <button id="partGhost">Półprzezroczysta</button>
+      <button id="partNoSection" title="Płaszczyzna przekroju nie tnie tej części">Bez przekroju</button>
       <button id="partGroup" title="Zaznacz kilka części z Ctrl i kliknij">Grupuj zaznaczone</button>
       <button id="partUngroup">Rozgrupuj</button>
     </div>
@@ -130,6 +131,20 @@
     </div>
     <input type="range" id="secPos" min="-100" max="100" value="0" step="0.5" title="Położenie płaszczyzny">
     <div id="secInfo" class="small">Osie X/Y/Z w układzie pliku CAD. W goglach: narzędzie „Przekrój”.</div>
+    <div class="row" style="margin-top:6px"><button id="secAll" title="Przywraca cięcie części oznaczonych „Bez przekroju”">Tnij wszystkie części</button></div>
+  </details>
+  <details id="viewBox"><summary>Widok: tło 360°, rozstrzelenie</summary>
+    <div class="row" style="margin-top:6px">
+      <select id="bgSelect" title="Tło dookoła (w goglach VR i na ekranie)"></select>
+      <button id="bgRotate" title="Obraca tło o 45°">Obróć tło</button>
+    </div>
+    <div class="row">
+      <label class="btn" for="bgFile" title="Panorama 360° (zdjęcie 2:1, JPG / PNG)">Własne zdjęcie 360°</label>
+      <input type="file" id="bgFile" hidden accept="image/*">
+    </div>
+    <div class="small" id="bgInfo"></div>
+    <p class="small" style="margin-bottom:2px">Rozstrzelenie modelu (części odsuwają się od środka):</p>
+    <input type="range" id="explode" min="0" max="200" value="0" step="5">
   </details>
   <details id="cloudBox"><summary>Chmura (Google Drive): <span id="cloudState">niepołączony</span></summary>
     <div class="row" style="margin-top:6px">
@@ -195,6 +210,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import { rysujIkone } from './ikony.js';
+import { TLA, TLA_NET, generujTlo, urlPliku, urlNet } from './tla.js';
 
 // ============================================================================
 // KONFIGURACJA
@@ -250,6 +266,11 @@ const CONFIG = {
   // Chwytanie części
   PART_GRAB_RADIUS: 0.02,      // tryb „Część”: zasięg dotyku końcówki kontrolera (m)
   GHOST_OPACITY: 0.3,          // część „półprzezroczysta” (0 = niewidoczna, 1 = pełna)
+  OKNO_SZEROKOSC: 0.22,        // okienko przy wskazanej części (Wskaż + spust): szerokość (m)
+  OKNO_ODLEGLOSC: 0.55,        // okienko najdalej tyle od oczu (m), zawsze przed wskazaną częścią
+  OKNO_W_GORE: 0.07,           // i tyle wyżej niż linia od oczu do części (m), żeby jej nie zasłaniało
+  ROZSTRZEL_KROK: 0.1,         // rozstrzelenie modelu: części odsuwają się od środka o tyle × swoja odległość od środka (na klik)
+  ROZSTRZEL_MAX: 2,
   STL_M_NA_JEDNOSTKE: 0.001,   // STL nie zapisuje jednostek: 1 jednostka pliku = 1 mm
   SZKIC_GRUPA: 'Szkicownik',   // gałąź drzewa z bryłami zatwierdzonymi w Szkicowniku
   ZAPIS_NAZWA_ZLOZENIA: 'Zlozenie', // nazwa złożenia w zapisanym STEP, gdy wczytano kilka plików
@@ -261,6 +282,9 @@ const CONFIG = {
   MEASURE_COLOR: 0xffd60a,
 
   // Zrzut ekranu
+  BLYSK_S: 0.35,               // błysk po zrobieniu zdjęcia: czas zanikania (s)
+  BLYSK_JASNOSC: 0.85,         // 0 = bez błysku, 1 = całkiem biało
+  MIGAWKA_DZWIEK: true,        // dźwięk migawki przy zrzucie
   SHOT_WIDTH: 1920, SHOT_HEIGHT: 1080,
   SHOT_FOV: 70,                // kąt widzenia zrzutu w goglach (stopnie, pionowo)
   SHOT_SAMPLES: 4,             // wygładzanie krawędzi
@@ -302,6 +326,10 @@ const CONFIG = {
   GRAB_RGB: 0x1aa3ff,          // część w zasięgu chwytu / trzymana
   BG_DESKTOP: 0x1d2026,
   BG_VR: 0x2b2f36,
+  TLO_DOMYSLNE: 'szary',       // tło na start (lista w tla.js; potem zapamiętany wybór)
+  TLO_SZEROKOSC: 4096,         // rozdzielczość tła rysowanego przez program (px, wysokość = połowa)
+  TLO_NET_ROZDZIELCZOSC: '2k', // tła z internetu (Poly Haven): '1k' | '2k' | '4k' (4k ≈ 25 MB na tło)
+  TLO_WLASNE_MAX_PX: 4096,     // własne zdjęcie 360° zmniejszane do tej szerokości (gogle nie przyjmą większej tekstury)
   LABEL_SIZE: 0.035,           // wysokość napisów 3D jako ułamek odległości od oczu
   TOAST_SECONDS: 1.8,
   UNDO_LIMIT: 100,
@@ -322,7 +350,7 @@ for (const id of ['fileInput', 'quality', 'upAxis', 'btnVR', 'btnAR', 'btnShot',
   'secOn', 'secX', 'secY', 'secZ', 'secFlip', 'secPos', 'secInfo', 'sectionBox',
   'cloudBox', 'cloudState', 'cloudConnect', 'cloudDisconnect', 'cloudAuto', 'cloudFolder', 'cloudBrowse', 'cloudUp', 'cloudSetFolder', 'cloudPending',
   'cloudPath', 'cloudFiles', 'recent', 'recentCount', 'setClientId', 'setGeminiKey', 'setGeminiModel', 'setSave', 'setMic', 'setInfo', 'xrKb', 'btnSzk',
-  'fileAdd', 'btnSaveStep', 'btnSaveStepDrive'])
+  'fileAdd', 'btnSaveStep', 'btnSaveStepDrive', 'partNoSection', 'secAll', 'bgSelect', 'bgRotate', 'bgFile', 'bgInfo', 'explode'])
   ui[id] = $(id);
 Object.assign(ui, { file: ui.fileInput, vr: ui.btnVR, ar: ui.btnAR, shot: ui.btnShot });
 
@@ -364,7 +392,7 @@ let pendingXR = null;                         // przełączanie VR ↔ AR z menu
 
 // Ustawienia zapamiętywane w przeglądarce (nie trafiają do repozytorium)
 const SETTINGS_KEY = 'cad-vr-viewer-ustawienia';
-const settings = Object.assign({ clientId: '', geminiKey: '', geminiModel: '', autoUpload: true, project: null },
+const settings = Object.assign({ clientId: '', geminiKey: '', geminiModel: '', autoUpload: true, project: null, tlo: '', tloObrot: 0 },
   (() => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { return {}; } })());
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* tryb prywatny */ } }
 const clientId = () => settings.clientId || CONFIG.GOOGLE_CLIENT_ID;
@@ -419,6 +447,7 @@ function init() {
   camera.add(toast.sprite);
 
   setupPalette();
+  setupOkno();
   setupControllers();
   setupUI();
   checkXR();
@@ -430,6 +459,7 @@ function init() {
   syncSectionUI();
   refreshShots();
   refreshRecent();
+  wczytajZapamietaneTlo();
   setInterval(() => { syncCloudUI(); if (drive.connected && settings.autoUpload) uploadPendingShots(false); }, 30000);
   exposeDebug();
 
@@ -727,6 +757,7 @@ const section = { on: false, local: new THREE.Plane(new THREE.Vector3(1, 0, 0), 
 const SECTION_PLANES = [section.world];
 
 function sectionShader(sh) {
+  if (this && this.userData && this.userData.bezPrzekroju) return;   // część wyłączona z przekroju: zwykły materiał
   sh.uniforms.uSectionOn = SECTION_UNI.uSectionOn;
   sh.uniforms.uCapColor = SECTION_UNI.uCapColor;
   sh.uniforms.uCapMix = SECTION_UNI.uCapMix;
@@ -743,7 +774,7 @@ function newMaterial(rgb) {
     clippingPlanes: SECTION_PLANES,
   });
   mat.onBeforeCompile = sectionShader;
-  mat.customProgramCacheKey = () => 'cad-section';
+  mat.customProgramCacheKey = function () { return this.userData.bezPrzekroju ? 'cad-bez-przekroju' : 'cad-section'; };
   mat.userData.origColor = mat.color.clone();
   return mat;
 }
@@ -776,6 +807,8 @@ function clearModel() {
   label.sprite.visible = false;
   strokes = []; measures = []; notes = []; undoStack = []; visibleCache = null;
   grupyCzesci = []; S.wiele = false;
+  rozstrzel.f = 0; syncRozstrzelUI();
+  zamknijOkno();
   closeNoteEditor(false);
   noteCounter = 0;
   section.on = false; SECTION_UNI.uSectionOn.value = false; section.vis = null;
@@ -889,6 +922,29 @@ function rozgrupujZaznaczone() {
   say('Rozgrupowano (B – cofnij)');
 }
 
+// Część wyłączona z przekroju: płaszczyzna jej nie tnie (np. wał w przekroju obudowy)
+function ustawBezPrzekroju(meshes, on, bezCofania = false) {
+  const items = [];
+  for (const m of meshes) {
+    const p = m.userData.part;
+    if (!p) continue;
+    items.push({ mesh: m, prev: !!p.bezPrzekroju });
+    p.bezPrzekroju = on;
+    for (const mat of mats(m)) { mat.userData.bezPrzekroju = on; mat.clippingPlanes = on ? null : SECTION_PLANES; mat.needsUpdate = true; }
+  }
+  if (items.length && !bezCofania) pushUndo({ type: 'przekroj', items });
+  syncSectionUI();
+  return items.length;
+}
+const ileBezPrzekroju = () => parts.filter((p) => p.bezPrzekroju).length;
+function przelaczBezPrzekroju(meshes) {
+  const ms = meshes.filter((m) => m.userData.part);
+  if (!ms.length) return;
+  const on = !ms.every((m) => m.userData.part.bezPrzekroju);
+  ustawBezPrzekroju(ms, on);
+  say((ms.length > 1 ? `${ms.length} części` : ms[0].name) + (on ? ': nie są przecinane przekrojem' : ': przecinane przekrojem') + ' (B – cofnij)');
+}
+
 const isGhost = (obj) => { const ms = meshesOf(obj); return ms.length > 0 && ms.every((m) => m.userData.ghost); };
 
 function setGhost(mesh, on) {
@@ -922,6 +978,7 @@ function cloneMaterial(src) {                  // nowy materiał tej samej czę�
   m.userData.origColor = src.userData.origColor.clone();
   m.transparent = src.transparent; m.opacity = src.opacity; m.depthWrite = src.depthWrite;
   if (src.userData.ghostSaved) m.userData.ghostSaved = { ...src.userData.ghostSaved };
+  if (src.userData.bezPrzekroju) { m.userData.bezPrzekroju = true; m.clippingPlanes = null; }
   return m;
 }
 
@@ -941,7 +998,7 @@ function copyParts(meshes) {
     m.parent.add(c);
     c.updateMatrix();
     c.userData.origMatrix = c.matrix.clone();
-    const p = { mesh: c, name: c.name, path: [...src.path.slice(0, -1), c.name], kopia: true, zr: src.zr, grupa: null };   // ta sama bryła źródłowa (zapis STEP)
+    const p = { mesh: c, name: c.name, path: [...src.path.slice(0, -1), c.name], kopia: true, zr: src.zr, grupa: null, bezPrzekroju: !!src.bezPrzekroju };   // ta sama bryła źródłowa (zapis STEP)
     c.userData.part = p;
     const i0 = treeRows.findIndex((r) => r.obj === m);
     p.el = addTreeRow(c, c.name, i0 >= 0 ? treeRows[i0].depth : 0, true);
@@ -1045,6 +1102,7 @@ function showPicked(obj) {
   const first = meshesOf(obj)[0];
   if (first) ui.partColor.value = '#' + mats(first)[0].color.getHexString();
   ui.partGhost.classList.toggle('primary', isGhost(obj));
+  ui.partNoSection.classList.toggle('primary', selectedMeshes.length > 0 && selectedMeshes.every((m) => m.userData.part && m.userData.part.bezPrzekroju));
   ui.partGroup.disabled = selectedMeshes.length < 2;
   ui.partUngroup.disabled = !selectedMeshes.some((m) => m.userData.part && m.userData.part.grupa);
   if (p && p.el) { p.el.classList.add('active'); p.el.scrollIntoView({ block: 'nearest' }); }
@@ -1116,7 +1174,8 @@ function resetParts() {
   if (!parts.length) return;
   releaseAll();
   const items = parts.map((p) => ({ obj: p.mesh, prev: localMatrix(p.mesh) }));
-  parts.forEach((p) => p.mesh.userData.origMatrix.decompose(p.mesh.position, p.mesh.quaternion, p.mesh.scale));
+  parts.forEach((p) => { p.mesh.userData.origMatrix.decompose(p.mesh.position, p.mesh.quaternion, p.mesh.scale); p.mesh.userData.rozOff = null; });
+  rozstrzel.f = 0; syncRozstrzelUI();
   pushUndo({ type: 'move', items });
   say('Części wróciły na miejsce');
 }
@@ -1136,7 +1195,8 @@ function pickRay() {                          // raycaster musi być już ustawi
   raycaster.firstHitOnly = !section.on;
   const hits = raycaster.intersectObjects(visibleParts(), false);
   if (!section.on) return hits[0] || null;
-  return hits.find((h) => section.world.distanceToPoint(h.point) >= 0) || null;   // pomiń to, co odcięte przekrojem
+  return hits.find((h) => (h.object.userData.part && h.object.userData.part.bezPrzekroju) ||
+                          section.world.distanceToPoint(h.point) >= 0) || null;   // pomiń to, co odcięte przekrojem
 }
 
 const _hitInfo = { point: new THREE.Vector3(), distance: 0, faceIndex: 0 };
@@ -1160,7 +1220,37 @@ function partsInSphere(center, radius, single) {
     if (d === null) continue;
     if (single) { if (d < bestD) { bestD = d; best = m; } } else out.push(m);
   }
+  partsInSphere.odl = bestD;                    // odległość najbliższej (tryb single)
   return single ? (best ? [best] : []) : out;
+}
+
+// Rysunki (Rysuj) w zasięgu: single = najbliższy (z odległością w metrach świata)
+function rysunkiWSferze(center, radius, single) {
+  const out = [];
+  let best = null, bestD = Infinity;
+  if (!annoRoot) return { lista: out, odl: bestD };
+  for (const s of strokes) {
+    if (!isVisibleDeep(s.root)) continue;
+    s.root.updateMatrixWorld();
+    const sc = s.root.matrixWorld.getMaxScaleOnAxis();
+    const lp = s.root.worldToLocal(_lc.copy(center));
+    const lr = radius / sc;
+    if (s.box.distanceToPoint(lp) > lr + s.maxR) continue;
+    const d = Math.max(0, s.distanceTo(lp) - s.maxR) * sc;
+    if (d > radius) continue;
+    if (single) { if (d < bestD) { bestD = d; best = s.root; } } else out.push(s.root);
+  }
+  return { lista: single ? (best ? [best] : []) : out, odl: bestD };
+}
+
+// Co chwyci grip w trybie Część / Sfera: części (z całymi grupami) i rysunki
+function wZasiegu(center) {
+  if (S.grabMode === 'czesc') {
+    const cz = partsInSphere(center, CONFIG.PART_GRAB_RADIUS, true), dCz = partsInSphere.odl;
+    const rs = rysunkiWSferze(center, CONFIG.PART_GRAB_RADIUS, true);
+    return rs.lista.length && rs.odl < dCz ? rs.lista : rozszerzOGrupy(cz);
+  }
+  return [...rozszerzOGrupy(partsInSphere(center, S.sphere, false)), ...rysunkiWSferze(center, S.sphere, false).lista];
 }
 
 function isInside(mesh, localPoint) {
@@ -1296,6 +1386,8 @@ class Stroke {
     this.mat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0, side: THREE.DoubleSide });
     this.root = new THREE.Mesh(this.geo, this.mat);
     this.root.frustumCulled = false;
+    this.root.name = 'Rysunek';
+    this.root.userData.stroke = this;            // rysunek można chwycić gripem jak część
     this.capA = new THREE.Mesh(SPHERE_GEO, this.mat); this.capA.userData.sharedGeo = true;
     this.capB = new THREE.Mesh(SPHERE_GEO, this.mat); this.capB.userData.sharedGeo = true;
     this.capA.visible = this.capB.visible = false;
@@ -1719,6 +1811,9 @@ function syncSectionUI() {
   const half = sectionHalfRange();
   ui.secPos.value = String(clamp(sectionOffset() / half * 100, -100, 100));
   ui.secInfo.textContent = sectionText() + ' · osie X/Y/Z w układzie pliku CAD. W goglach: narzędzie „Przekrój”.';
+  const n = ileBezPrzekroju();
+  ui.secAll.disabled = !n;
+  ui.secAll.textContent = n ? `Tnij wszystkie części (wyłączone: ${n})` : 'Tnij wszystkie części';
 }
 
 function removeAnno(obj, list) {
@@ -1780,6 +1875,9 @@ function undo() {
     removeCopies(u.meshes);
     sprzatnijGrupyCzesci();
     say('Cofnięto kopię');
+  } else if (u.type === 'przekroj') {
+    u.items.forEach(({ mesh, prev }) => ustawBezPrzekroju([mesh], prev, true));
+    say('Cofnięto wyłączenie z przekroju');
   } else if (u.type === 'grupa') {
     u.items.forEach(({ p, prev }) => {
       p.grupa = prev;
@@ -1796,8 +1894,9 @@ function undo() {
 // ============================================================================
 const PAL = { W: 1024, H: 1240, PAD: 28, GAP: 14, TREE_ROWS: 10, LIST_ROWS: 9 };
 const pal = { canvas: null, ctx: null, tex: null, mesh: null, buttons: [], hover: null, sig: '', msg: '',
-              page: 'narzedzia', returnPage: 'narzedzia', menuView: 'glowne', treeScroll: 0, listScroll: 0 };
-const PAGES = { narzedzia: 'Narzędzia', drzewo: 'Drzewo', menu: 'Menu' };
+              page: 'narzedzia', returnPage: 'narzedzia', menuView: 'glowne', widokView: 'glowne', treeScroll: 0, listScroll: 0 };
+const PAGES = { narzedzia: 'Narzędzia', drzewo: 'Drzewo', widok: 'Widok', menu: 'Menu' };
+const PAGE_ICONS = { narzedzia: 'narzedzia', drzewo: 'drzewo', widok: 'oko', menu: 'menu' };
 // Przyciski, które muszą zadziałać w chwili naciśnięcia spustu (przeglądarka wymaga „gestu użytkownika”)
 const GESTURE_IDS = new Set(['xr:vr', 'xr:ar', 'xr:exit', 'kb:system', 'kb:voice']);
 
@@ -1853,32 +1952,56 @@ function layoutPalette() {
                 { id: 'noop', kind: 'info', text: page, flex: 1.4 }, ...extra]);
   };
 
-  if (pal.page !== 'klawiatura') row(20, 80, Object.entries(PAGES).map(([id, text]) => ({ id: 'page:' + id, text, icon: id, active: pal.page === id, tab: true })));
+  if (pal.page !== 'klawiatura') row(20, 80, Object.entries(PAGES).map(([id, text]) => ({ id: 'page:' + id, text, icon: PAGE_ICONS[id], active: pal.page === id, tab: true })));
 
   if (pal.page === 'narzedzia') {
     const T = (id) => ({ id: 'tool:' + id, text: TOOLS[id], icon: id, active: S.tool === id });
     card(112, 318, 'Narzędzie — spust');
     row(152, 124, [T('wskaz'), T('rysuj'), T('gumka'), T('miarka')], IN0, IN1);
     row(290, 124, [T('kolor'), T('komentarz'), T('przekroj'), { id: 'undo', text: 'Cofnij (B)', icon: 'cofnij' }], IN0, IN1);
-    card(444, 156, 'Chwytanie — grip');
+    card(444, 246, 'Chwytanie — grip (części, grupy i rysunki)');
     row(484, 100, [{ id: 'grab:czesc', text: GRABS.czesc, icon: 'czesc', active: S.grabMode === 'czesc' },
                    { id: 'grab:grupa', text: 'Sfera ' + fmtLen(S.sphere), icon: 'grupa', active: S.grabMode === 'grupa', flex: 1.2 },
                    { id: 'grab:model', text: GRABS.model, icon: 'model', active: S.grabMode === 'model' },
                    { id: 'sphere:-', text: '', icon: 'minus', disabled: S.grabMode !== 'grupa', flex: 0.45 },
                    { id: 'sphere:+', text: '', icon: 'plus', disabled: S.grabMode !== 'grupa', flex: 0.45 }], IN0, IN1);
-    card(614, 236, S.tool === 'przekroj' ? 'Przekrój — prawa gałka przesuwa płaszczyznę' : 'Kolor i grubość — prawa gałka');
+    const zazn = selectedMeshes.filter((m) => m.userData.part).length;
+    row(598, 76, [{ id: 'grp:grupuj', text: `Grupuj zaznaczone (${zazn})`, icon: 'grupuj', disabled: zazn < 2, flex: 1.5 },
+                  { id: 'grp:rozgrupuj', text: 'Rozgrupuj', icon: 'rozgrupuj', disabled: !selectedMeshes.some((m) => m.userData.part && m.userData.part.grupa) },
+                  { id: 'grp:odznacz', text: 'Odznacz', icon: 'anuluj', disabled: !selectedMeshes.length, flex: 0.9 }], IN0, IN1);
+    card(704, 236, S.tool === 'przekroj' ? 'Przekrój — prawa gałka przesuwa płaszczyznę' : 'Kolor i grubość — prawa gałka');
     if (S.tool === 'przekroj') {
-      row(654, 84, [{ id: 'sec:toggle', text: section.on ? 'Wyłącz' : 'Włącz', flex: 1.3 },
-        ...['X', 'Y', 'Z'].map((ax) => ({ id: 'sec:' + ax, text: ax, active: section.on && section.axis === ax, flex: 0.7 })),
-        { id: 'sec:flip', text: 'Odwróć', flex: 1.2 }], IN0, IN1);
-    } else row(654, 84, CONFIG.COLORS.map((color, i) => ({ id: 'color:' + i, kind: 'swatch', color, active: S.colorIdx === i })), IN0, IN1);
-    row(750, 84, [{ id: 'size:-', text: '', icon: 'minus', flex: 0.6 }, { id: 'sizeinfo', kind: 'info', text: sizeText(), align: 'center', flex: 2 },
+      const nb = ileBezPrzekroju();
+      row(744, 84, [{ id: 'sec:toggle', text: section.on ? 'Wyłącz' : 'Włącz', flex: 1.2 },
+        ...['X', 'Y', 'Z'].map((ax) => ({ id: 'sec:' + ax, text: ax, active: section.on && section.axis === ax, flex: 0.6 })),
+        { id: 'sec:flip', text: 'Odwróć', flex: 1.1 }, { id: 'sec:wszystkie', text: nb ? `Tnij wszystko (${nb})` : 'Tnie wszystko', disabled: !nb, flex: 1.7 }], IN0, IN1);
+    } else row(744, 84, CONFIG.COLORS.map((color, i) => ({ id: 'color:' + i, kind: 'swatch', color, active: S.colorIdx === i })), IN0, IN1);
+    row(840, 84, [{ id: 'size:-', text: '', icon: 'minus', flex: 0.6 }, { id: 'sizeinfo', kind: 'info', text: sizeText(), align: 'center', flex: 2 },
                   { id: 'size:+', text: '', icon: 'plus', flex: 0.6 }], IN0, IN1);
-    card(864, 252, 'Widok i porządki');
-    row(904, 98, [{ id: 'shot', text: 'Zrzut (A)', icon: 'zrzut' }, { id: 'place', text: placementMode === 'stol' ? 'Skala 1:1' : 'Na stół', icon: 'skala' },
-                  { id: 'reset:parts', text: 'Reset części', icon: 'reset' }, { id: 'reset:colors', text: 'Reset kolorów', icon: 'kolor' }], IN0, IN1);
-    row(1014, 86, [{ id: 'clear:strokes', text: 'Usuń rysunki', icon: 'usun' }, { id: 'clear:measures', text: 'Usuń miary', icon: 'usun' },
-                   { id: 'clear:notes', text: 'Usuń komentarze', icon: 'usun' }], IN0, IN1);
+    card(954, 158, 'Widok (tło, rozstrzelenie, porządki: zakładka Widok)');
+    row(994, 100, [{ id: 'shot', text: 'Zrzut (A)', icon: 'zrzut' }, { id: 'place', text: placementMode === 'stol' ? 'Skala 1:1' : 'Na stół', icon: 'skala' },
+                   { id: 'reset:parts', text: 'Reset części', icon: 'reset' }, { id: 'reset:colors', text: 'Reset kolorów', icon: 'kolor' }], IN0, IN1);
+  } else if (pal.page === 'widok' && pal.widokView === 'net') {
+    info(116, 'Tła z internetu (Poly Haven, licencja CC0)', 48, 'left', '#ffb15c');
+    info(164, 'Pobieranie kilku MB — gogle muszą mieć internet.', 44, 'left', '#9aa0a6');
+    TLA_NET.forEach((t, k) => B.push({ kind: 'item', id: 'tlonet:' + t.id, text: (tlo.laduje === 'net:' + t.id ? '… ' : '') + t.nazwa,
+                                        active: tlo.id === 'net:' + t.id, x: P, y: 222 + k * 84, w: W - 2 * P, h: 74 }));
+    row(1036, 88, [{ id: 'widok:glowne', text: 'Wróć', icon: 'wroc' }]);
+  } else if (pal.page === 'widok') {
+    card(112, 636, 'Tło dookoła (w goglach VR i na ekranie)' + (tlo.laduje ? ' — ładuję…' : ''));
+    const kafle = [...TLA.map((t) => ({ id: 'tlo:' + t.id, kind: 'thumb', text: t.nazwa, img: tlo.mini.get(t.id) || null, kolor: t.typ === 'kolor' ? '#2b2f36' : null,
+                                        active: tlo.id === t.id })),
+                   { id: 'widok:net', kind: 'thumb', text: 'Z internetu ▸', icon: 'chmura', active: tlo.id.startsWith('net:') }];
+    for (let r = 0; r < 3; r++) row(150 + r * 162, 150, kafle.slice(r * 3, r * 3 + 3), IN0, IN1);
+    row(636, 96, [{ id: 'tlodrive', text: tlo.id === 'wlasne' ? 'Własne: ' + (tlo.nazwa || 'zdjęcie') : 'Własne zdjęcie (Drive)', icon: 'plik', active: tlo.id === 'wlasne', flex: 1.6 },
+                  { id: 'tloobrot', text: 'Obróć tło 45°', icon: 'obrot', disabled: tlo.id === 'szary' }], IN0, IN1);
+    card(762, 168, 'Rozstrzelenie modelu');
+    row(800, 96, [{ id: 'roz:-', text: '', icon: 'minus', disabled: rozstrzel.f <= 0, flex: 0.6 }, { id: 'rozinfo', kind: 'info', text: rozstrzelTekst(), align: 'center', flex: 2 },
+                  { id: 'roz:+', text: '', icon: 'plus', disabled: rozstrzel.f >= CONFIG.ROZSTRZEL_MAX, flex: 0.6 },
+                  { id: 'roz:0', text: 'Złóż', icon: 'reset', disabled: rozstrzel.f <= 0, flex: 1 }], IN0, IN1);
+    card(944, 168, 'Porządki');
+    row(982, 96, [{ id: 'clear:strokes', text: 'Usuń rysunki', icon: 'usun' }, { id: 'clear:measures', text: 'Usuń miary', icon: 'usun' },
+                  { id: 'clear:notes', text: 'Usuń komentarze', icon: 'usun' }], IN0, IN1);
   } else if (pal.page === 'drzewo') {
     if (!treeRows.length) info(130, 'Brak modelu — otwórz plik w zakładce Menu.');
     else {
@@ -1941,6 +2064,7 @@ function layoutPalette() {
     info(956, 'Dyktowanie: ' + voice.statusText(), 44, 'left', '#9aa0a6');
     row(1032, 100, [{ id: 'tryb:szkicownik', text: 'Szkicownik brył  ▸', icon: 'szkicownik' }]);
   } else if (pal.page === 'menu' && pal.menuView === 'drive') {
+    if (browser.tryb === 'obraz') info(1000, 'Wybierz zdjęcie 360° (JPG / PNG, panorama 2:1) — stanie się tłem', 34, 'left', '#ffb15c');
     if (!drive.connected) {
       info(116, 'Google Drive nie jest połączony.', 48, 'left', '#ffd27a');
       info(170, 'Połącz na ekranie 2D: panel → Chmura → Połącz,', 48);
@@ -1953,7 +2077,7 @@ function layoutPalette() {
       const items = browser.items;
       if (browser.loading) info(272, 'Wczytywanie listy…');
       else if (browser.error) info(272, 'Błąd: ' + browser.error, 48, 'left', '#ff8a8a');
-      else if (!items.length) info(272, 'Pusty folder (pokazuję foldery i pliki STEP/IGES/SolidWorks).');
+      else if (!items.length) info(272, browser.tryb === 'obraz' ? 'Pusty folder (pokazuję foldery i zdjęcia).' : 'Pusty folder (pokazuję foldery i pliki STEP/IGES/SolidWorks).');
       pal.listScroll = clamp(pal.listScroll, 0, Math.max(0, items.length - PAL.LIST_ROWS));
       if (!browser.loading) for (let k = 0; k < PAL.LIST_ROWS; k++) {
         const i = pal.listScroll + k, it = items[i];
@@ -1962,7 +2086,7 @@ function layoutPalette() {
         const text = kind === 'folder' ? '▸ ' + it.name : kind === 'native' ? it.name + '  — SolidWorks: zapisz jako STEP' : `${it.name}   ${fmtMB(it.size)}`;
         B.push({ kind: 'item', id: 'drvi:' + i, text, disabled: kind === 'native', x: P, y: 268 + k * 82, w: W - 2 * P, h: 74 });
       }
-      listNav(1036, 'listScroll', items.length, PAL.LIST_ROWS, [{ id: 'menu:back', text: '◀ Menu', flex: 1.2 }]);
+      listNav(1036, 'listScroll', items.length, PAL.LIST_ROWS, [{ id: 'menu:back', text: browser.tryb === 'obraz' ? '◀ Widok' : '◀ Menu', flex: 1.2 }]);
     }
   } else if (pal.page === 'menu' && pal.menuView === 'ostatnie') {
     info(116, 'Ostatnio otwierane (zapisane w pamięci gogli):', 48);
@@ -2005,26 +2129,23 @@ function footerText() {
   if (pal.page === 'klawiatura') return 'Gotowe – zapisz · Anuluj – bez zmian';
   if (pal.page === 'drzewo') return 'Kwadrat – pokaż/ukryj · kółko – półprzezroczysta · nazwa – wybierz';
   if (pal.page === 'czesc') return 'Spust na innej części – wybierz ją · B – cofnij';
+  if (pal.page === 'widok') return 'Tło widać w VR (w AR widzisz pokój) · B – cofnij';
   if (pal.page === 'menu') return 'X – ukryj panel · Y – reset pozycji modelu';
   return 'X – ukryj panel · A – zrzut · B – cofnij · Y – reset';
 }
 
 function paletteSignature(B) {
-  return pal.page + '|' + pal.hover + '|' + footerText() + '|' +
+  return pal.page + '|' + pal.hover + '|' + footerText() + '|' + tlo.miniWersja + '|' +
     JSON.stringify(B.map((b) => [b.id, b.kind, b.text, b.icon, b.active, b.disabled, b.checked, b.dim, b.kind === 'textbox' ? edit && edit.shift : 0]));
 }
 
-function drawPalette() {
-  const ctx = pal.ctx, W = PAL.W, H = PAL.H, P = PAL.PAD;
+// Przyciski, kafelki i napisy na płótnie (panel narzędzi i okienko przy części)
+function rysujPrzyciski(ctx, buttons, hover) {
   const rr = (x, y, w, h, r) => { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); };
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = 'rgba(24,27,33,0.95)'; rr(4, 4, W - 8, H - 8, 36); ctx.fill();
-  ctx.lineWidth = 4; ctx.strokeStyle = '#3a3f47'; ctx.stroke();
   ctx.textBaseline = 'middle';
-
-  for (const b of pal.buttons) {
+  for (const b of buttons) {
     const text = b.text == null ? '' : String(b.text);
-    const hov = pal.hover === b.id && !b.disabled;
+    const hov = hover === b.id && !b.disabled;
     if (b.kind === 'card') {                     // ramka grupy przycisków z tytułem
       ctx.fillStyle = '#1e2228'; rr(b.x, b.y, b.w, b.h, 26); ctx.fill();
       ctx.lineWidth = 3; ctx.strokeStyle = '#30353d'; ctx.stroke();
@@ -2060,6 +2181,23 @@ function drawPalette() {
         ctx.strokeStyle = '#ff8a1f'; ctx.lineWidth = 8; ctx.beginPath();
         ctx.moveTo(b.x + 18, b.y + b.h * 0.52); ctx.lineTo(b.x + b.w * 0.43, b.y + b.h - 20); ctx.lineTo(b.x + b.w - 16, b.y + 18); ctx.stroke();
       }
+      continue;
+    }
+    if (b.kind === 'thumb') {                    // kafelek z miniaturą (tło)
+      ctx.save(); rr(b.x, b.y, b.w, b.h, 18); ctx.clip();
+      ctx.fillStyle = b.kolor || '#22262d'; ctx.fillRect(b.x, b.y, b.w, b.h);
+      if (b.img) {
+        const iw = b.img.width, ih = b.img.height, sc = Math.max(b.w / iw, b.h / ih);
+        ctx.drawImage(b.img, (iw - b.w / sc) / 2, (ih - b.h / sc) / 2, b.w / sc, b.h / sc, b.x, b.y, b.w, b.h);
+      } else if (b.icon) rysujIkone(ctx, b.icon, b.x + b.w / 2, b.y + b.h * 0.4, b.h * 0.4, '#e8eaed');
+      const g = ctx.createLinearGradient(0, b.y + b.h * 0.5, 0, b.y + b.h);
+      g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.85)');
+      ctx.fillStyle = g; ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.restore();
+      ctx.textAlign = 'center'; ctx.fillStyle = '#ffffff'; fitFont(ctx, text, b.w - 16, 28, 700);
+      ctx.fillText(text, b.x + b.w / 2, b.y + b.h - 24);
+      rr(b.x, b.y, b.w, b.h, 18);
+      ctx.lineWidth = b.active ? 9 : (hov ? 6 : 2); ctx.strokeStyle = b.active ? '#ff8a1f' : (hov ? '#ffffff' : '#3a3f47'); ctx.stroke();
       continue;
     }
     if (b.kind === 'item') {
@@ -2098,6 +2236,14 @@ function drawPalette() {
     fitFont(ctx, text, b.w - 18, b.tab ? 40 : 38, b.tab ? 700 : 600);
     ctx.fillText(text, b.x + b.w / 2, b.y + b.h / 2 + 2);
   }
+}
+
+function drawPalette() {
+  const ctx = pal.ctx, W = PAL.W, H = PAL.H, P = PAL.PAD;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(24,27,33,0.95)'; ctx.beginPath(); ctx.roundRect(4, 4, W - 8, H - 8, 36); ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = '#3a3f47'; ctx.stroke();
+  rysujPrzyciski(ctx, pal.buttons, pal.hover);
   const foot = footerText();
   ctx.textAlign = 'center'; ctx.fillStyle = pal.msg ? '#ffd27a' : '#9aa0a6';
   fitFont(ctx, foot, W - 2 * P, 34, 500);
@@ -2107,7 +2253,7 @@ function drawPalette() {
 
 function paletteButtonAt(uv) {
   const x = uv.x * PAL.W, y = (1 - uv.y) * PAL.H;
-  const b = pal.buttons.find((b) => ['button', 'swatch', 'check', 'item'].includes(b.kind) && !b.disabled && b.id !== 'noop' &&
+  const b = pal.buttons.find((b) => ['button', 'swatch', 'check', 'item', 'thumb'].includes(b.kind) && !b.disabled && b.id !== 'noop' &&
                                     x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
   return b ? b.id : null;
 }
@@ -2115,8 +2261,22 @@ function paletteButtonAt(uv) {
 function paletteAction(id) {
   const i = id.indexOf(':');
   const k = i < 0 ? id : id.slice(0, i), v = i < 0 ? '' : id.slice(i + 1);
-  if (k === 'page') { pal.page = v; if (v === 'menu') pal.menuView = 'glowne'; }
-  else if (k === 'tool') { S.tool = v; say('Narzędzie: ' + TOOLS[v]); if (v === 'przekroj' && !section.on && cadRoot) setSectionOn(true); }
+  if (k === 'page') {
+    pal.page = v;
+    if (v === 'menu') { pal.menuView = 'glowne'; if (browser.tryb === 'obraz') { browser.tryb = 'cad'; browser.items = []; } }
+    if (v === 'widok') { pal.widokView = 'glowne'; przygotujMiniatury(); }
+  }
+  else if (k === 'tool') { S.tool = v; zamknijOkno(); say('Narzędzie: ' + TOOLS[v]); if (v === 'przekroj' && !section.on && cadRoot) setSectionOn(true); }
+  else if (k === 'okno') oknoAction(v);
+  else if (k === 'widok') { pal.widokView = v; pal.listScroll = 0; }
+  else if (k === 'tlo') ustawTlo(v);
+  else if (k === 'tlonet') ustawTlo('net:' + v);
+  else if (k === 'tloobrot') obrocTlo();
+  else if (k === 'tlodrive') {
+    if (!drive.connected) { say('Połącz Google Drive na ekranie 2D (panel → Chmura)'); return; }
+    browser.tryb = 'obraz'; pal.page = 'menu'; pal.menuView = 'drive'; pal.listScroll = 0; browserList();
+  }
+  else if (k === 'roz') { if (v === '0') ustawRozstrzelenie(0); else ustawRozstrzelenie(rozstrzel.f + (v === '+' ? 1 : -1) * CONFIG.ROZSTRZEL_KROK); say(rozstrzelTekst()); }
   else if (k === 'grab') { S.grabMode = v; say('Chwytanie: ' + GRABS[v]); }
   else if (k === 'sphere') S.sphere = clamp(S.sphere * (v === '+' ? 1.25 : 0.8), CONFIG.SPHERE_MIN, CONFIG.SPHERE_MAX);
   else if (k === 'color') S.colorIdx = Number(v);
@@ -2129,6 +2289,7 @@ function paletteAction(id) {
   else if (k === 'reset') v === 'parts' ? resetParts() : (restoreColors(parts.map((p) => p.mesh)), say('Przywrócono kolory'));
   else if (k === 'sec') {
     if (!cadRoot) say('Brak modelu');
+    else if (v === 'wszystkie') { const ms = parts.filter((p) => p.bezPrzekroju).map((p) => p.mesh); if (ms.length) { ustawBezPrzekroju(ms, false); say('Przekrój tnie wszystkie części (B – cofnij)'); } }
     else if (v === 'toggle') { setSectionOn(!section.on); say(section.on ? 'Przekrój włączony' : 'Przekrój wyłączony'); }
     else if (v === 'flip') flipSection();
     else { setSectionAxis(v, 0); say('Przekrój ' + v); }
@@ -2136,7 +2297,8 @@ function paletteAction(id) {
   else if (k === 'tvis') { const r = treeRows[Number(v)]; if (r) setRowVisible(r, !r.obj.visible); }
   else if (k === 'tghost') { const r = treeRows[Number(v)]; if (r) toggleGhost(r.obj); }
   else if (k === 'grp') {
-    if (v === 'wiele') { S.wiele = !S.wiele; say(S.wiele ? 'Zaznaczaj wiele: wskazuj kolejne części spustem' : 'Zaznaczanie jednej części'); }
+    if (v === 'odznacz') { setSelected(null); showPicked(null); S.wiele = false; zamknijOkno(); }
+    else if (v === 'wiele') { S.wiele = !S.wiele; say(S.wiele ? 'Zaznaczaj wiele: wskazuj kolejne części spustem' : 'Zaznaczanie jednej części'); }
     else if (v === 'grupuj') { grupujZaznaczone(); S.wiele = false; }
     else if (v === 'rozgrupuj') rozgrupujZaznaczone();
   }
@@ -2158,8 +2320,12 @@ function paletteAction(id) {
     pal[key] = Math.max(0, pal[key] + (dir === '+' ? step : -step));
   }
   else if (k === 'menu') {
-    if (v === 'back') pal.menuView = 'glowne';
-    else if (v === 'drive') { pal.menuView = 'drive'; pal.listScroll = 0; if (drive.connected && !browser.items.length && !browser.loading) browserList(); }
+    if (v === 'back') { if (browser.tryb === 'obraz') { browser.tryb = 'cad'; browser.items = []; pal.page = 'widok'; } pal.menuView = 'glowne'; }
+    else if (v === 'drive') {
+      const zmiana = browser.tryb !== 'cad';
+      browser.tryb = 'cad'; pal.menuView = 'drive'; pal.listScroll = 0;
+      if (drive.connected && (zmiana || !browser.items.length) && !browser.loading) browserList();
+    }
     else if (v === 'recent') { pal.menuView = 'ostatnie'; pal.listScroll = 0; refreshRecent(); }
     else if (v === 'reload') reloadCurrent();
   }
@@ -2303,8 +2469,7 @@ function setupControllers() {
   }
 
   renderer.xr.addEventListener('sessionstart', () => {
-    scene.background = xrMode === 'ar' ? null : new THREE.Color(CONFIG.BG_VR);
-    grid.visible = xrMode !== 'ar';
+    zastosujTlo();
     placeModel(placementMode);
     pal.msg = '';
     if (!cadRoot) { pal.page = 'menu'; pal.menuView = 'glowne'; S.paletteVisible = true; }
@@ -2318,11 +2483,11 @@ function setupControllers() {
     if (pal.page === 'klawiatura') pal.page = pal.returnPage || 'narzedzia';
     for (const c of controllers) { endHold(c); toolEnd(c); }
     releaseAll();
-    scene.background = new THREE.Color(CONFIG.BG_DESKTOP);
-    grid.visible = true;
     toast.sprite.visible = false;
     label.sprite.visible = false;
     pal.mesh.visible = false;
+    zamknijOkno();
+    zastosujTlo();
     placeModel(placementMode);
     fitDesktopCamera();
     if (pendingXR) {                          // przełączenie VR ↔ AR z menu: od razu nowa sesja
@@ -2362,9 +2527,8 @@ function buttonPressedEdge(c, index) {
 // ============================================================================
 function grabTargetFor(c) {
   if (S.grabMode !== 'model' && cadRoot) {
-    const center = tipWorld(c, new THREE.Vector3());
-    const meshes = rozszerzOGrupy(S.grabMode === 'czesc' ? partsInSphere(center, CONFIG.PART_GRAB_RADIUS, true) : partsInSphere(center, S.sphere, false));
-    if (meshes.length) return { kind: 'parts', meshes, undo: meshes.map((m) => ({ obj: m, prev: localMatrix(m) })) };
+    const meshes = wZasiegu(tipWorld(c, new THREE.Vector3()));
+    if (meshes.length) return { kind: 'parts', meshes, zSfery: S.grabMode === 'grupa', undo: meshes.map((m) => ({ obj: m, prev: localMatrix(m) })) };
   }
   return { kind: 'model' };
 }
@@ -2403,7 +2567,15 @@ function endHold(c) {
     if (other.userData.held === target) { snapshot(target); target.c0inv = other.matrixWorld.clone().invert(); }
     return;
   }
-  if (target.kind === 'parts') pushUndo({ type: 'move', items: target.undo });
+  if (target.kind === 'parts') {
+    pushUndo({ type: 'move', items: target.undo });
+    const cz = target.meshes.filter((m) => m.userData.part);
+    if (target.zSfery && cz.length > 1) {        // sfera złapała kilka części → zostają zaznaczone (gotowe do „Grupuj”)
+      selectedObj = cz[0]; selectedMeshes = cz;
+      showPicked(selectedObj);
+      say(`Sfera: ${cz.length} części zaznaczone — „Grupuj zaznaczone” w panelu`);
+    }
+  }
 }
 
 function releaseAll() {
@@ -2469,9 +2641,8 @@ function toolStart(c) {
   } else if (u.activeTool === 'wskaz') {
     if (u.rayHit) {
       selectObject(u.rayHit.object, true);
-      if (pal.page !== 'czesc' && pal.page !== 'klawiatura') { pal.returnPage = pal.page; pal.page = 'czesc'; }
-      S.paletteVisible = true;
-    }
+      if (selectedObj) otworzOkno(selectedObj, u.rayHit.point); else zamknijOkno();
+    } else zamknijOkno();                       // spust obok modelu zamyka okienko
   } else if (u.activeTool === 'komentarz') {
     if (edit) closeNoteEditor(true);
     if (u.noteHit) {                            // istniejąca płytka: przeciągnij = przesuń, klik = edytuj tekst
@@ -2578,9 +2749,12 @@ function eraseAt(c) {
   const lp = annoRoot.worldToLocal(tipWorld(c, new THREE.Vector3()));
   const lr = S.eraser / annoScale();
   let n = 0;
+  const tw = tipWorld(c, new THREE.Vector3());
   for (const s of [...strokes]) {
-    if (s.box.distanceToPoint(lp) > lr + s.maxR) continue;
-    if (s.distanceTo(lp) < lr + s.maxR) { removeAnno(s, strokes); n++; }
+    s.root.updateMatrixWorld();
+    const sp = s.root.worldToLocal(tw.clone()), sr = S.eraser / s.root.matrixWorld.getMaxScaleOnAxis();
+    if (s.box.distanceToPoint(sp) > sr + s.maxR) continue;
+    if (s.distanceTo(sp) < sr + s.maxR) { removeAnno(s, strokes); n++; }
   }
   for (const m of [...measures]) if (m.distanceTo(lp) < lr) { removeAnno(m, measures); n++; }
   for (const m of [...notes]) if (m.distanceTo(lp) < lr && (!edit || edit.note !== m)) { removeAnno(m, notes); n++; }
@@ -2646,6 +2820,12 @@ function handleXRInput(dt) {
       const hit = raycaster.intersectObject(pal.mesh, false)[0];
       if (hit) { u.uiHover = paletteButtonAt(hit.uv); rayLen = hit.distance; }
     }
+    if (okno.mesh.visible) {                     // okienko przy części: wygrywa, gdy jest bliżej niż panel
+      raycaster.setFromXRController(c);
+      raycaster.firstHitOnly = false;
+      const hit = raycaster.intersectObject(okno.mesh, false)[0];
+      if (hit && (!u.uiHover || hit.distance < rayLen)) { u.uiHover = oknoButtonAt(hit.uv) || 'okno:tlo'; rayLen = hit.distance; }
+    }
     if (!u.uiHover && !u.uiConsumed && (u.activeTool || S.tool) === 'komentarz' && !u.noteDrag) {
       raycaster.setFromXRController(c);
       u.noteHit = rayNotes();
@@ -2684,13 +2864,14 @@ function handleXRInput(dt) {
     u.grabHover = [];
     if (S.grabMode !== 'model' && cadRoot && !u.held) {
       const center = tipWorld(c, _v1);
-      u.grabHover = rozszerzOGrupy(S.grabMode === 'czesc' ? partsInSphere(center, CONFIG.PART_GRAB_RADIUS, true) : partsInSphere(center, S.sphere, false));
+      u.grabHover = wZasiegu(center);
       u.grabHover.forEach((m) => frameHL.hover.add(m));
     }
     updateCursor(c);
   }
   updateHolds();
   refreshPaletteTexture();
+  odswiezOkno();
 }
 
 // ============================================================================
@@ -2746,8 +2927,9 @@ async function captureScreenshot() {
     const hidden = [];
     const hide = (o) => { if (o && o.visible) { o.visible = false; hidden.push(o); } };
     hide(toast.sprite);
+    if (blysk) hide(blysk.mesh);
     if (CONFIG.SHOT_HIDE_CONTROLLERS) {
-      hide(pal.mesh);
+      hide(pal.mesh); hide(okno.mesh);
       controllers.forEach((c) => { hide(c.userData.ray); hide(c.userData.cursor); hide(c.userData.grabSphere); });
       grips.forEach(hide);
     }
@@ -2769,6 +2951,7 @@ async function captureScreenshot() {
     scene.background = bg;
     hidden.forEach((o) => { o.visible = true; });
     rt.dispose();
+    zrobBlysk();                                 // zdjęcie zrobione: błysk, migawka, wibracja
 
     // Piksele → JPG (wiersze od dołu, więc odwracamy)
     const cv = document.createElement('canvas');
@@ -2784,7 +2967,6 @@ async function captureScreenshot() {
     const name = `zrzut_${modelName.replace(/[^\w\-]+/g, '_')}_${stamp}.jpg`;
     const rec = { name, time: d.getTime(), model: modelName, blob, cloud: '' };
     const count = await shotStore.addShot(rec);
-    pulse(mainHand(), 0.6, 60);
     say(`Zrzut zapisany (${count})` + (settings.autoUpload && drive.connected ? ' — wysyłam do chmury…' : ''));
     await refreshShots();
     if (settings.autoUpload) uploadPendingShots(false);
@@ -2797,12 +2979,12 @@ async function captureScreenshot() {
 // Pamięć przeglądarki (IndexedDB): 'zrzuty' i 'modele' (ostatnio otwierane pliki). Gdy niedostępna — tylko do zamknięcia strony.
 const idb = (() => {
   let dbp = null;
-  const mem = { zrzuty: null, modele: null };
+  const mem = { zrzuty: null, modele: null, tla: null };
   let memMode = false;
   const open = () => dbp || (dbp = new Promise((res, rej) => {
-    const r = indexedDB.open('cad-vr-viewer', 2);
+    const r = indexedDB.open('cad-vr-viewer', 3);
     r.onupgradeneeded = () => {
-      for (const name of ['zrzuty', 'modele']) if (!r.result.objectStoreNames.contains(name)) r.result.createObjectStore(name, { keyPath: 'id', autoIncrement: true });
+      for (const name of ['zrzuty', 'modele', 'tla']) if (!r.result.objectStoreNames.contains(name)) r.result.createObjectStore(name, { keyPath: 'id', autoIncrement: true });
     };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
@@ -3002,7 +3184,8 @@ async function uploadPendingShots(manual) {
 }
 
 // Przeglądanie folderów Google Drive (ten sam stan na PC i w goglach)
-const browser = { stack: [{ id: 'root', name: 'Mój dysk' }], items: [], loading: false, error: '' };
+const browser = { stack: [{ id: 'root', name: 'Mój dysk' }], items: [], loading: false, error: '', tryb: 'cad' };   // tryb: 'cad' | 'obraz' (tło)
+const IMAGE_EXT = ['jpg', 'jpeg', 'png', 'webp'];
 
 async function browserList() {
   const cur = browser.stack[browser.stack.length - 1];
@@ -3011,7 +3194,8 @@ async function browserList() {
   try {
     const files = await drive.list(cur.id);
     browser.items = files.map((f) => ({ id: f.id, name: f.name, size: Number(f.size) || 0, folder: f.mimeType === FOLDER_MIME,
-                                        native: CONFIG.NATIVE_EXT.includes(extOf(f.name)), open: CONFIG.OPEN_EXT.includes(extOf(f.name)) }))
+                                        native: browser.tryb === 'cad' && CONFIG.NATIVE_EXT.includes(extOf(f.name)),
+                                        open: browser.tryb === 'obraz' ? IMAGE_EXT.includes(extOf(f.name)) : CONFIG.OPEN_EXT.includes(extOf(f.name)) }))
                          .filter((f) => f.folder || f.native || f.open);
   } catch (e) { browser.error = e.message; browser.items = []; }
   browser.loading = false;
@@ -3026,6 +3210,7 @@ function browserOpenItem(i) {
   if (!it) return;
   if (it.folder) { browser.stack.push({ id: it.id, name: it.name }); browserList(); }
   else if (it.native) say('Plik SolidWorks — zapisz go jako STEP (Plik → Zapisz jako → STEP AP214)');
+  else if (browser.tryb === 'obraz') tloZDrive(it);
   else openFromDrive(it);
 }
 function setProjectFolder(idx) {
@@ -3246,14 +3431,24 @@ function setupUI() {
   ui.btnSaveStepDrive.addEventListener('click', () => zapiszStep(true));
   ui.upAxis.value = CONFIG.DEFAULT_UP_AXIS;
   ui.upAxis.addEventListener('change', applyUpAxis);
-  ui.vr.addEventListener('click', () => enterXR('vr'));
-  ui.ar.addEventListener('click', () => enterXR('ar'));
-  ui.shot.addEventListener('click', requestScreenshot);
+  ui.vr.addEventListener('click', () => { przygotujDzwiek(); enterXR('vr'); });
+  ui.ar.addEventListener('click', () => { przygotujDzwiek(); enterXR('ar'); });
+  ui.shot.addEventListener('click', () => { przygotujDzwiek(); requestScreenshot(); });
   ui.partColor.addEventListener('change', () => { paintMeshes(selectedMeshes, ui.partColor.value); say('Zmieniono kolor (Ctrl+Z – cofnij)'); });
   ui.partColorReset.addEventListener('click', () => { restoreColors(selectedMeshes); showPicked(selectedObj); });
   ui.partHide.addEventListener('click', () => { if (selectedObj) { hideObjects([selectedObj]); say('Ukryto: ' + selectedObj.name + ' (Ctrl+Z – cofnij)'); } });
   ui.partGhost.addEventListener('click', () => { toggleGhost(selectedObj); showPicked(selectedObj); });
   ui.partGroup.addEventListener('click', () => { grupujZaznaczone(); showPicked(selectedObj); });
+  ui.partNoSection.addEventListener('click', () => { przelaczBezPrzekroju(selectedMeshes); showPicked(selectedObj); });
+  ui.secAll.addEventListener('click', () => { const ms = parts.filter((p) => p.bezPrzekroju).map((p) => p.mesh); if (ms.length) { ustawBezPrzekroju(ms, false); say('Przekrój tnie wszystkie części (Ctrl+Z – cofnij)'); } });
+  // Widok: tło i rozstrzelenie
+  for (const t of TLA) ui.bgSelect.add(new Option(t.nazwa, t.id));
+  for (const t of TLA_NET) ui.bgSelect.add(new Option('Internet: ' + t.nazwa, 'net:' + t.id));
+  ui.bgSelect.add(new Option('Własne zdjęcie', 'wlasne'));
+  ui.bgSelect.addEventListener('change', () => { if (ui.bgSelect.value === 'wlasne') ui.bgFile.click(); else ustawTlo(ui.bgSelect.value); });
+  ui.bgFile.addEventListener('change', () => { const f = ui.bgFile.files[0]; ui.bgFile.value = ''; if (f) ustawTlo('wlasne', { blob: f, nazwa: f.name }); else syncTloUI(); });
+  ui.bgRotate.addEventListener('click', obrocTlo);
+  ui.explode.addEventListener('input', () => ustawRozstrzelenie(Number(ui.explode.value) / 100));
   ui.partUngroup.addEventListener('click', () => { rozgrupujZaznaczone(); showPicked(selectedObj); });
   ui.shotsDownload.addEventListener('click', () => {
     [...ui.shots.querySelectorAll('a[download]')].forEach((a, i) => setTimeout(() => a.click(), i * 400));
@@ -3368,6 +3563,323 @@ function setupUI() {
     if (hit) selectObject(hit.object); else { setSelected(null); showPicked(null); }
     S.wiele = w;
   });
+}
+
+
+// ============================================================================
+// OKIENKO PRZY CZĘŚCI (gogle: Wskaż + spust na części) — ukryj, półprzezroczysta, bez przekroju, kolor, grupy
+// ============================================================================
+const OKNO = { W: 1024, H: 600 };
+const okno = { canvas: null, ctx: null, tex: null, mesh: null, buttons: [], hover: null, sig: '', obj: null };
+
+function setupOkno() {
+  okno.canvas = document.createElement('canvas');
+  okno.canvas.width = OKNO.W; okno.canvas.height = OKNO.H;
+  okno.ctx = okno.canvas.getContext('2d');
+  okno.tex = new THREE.CanvasTexture(okno.canvas);
+  okno.tex.colorSpace = THREE.SRGBColorSpace;
+  okno.tex.anisotropy = 4;
+  const w = CONFIG.OKNO_SZEROKOSC;
+  okno.mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, w * OKNO.H / OKNO.W),
+    new THREE.MeshBasicMaterial({ map: okno.tex, transparent: true, toneMapped: false, depthTest: false }));
+  okno.mesh.name = 'Okienko części';
+  okno.mesh.renderOrder = 20;
+  okno.mesh.visible = false;
+  scene.add(okno.mesh);
+}
+
+// Okienko staje między oczami a częścią (bliżej oczu), trochę wyżej, zwrócone do Ciebie; zostaje w miejscu
+function otworzOkno(obj, punkt) {
+  okno.obj = obj;
+  const oko = viewCamera().getWorldPosition(new THREE.Vector3());
+  const kier = punkt.clone().sub(oko);
+  const d = Math.min(CONFIG.OKNO_ODLEGLOSC, kier.length() * 0.75);
+  kier.normalize();
+  okno.mesh.position.copy(oko).addScaledVector(kier, d).add(new THREE.Vector3(0, CONFIG.OKNO_W_GORE, 0));
+  okno.mesh.lookAt(oko);
+  okno.mesh.visible = true;
+  okno.sig = '';
+}
+
+function zamknijOkno() {
+  okno.obj = null;
+  if (okno.mesh) okno.mesh.visible = false;
+}
+
+function layoutOkno() {
+  const B = [], W = OKNO.W, P = 24, G = 12;
+  const row = (y, h, items, x0 = P, x1 = W - P) => {
+    const total = items.reduce((t, it) => t + (it.flex || 1), 0);
+    const avail = x1 - x0 - G * (items.length - 1);
+    let x = x0;
+    for (const it of items) { const w = avail * (it.flex || 1) / total; B.push({ kind: 'button', ...it, id: it.id ? 'okno:' + it.id : 'noop', x, y, w, h }); x += w + G; }
+  };
+  const o = okno.obj, p = o.userData.part, ile = selectedMeshes.length;
+  const g = p && grupaCzesci(p);
+  const czesci = selectedMeshes.filter((m) => m.userData.part);
+  const bez = czesci.length > 0 && czesci.every((m) => m.userData.part.bezPrzekroju);
+  const jednaGrupa = !!g && czesci.every((m) => m.userData.part.grupa === g.id) && czesci.length === czlonkowieGrupy(o).length;
+  B.push({ kind: 'info', id: 'noop', x: P, y: 16, w: W - 2 * P - 110, h: 60, color: '#ffb15c',
+           text: ile > 1 ? `Zaznaczone części: ${ile}` + (g ? ` · ${g.nazwa}` : '') : (p ? '' : 'Podzłożenie: ') + o.name });
+  B.push({ kind: 'button', id: 'okno:zamknij', text: '', icon: 'anuluj', x: W - P - 96, y: 14, w: 96, h: 70 });
+  B.push({ kind: 'info', id: 'noop', x: P, y: 80, w: W - 2 * P, h: 40, color: '#9aa0a6',
+           text: ile > 1 ? 'Ostatnio wskazana: ' + o.name : (p ? p.path.slice(0, -1).join(' › ') || 'część złożenia' : '') });
+  row(132, 128, [{ id: 'hide', text: 'Ukryj', icon: 'ukryj' }, { id: 'ghost', text: 'Półprzezroczysta', icon: 'ghost', active: isGhost(o), flex: 1.35 },
+                 { id: 'przekroj', text: 'Bez przekroju', icon: 'przekroj', active: bez, disabled: !czesci.length, flex: 1.2 },
+                 { id: 'only', text: 'Tylko ta', icon: 'tylko' }]);
+  row(276, 86, CONFIG.COLORS.map((color, i) => ({ id: 'color:' + i, kind: 'swatch', color })));
+  row(378, 96, [{ id: 'origcolor', text: 'Kolor oryginalny', icon: 'reset', flex: 1.3 },
+                { id: 'wiele', text: S.wiele ? 'Zaznaczam wiele' : 'Zaznaczaj wiele', icon: 'wiele', active: !!S.wiele, flex: 1.3 },
+                jednaGrupa || ile < 2 ? { id: 'rozgrupuj', text: 'Rozgrupuj', icon: 'rozgrupuj', disabled: !g }
+                                      : { id: 'grupuj', text: `Grupuj (${czesci.length})`, icon: 'grupuj', disabled: czesci.length < 2 },
+                { id: 'wiecej', text: 'Więcej', icon: 'menu' }]);
+  B.push({ kind: 'info', id: 'noop', x: P, y: 492, w: W - 2 * P, h: 80, color: '#9aa0a6', align: 'center',
+           text: S.wiele ? 'Wskazuj kolejne części spustem · Grupuj = jedna grupa' : 'Spust obok modelu – zamknij · B – cofnij' });
+  okno.buttons = B;
+  return B;
+}
+
+function oknoButtonAt(uv) {
+  const x = uv.x * OKNO.W, y = (1 - uv.y) * OKNO.H;
+  const b = okno.buttons.find((b) => (b.kind === 'button' || b.kind === 'swatch') && !b.disabled && b.id !== 'noop' &&
+                                     x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
+  return b ? b.id : null;
+}
+
+function odswiezOkno() {
+  if (!okno.mesh.visible) return;
+  const o = okno.obj;
+  if (!o || !cadRoot || !isVisibleDeep(o) || !selectedObj) { zamknijOkno(); return; }
+  okno.hover = controllers.map((c) => c.userData.uiHover).find((h) => h && h.startsWith('okno:')) || null;
+  const B = layoutOkno();
+  const sig = okno.hover + '|' + JSON.stringify(B.map((b) => [b.id, b.text, b.active, b.disabled]));
+  if (sig === okno.sig) return;
+  okno.sig = sig;
+  const ctx = okno.ctx;
+  ctx.clearRect(0, 0, OKNO.W, OKNO.H);
+  ctx.fillStyle = 'rgba(24,27,33,0.96)'; ctx.beginPath(); ctx.roundRect(4, 4, OKNO.W - 8, OKNO.H - 8, 32); ctx.fill();
+  ctx.lineWidth = 6; ctx.strokeStyle = '#ff8a1f'; ctx.stroke();
+  rysujPrzyciski(ctx, B, okno.hover);
+  okno.tex.needsUpdate = true;
+}
+
+function oknoAction(v) {
+  const o = okno.obj;
+  if (v === 'tlo') return;                       // klik w tło okienka
+  if (v === 'zamknij' || !o) { zamknijOkno(); return; }
+  const ms = selectedMeshes.length ? selectedMeshes : meshesOf(o);
+  if (v === 'hide') { const n = hideObjects(ms.length > 1 ? ms : [o]); zamknijOkno(); say(`Ukryto: ${n > 1 ? n + ' części' : o.name} (B – cofnij)`); }
+  else if (v === 'ghost') toggleGhost(o);
+  else if (v === 'przekroj') przelaczBezPrzekroju(ms);
+  else if (v === 'only') treeCommand('only');
+  else if (v === 'origcolor') { restoreColors(ms); say('Kolor oryginalny'); }
+  else if (v.startsWith('color:')) { paintMeshes(ms, CONFIG.COLORS[Number(v.split(':')[1])]); say('Zmieniono kolor (B – cofnij)'); }
+  else if (v === 'wiele') { S.wiele = !S.wiele; say(S.wiele ? 'Zaznaczaj wiele: wskazuj kolejne części spustem' : 'Zaznaczanie jednej części'); }
+  else if (v === 'grupuj') { grupujZaznaczone(); S.wiele = false; }
+  else if (v === 'rozgrupuj') rozgrupujZaznaczone();
+  else if (v === 'wiecej') { if (pal.page !== 'czesc') pal.returnPage = pal.page; pal.page = 'czesc'; S.paletteVisible = true; zamknijOkno(); }
+}
+
+// ============================================================================
+// ROZSTRZELENIE MODELU: części odsuwają się od środka złożenia (widok „exploded”)
+// ============================================================================
+const rozstrzel = { f: 0 };
+const rozstrzelTekst = () => (rozstrzel.f > 0 ? `Rozstrzelenie: ${Math.round(rozstrzel.f * 100)} %` : 'Model złożony');
+
+function ustawRozstrzelenie(f) {
+  f = clamp(Math.round(f * 1000) / 1000, 0, CONFIG.ROZSTRZEL_MAX);
+  if (!cadRoot || !parts.length) { rozstrzel.f = 0; syncRozstrzelUI(); return; }
+  releaseAll();
+  cadRoot.updateMatrixWorld(true);
+  const inv = cadRoot.matrixWorld.clone().invert(), M = new THREE.Matrix4();
+  // środki części w układzie modelu, bez obecnego przesunięcia rozstrzelenia
+  const dane = parts.map((p) => {
+    const m = p.mesh, off = m.userData.rozOff || new THREE.Vector3();
+    const c = m.geometry.boundingBox.clone().applyMatrix4(M.multiplyMatrices(inv, m.matrixWorld)).getCenter(new THREE.Vector3()).sub(off);
+    return { m, off, c };
+  });
+  const C = dane.reduce((s, d) => s.add(d.c), new THREE.Vector3()).divideScalar(dane.length);
+  for (const d of dane) {
+    const nowy = d.c.clone().sub(C).multiplyScalar(f);
+    const P = M.multiplyMatrices(inv, d.m.parent.matrixWorld).invert();       // model → układ rodzica części
+    const a = new THREE.Vector3().applyMatrix4(P), b = nowy.clone().sub(d.off).applyMatrix4(P);
+    d.m.position.add(b.sub(a));
+    d.m.updateMatrix();
+    d.m.userData.rozOff = f ? nowy : null;
+  }
+  rozstrzel.f = f;
+  visibleCache = null;
+  syncRozstrzelUI();
+}
+
+function syncRozstrzelUI() { if (ui.explode) ui.explode.value = String(Math.round(rozstrzel.f * 100)); }
+
+// ============================================================================
+// TŁO 360° (VR i ekran; w AR zawsze pokój z kamer)
+// ============================================================================
+const tlo = { id: 'szary', tex: null, nazwa: '', laduje: '', mini: new Map(), miniWersja: 0, zadanie: 0 };
+
+function zastosujTlo() {
+  if (renderer.xr.isPresenting && xrMode === 'ar') { scene.background = null; grid.visible = false; return; }
+  if (tlo.tex) {
+    scene.background = tlo.tex;
+    scene.backgroundRotation.set(0, THREE.MathUtils.degToRad(settings.tloObrot || 0), 0);
+    grid.visible = false;
+  } else {
+    scene.background = new THREE.Color(renderer.xr.isPresenting ? CONFIG.BG_VR : CONFIG.BG_DESKTOP);
+    grid.visible = true;
+  }
+}
+
+function syncTloUI() {
+  if (!ui.bgSelect) return;
+  ui.bgSelect.value = tlo.id;
+  if (ui.bgSelect.value !== tlo.id) ui.bgSelect.value = 'szary';
+  ui.bgInfo.textContent = tlo.laduje ? 'Ładuję tło…' : (tlo.id === 'wlasne' ? 'Własne zdjęcie: ' + tlo.nazwa : '');
+}
+
+const naTeksture = (t) => { t.mapping = THREE.EquirectangularReflectionMapping; return t; };
+
+// Zdjęcie (plik / Drive) → tekstura nie większa niż TLO_WLASNE_MAX_PX
+async function teksturaZeZdjecia(blob) {
+  const img = await createImageBitmap(blob);
+  const sc = Math.min(1, CONFIG.TLO_WLASNE_MAX_PX / img.width);
+  const c = document.createElement('canvas');
+  c.width = Math.round(img.width * sc); c.height = Math.round(img.height * sc);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  img.close && img.close();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return naTeksture(t);
+}
+
+// id: z listy TLA, 'net:<nazwa Poly Haven>' albo 'wlasne' (blob z pliku / Drive / pamięci przeglądarki)
+async function ustawTlo(id, { blob = null, nazwa = '', cicho = false } = {}) {
+  const nr = ++tlo.zadanie;
+  const t = TLA.find((x) => x.id === id);
+  tlo.laduje = id; syncTloUI();
+  try {
+    let tex = null;
+    if (id === 'szary') tex = null;
+    else if (t && t.typ === 'gen') {
+      await new Promise((r) => setTimeout(r, 0));
+      tex = new THREE.CanvasTexture(generujTlo(id, CONFIG.TLO_SZEROKOSC));
+      tex.colorSpace = THREE.SRGBColorSpace;
+      naTeksture(tex);
+    } else if (t && t.typ === 'plik') {
+      tex = naTeksture(await new THREE.TextureLoader().loadAsync(urlPliku(t)));
+      tex.colorSpace = THREE.SRGBColorSpace;
+    } else if (id.startsWith('net:')) {
+      if (!cicho) say('Pobieram tło z internetu…');
+      const { HDRLoader } = await import('three/addons/loaders/HDRLoader.js');
+      tex = naTeksture(await new HDRLoader().loadAsync(urlNet(id.slice(4), CONFIG.TLO_NET_ROZDZIELCZOSC)));
+    } else if (id === 'wlasne') {
+      if (!blob) { const r = (await idb('tla').list()).find((x) => x.id === 'wlasne'); if (r) { blob = r.blob; nazwa = r.nazwa; } }
+      if (!blob) throw new Error('brak zapisanego zdjęcia');
+      tex = await teksturaZeZdjecia(blob);
+      await idb('tla').put({ id: 'wlasne', blob, nazwa });
+    } else throw new Error('nieznane tło: ' + id);
+    if (nr !== tlo.zadanie) { if (tex) tex.dispose(); return false; }   // w międzyczasie wybrano inne tło
+    if (tlo.tex) tlo.tex.dispose();
+    tlo.tex = tex; tlo.id = id; tlo.nazwa = nazwa || (t ? t.nazwa : (TLA_NET.find((x) => 'net:' + x.id === id) || {}).nazwa || '');
+    settings.tlo = id; saveSettings();
+    zastosujTlo();
+    if (!cicho) say('Tło: ' + (tlo.nazwa || id) + (renderer.xr.isPresenting && xrMode === 'ar' ? ' (widać w VR; w AR widzisz pokój)' : ''));
+    return true;
+  } catch (e) {
+    console.log('Tło nie wczytane:', id, e);
+    if (!cicho) say(`Nie udało się wczytać tła (${e.message || e})` + (id.startsWith('net:') ? ' — sprawdź internet w goglach' : ''));
+    return false;
+  } finally {
+    if (nr === tlo.zadanie) { tlo.laduje = ''; syncTloUI(); }
+  }
+}
+
+function obrocTlo() {
+  settings.tloObrot = ((settings.tloObrot || 0) + 45) % 360; saveSettings();
+  zastosujTlo();
+  say(`Tło obrócone: ${settings.tloObrot}°`);
+}
+
+async function tloZDrive(it) {
+  try {
+    say(`Pobieranie zdjęcia „${it.name}”…`);
+    const buf = await drive.download(it.id);
+    if (await ustawTlo('wlasne', { blob: new Blob([buf]), nazwa: it.name })) { browser.tryb = 'cad'; browser.items = []; pal.page = 'widok'; pal.menuView = 'glowne'; }
+  } catch (e) { say('Błąd pobierania zdjęcia: ' + e.message); }
+}
+
+// Miniatury teł do kafelków w panelu (raz, przy pierwszym otwarciu zakładki Widok)
+function przygotujMiniatury() {
+  if (tlo.mini.size) return;
+  for (const t of TLA) {
+    if (t.typ === 'gen') tlo.mini.set(t.id, generujTlo(t.id, 512));
+    else if (t.typ === 'plik') {
+      const img = new Image();
+      img.onload = () => { tlo.mini.set(t.id, img); tlo.miniWersja++; };
+      img.src = urlPliku(t);
+    }
+  }
+  tlo.miniWersja++;
+}
+
+function wczytajZapamietaneTlo() {
+  const id = settings.tlo || CONFIG.TLO_DOMYSLNE;
+  syncTloUI();
+  if (id && id !== 'szary') ustawTlo(id, { cicho: true });
+}
+
+// ============================================================================
+// BŁYSK I MIGAWKA PRZY ZRZUCIE (zdjęcie jest już zrobione, błysku na nim nie ma)
+// ============================================================================
+let blysk = null;
+const dzwiek = { ctx: null };
+
+function przygotujDzwiek() {                    // przeglądarka pozwala na dźwięk dopiero po kliknięciu
+  try {
+    if (!dzwiek.ctx) dzwiek.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (dzwiek.ctx.state === 'suspended') dzwiek.ctx.resume();
+  } catch { dzwiek.ctx = null; }
+}
+
+function migawka() {                            // krótki szum z dwoma trzaskami (jak migawka aparatu)
+  const a = dzwiek.ctx;
+  if (!CONFIG.MIGAWKA_DZWIEK || !a || a.state !== 'running') return;
+  try {
+    const n = Math.round(a.sampleRate * 0.14), buf = a.createBuffer(1, n, a.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) {
+      const t = i / a.sampleRate;
+      const obw = Math.exp(-t * 90) + 0.8 * (t > 0.07 ? Math.exp(-(t - 0.07) * 110) : 0);
+      d[i] = (Math.random() * 2 - 1) * obw * 0.5;
+    }
+    const src = a.createBufferSource(); src.buffer = buf; src.connect(a.destination); src.start();
+  } catch { /* bez dźwięku */ }
+}
+
+function zrobBlysk() {
+  if (CONFIG.BLYSK_JASNOSC > 0) {
+    if (!blysk) {
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), new THREE.MeshBasicMaterial({
+        color: 0xffffff, side: THREE.BackSide, transparent: true, opacity: 0, depthTest: false, depthWrite: false, toneMapped: false }));
+      mesh.renderOrder = 10000; mesh.frustumCulled = false; mesh.name = 'Błysk';
+      camera.add(mesh);
+      blysk = { mesh, t: 0 };
+    }
+    blysk.mesh.scale.setScalar(Math.max(0.3, camera.near * 4));
+    blysk.t = CONFIG.BLYSK_S;
+    blysk.mesh.material.opacity = CONFIG.BLYSK_JASNOSC;
+    blysk.mesh.visible = true;
+  }
+  migawka();
+  pulse(mainHand(), 0.8, 80);
+}
+
+function aktualizujBlysk(dt) {
+  if (!blysk || blysk.t <= 0) return;
+  blysk.t -= dt;
+  const k = Math.max(0, blysk.t / CONFIG.BLYSK_S);
+  blysk.mesh.material.opacity = CONFIG.BLYSK_JASNOSC * k * k;
+  if (blysk.t <= 0) blysk.mesh.visible = false;
 }
 
 // ============================================================================
@@ -3502,7 +4014,9 @@ async function zapiszStep(naDrive) {
         przydzial.forEach((ci, bi) => { if (ci < 0) return; const m = zrodlowe[ci].mesh; if (!f.przydzial.has(m)) f.przydzial.set(m, []); f.przydzial.get(m).push(bi); });
       }
     }
-    // drzewo złożenia: ścieżki z drzewa podglądu, położenie z macierzy części
+    // drzewo złożenia: ścieżki z drzewa podglądu, położenie z macierzy części (bez rozstrzelenia — tylko na czas odczytu)
+    const fRoz = rozstrzel.f;
+    if (fRoz) ustawRozstrzelenie(0);
     cadRoot.updateMatrixWorld(true);
     const cadInv = cadRoot.matrixWorld.clone().invert();
     const S1000 = new THREE.Matrix4().makeScale(1000, 1000, 1000), S0001 = new THREE.Matrix4().makeScale(0.001, 0.001, 0.001);
@@ -3528,6 +4042,7 @@ async function zapiszStep(naDrive) {
       liscie.push({ sciezka: gr ? [gr.nazwa] : p.path.slice(0, -1), w: { nazwa: p.name, kolor: '#' + mats(p.mesh)[0].color.getHexString(), id, def, lok,
         poz: pz.toArray(), obr: [e.x, e.y, e.z].map((v) => v * 180 / Math.PI), skala: (sc.x + sc.y + sc.z) / 3 } });
     }
+    if (fRoz) ustawRozstrzelenie(fRoz);
     if (!liscie.length) throw new Error('brak części do zapisu');
     let nazwa = pliki.length === 1 ? pliki[0].nazwa.replace(/\.[^.]+$/, '') : (pliki.length ? CONFIG.ZAPIS_NAZWA_ZLOZENIA : CONFIG.SZKIC_GRUPA);
     let obetnij = 0;
@@ -3574,6 +4089,8 @@ async function zapiszStep(naDrive) {
 async function przelaczSzkicownik(wlacz) {
   try {
     if (wlacz) {
+      zamknijOkno();
+      if (rozstrzel.f) { ustawRozstrzelenie(0); say('Model złożony z powrotem (Szkicownik pracuje na złożonym modelu)'); }
       if (!szkicownik) {
         say('Wczytywanie Szkicownika…');
         const { Szkicownik } = await import('./szkicownik/szkicownik.js');
@@ -3603,6 +4120,7 @@ function exposeDebug() {                      // do testów automatycznych i dia
     get recentList() { return recentList; }, get szkicownik() { return szkicownik; }, przelaczSzkicownik,
     get pliki() { return pliki; }, zapiszStep, loadFiles, copyParts, hideObjects, selectObject, grupujZaznaczone, rozgrupujZaznaczone,
     get grupyCzesci() { return grupyCzesci; }, get selectedMeshes() { return selectedMeshes; },
+    okno, OKNO, otworzOkno, odswiezOkno, tlo, rozstrzel, ustawRozstrzelenie, ustawTlo, ustawBezPrzekroju, get blysk() { return blysk; }, browser,
     scene, modelSize, pivot, S, pal, PAL, controllers, renderer, THREE, section, cadBox, settings, drive, browser, voice,
     pick(o, d) { raycaster.set(o, d.clone().normalize()); return pickRay(); },
     requestScreenshot, shotStore, modelStore, undo, paletteAction, layoutPalette, refreshPaletteTexture, editKey, openNoteEditor, closeNoteEditor, createNote,
@@ -3626,6 +4144,7 @@ function tick() {
     controls.update();
   }
   if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toast.sprite.visible = false; }
+  aktualizujBlysk(dt);
   updateHighlights();
   updateSection();
   updateMeasureLabels();

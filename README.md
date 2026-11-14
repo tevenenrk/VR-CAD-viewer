@@ -25,21 +25,22 @@ Przeglądarka modeli CAD (STEP / IGES / STL, np. eksport z SolidWorksa) w przegl
 | Przycisk | Działanie |
 |---|---|
 | Spust | wybrane narzędzie: **Wskaż** (nazwa i wybór części), **Rysuj** (linia w powietrzu, grubość zależy od siły nacisku; kulka pędzla 8 cm przed kontrolerem), **Gumka**, **Miarka** (od punktu do punktu na powierzchni), **Kolor** (maluje część), **Komentarz** (płytka ze strzałką), **Przekrój** (płaszczyzna cięcia w ręce) |
-| Grip przy części | chwyć **część** albo **grupę części w sferze** (tryb w panelu) |
+| Grip przy części | chwyć **część** albo **wszystko w sferze** (tryb w panelu); tak samo chwytasz **rysunki** z narzędzia Rysuj |
 | Trzymasz część + prawy spust | **kopia** części zostaje w tym miejscu, a Ty dalej trzymasz oryginał |
 | Trzymasz część + A | **ukryj** trzymaną część (B – cofnij) |
-| Wskaż + spust na części | w panelu otwiera się **strona części**: Ukryj, Półprzezroczysta, Tylko ta, kolory, Kolor oryginalny, **Grupy części** |
+| Wskaż + spust na części | **okienko przy części**: Ukryj, Półprzezroczysta, **Bez przekroju**, Tylko ta, kolory, Kolor oryginalny, Zaznaczaj wiele / Grupuj / Rozgrupuj, Więcej. Spust obok modelu albo ✕ zamyka |
 | Grip w pustym miejscu | chwyć cały model |
 | Oba gripy | obracaj i powiększaj trzymany element albo cały model |
-| A | zrzut ekranu |
+| A | zrzut ekranu (błysk, dźwięk migawki i wibracja — błysku nie ma na zdjęciu) |
 | B | cofnij |
 | X | pokaż / ukryj panel (na lewym kontrolerze, klikasz promieniem prawego + spust) |
 | Y | reset pozycji modelu |
 | Prawa gałka ↑↓ | grubość pędzla / gumki, przy Przekroju przesuw płaszczyzny, w innych narzędziach skala modelu |
 | Lewa gałka ↑↓ | wielkość sfery chwytu (tryb Grupa) |
 
-Panel w goglach wisi kilka centymetrów nad lewym kontrolerem (kontroler go nie zasłania); przyciski mają ikony i są pogrupowane w ramki. Trzy zakładki:
-- **Narzędzia** – narzędzie (spust), chwytanie (grip), kolor, rozmiar, przekrój (Włącz / X / Y / Z / Odwróć), cofnij, usuń rysunki / miary / komentarze, zrzut, skala, resety.
+Panel w goglach wisi kilka centymetrów nad lewym kontrolerem (kontroler go nie zasłania); przyciski mają ikony i są pogrupowane w ramki. Cztery zakładki:
+- **Narzędzia** – narzędzie (spust), chwytanie (grip) + „Grupuj zaznaczone / Rozgrupuj / Odznacz”, kolor, rozmiar, przekrój (Włącz / X / Y / Z / Odwróć / Tnij wszystko), zrzut, skala, resety.
+- **Widok** – **tło dookoła** (kafelki z podglądem: Bez tła, Szczyt góry, Kosmos, Niebo, Zachód słońca, Studio, Łąka o świcie, Planeta, „Z internetu ▸”, „Własne zdjęcie (Drive)”, „Obróć tło 45°”), **rozstrzelenie modelu** (− / + / Złóż), usuwanie rysunków / miar / komentarzy.
 - **Drzewo** – drzewo złożenia: kwadrat = pokaż/ukryj, kółko = półprzezroczysta, nazwa = wybierz część (świeci na pomarańczowo), „Pokaż wszystko”, „Tylko wybrana”, „Ukryj wybraną”.
 - **Menu** – plik z Google Drive albo z „Ostatnich plików”, „Wczytaj ponownie”, oś góry Y/Z, „Na stół / Skala 1:1”, dokładność siatki, przełączenie VR ↔ AR, wyjście z gogli, stan chmury i wysyłanie zaległych zrzutów.
 
@@ -49,9 +50,26 @@ Do gogli można wejść bez wczytanego modelu — panel otworzy się wtedy na za
 
 **Przekrój:** narzędzie Przekrój → trzymaj spust: płaszczyzna idzie za kontrolerem jak nóż (blisko osi X/Y/Z sama się do niej przyciąga), puść = zostaje. Prawa gałka przesuwa płaszczyznę. Powierzchnia przekroju jest zamalowana (kolor części zmieszany z pomarańczowym).
 
-**Grupy części:** Wskaż + spust na pierwszej części → „Zaznaczaj wiele” → spust na kolejnych częściach → „Grupuj”. Grupa zostaje grupą:
+**Przekrój bez wybranych części:** Wskaż + spust na części → w okienku „Bez przekroju” — płaszczyzna jej nie tnie (np. wał w przeciętej obudowie).
+„Tnij wszystko” (karta Przekrój w panelu) przywraca cięcie wszystkich części. Na PC: przycisk „Bez przekroju” przy wybranej części, w panelu „Przekrój” — „Tnij wszystkie części”.
+
+**Grupy części — sferą:** tryb chwytania „Sfera”, ustaw wielkość (lewa gałka albo − / +), złap gripem kilka części naraz i puść —
+złapane części zostają zaznaczone (pomarańczowe) → w panelu „Grupuj zaznaczone”. „Rozgrupuj” rozbija grupę, „Odznacz” czyści zaznaczenie.
+
+**Grupy części — wskazywaniem:** Wskaż + spust na pierwszej części → w okienku „Zaznaczaj wiele” → spust na kolejnych częściach → „Grupuj”. Grupa zostaje grupą:
 grip na dowolnej jej części chwyta całą grupę, kopia kopiuje całą grupę, w drzewie przy nazwie widać ⟨Grupa N⟩, a „Zapisz STEP” zapisuje ją jako podzłożenie.
 Rozbicie: spust na części z grupy (zaznacza się cała grupa) → „Rozgrupuj”. Na PC: Ctrl + klik = kilka części, przyciski „Grupuj zaznaczone” / „Rozgrupuj”.
+
+**Rysunki jako obiekty:** linie z narzędzia Rysuj chwytasz gripem tak jak części (w trybie Część — najbliższy rysunek albo część, w trybie Sfera — wszystko w sferze),
+przesuwasz, obracasz dwiema rękami, A ukrywa trzymany rysunek, B cofa.
+
+**Rozstrzelenie (explode):** zakładka Widok → „+” odsuwa części od środka złożenia (co 10 %, do 200 %), „Złóż” wraca. Zapis STEP i Szkicownik
+zawsze używają złożonego modelu (rozstrzelenie to tylko widok).
+
+**Tła:** zakładka Widok. Wbudowane tła rysuje program (działają bez internetu), „Łąka o świcie” i „Planeta” są zdjęciami w repozytorium,
+„Z internetu ▸” pobiera darmowe panoramy z Poly Haven (licencja CC0, kilka MB — gogle muszą mieć internet), „Własne zdjęcie (Drive)” —
+dowolne zdjęcie 360° (panorama 2:1, JPG / PNG) z Twojego Google Drive. Wybór jest zapamiętany. W trybie AR tła nie ma (widzisz pokój).
+Na PC: panel „Widok” — lista teł, „Własne zdjęcie 360°” z dysku, suwak rozstrzelenia.
 
 **PC:** lewy przycisk myszy – obrót, prawy – przesuw, kółko – zoom, klik – wybór części (zmiana koloru w panelu), Ctrl + klik – kilka części, Ctrl+Z – cofnij. „Dodaj komentarz” → klik w model → wpisz tekst (albo „Dyktuj”) → „Zapisz”. Klik w płytkę = edycja. Panel „Przekrój”: Włącz, osie X/Y/Z, suwak położenia, Odwróć. Panel „Drzewo złożenia”: pokaż/ukryj, wybór, „Tylko wybrana”.
 
@@ -89,6 +107,7 @@ Klucz zostaje tylko w tej przeglądarce (ustawienia są osobne na PC i na Quest)
 
 - v0.1: wczytanie STEP, drzewo części z nazwami, kolory, wskazywanie części, wymiary, wejście w VR/AR.
 - v0.2: panel narzędzi w goglach, rysowanie w powietrzu, gumka, miarka, malowanie części, chwytanie części / grupy w sferze, skalowanie dwiema rękami, zrzut ekranu, cofanie.
+- v0.4 (w toku): okienko przy części, przekrój bez wybranych części, grupy ze sfery, chwytanie rysunków, rozstrzelenie, tła 360°, błysk przy zrzucie; Szkicownik brył (szkic, cofanie).
 - v0.3: drzewo złożenia w goglach, przekrój (zamalowany), komentarze na płytkach ze strzałką (klawiatura w goglach, klawiatura Quest, dyktowanie Gemini), menu główne w goglach (plik, oś, tryb VR/AR), Google Drive: otwieranie STEP i automatyczny zapis zrzutów, ostatnio otwierane pliki.
 
 Sprawdzone automatycznie w Chrome i w emulatorze Meta Quest 3 (IWER). Na prawdziwych goglach czeka na test.
@@ -159,9 +178,10 @@ Test silnika (w folderze projektu, Node.js): `node test/szkicownik_test.mjs` —
 - `index.html` – cały program.
 - `test/test_zlozenie.step` – małe złożenie testowe (własne, wygenerowane skryptem).
 - `test/make_test_step.py` – generator złożenia testowego (CadQuery).
+- `tla.js`, `tla/` – tła 360° (rysowane przez program + 2 zdjęcia, licencje w `tla/LICENCJE.md`).
 - `szkicownik/` – Szkicownik brył (silnik geometrii, biblioteki w `szkicownik/lib/`).
 - `test/szkicownik_test.mjs` – testy geometrii Szkicownika w Node.
-- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (133 sprawdzenia, w tym Szkicownik na PC i w emulatorze gogli; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
+- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (144 sprawdzenia, w tym Szkicownik na PC i w emulatorze gogli; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
   `pip install playwright` oraz w folderze projektu
   `npm install --no-save three@0.187.0 occt-import-js@0.0.23 three-mesh-bvh@0.9.16 iwer@2.6.0`.
 
