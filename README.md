@@ -107,7 +107,7 @@ Klucz zostaje tylko w tej przeglądarce (ustawienia są osobne na PC i na Quest)
 
 - v0.1: wczytanie STEP, drzewo części z nazwami, kolory, wskazywanie części, wymiary, wejście w VR/AR.
 - v0.2: panel narzędzi w goglach, rysowanie w powietrzu, gumka, miarka, malowanie części, chwytanie części / grupy w sferze, skalowanie dwiema rękami, zrzut ekranu, cofanie.
-- v0.4 (w toku): okienko przy części, przekrój bez wybranych części, grupy ze sfery, chwytanie rysunków, rozstrzelenie, tła 360°, błysk przy zrzucie; Szkicownik brył (szkic, cofanie).
+- v0.4 (w toku): Szkicownik: łuk styczny, zaokrąglenia, powierzchnie (płaska, wstążka, między krzywymi), cięcie brył powierzchnią, pogrubianie; okienko przy części, przekrój bez wybranych części, grupy ze sfery, chwytanie rysunków, rozstrzelenie, tła 360°, błysk przy zrzucie; Szkicownik brył (szkic, cofanie).
 - v0.3: drzewo złożenia w goglach, przekrój (zamalowany), komentarze na płytkach ze strzałką (klawiatura w goglach, klawiatura Quest, dyktowanie Gemini), menu główne w goglach (plik, oś, tryb VR/AR), Google Drive: otwieranie STEP i automatyczny zapis zrzutów, ostatnio otwierane pliki.
 
 Sprawdzone automatycznie w Chrome i w emulatorze Meta Quest 3 (IWER). Na prawdziwych goglach czeka na test.
@@ -145,16 +145,29 @@ Zbyt długa operacja (ponad 5 s) jest przerywana, bryły zostają bez zmian.
 | A (nic nie trzymasz) | zrzut ekranu · **X** panel · **Y** reset widoku |
 
 Panel (lewy kontroler, kilka cm nad nim, przyciski z ikonami pogrupowane w ramki): **Bryły** (narzędzia Wybierz / Prostopadłościan / Walec / Kula; Cofnij, Kopiuj, Usuń, Grupuj, Rozgrupuj;
-lista brył, przejmij oryginał) · **Szkic** (płaszczyzna, Linia / Łuk, Usuń ostatni, Zamknij, Anuluj; Wyciągnij, Wpisz wysokość, Obrót, kąt obrotu) · **Edycja** (dokładne wymiary, położenie,
+lista brył, przejmij oryginał) · **Szkic** (płaszczyzna, Linia / Łuk styczny / Łuk 3 pkt / Zaokrąglij + promień, Usuń ostatni, Zamknij, Anuluj; Wyciągnij, Wpisz wysokość, Obrót, kąt obrotu, Powierzchnia)
+· **Powierzchnie** (Płaska ze szkicu, Wstążka, Między 2 krzywymi; Tnij bryłę, Pogrub, grubość) · **Edycja** (dokładne wymiary, położenie,
 obrót, skala — klik w pole otwiera klawiaturę numeryczną; Suma / Różnica / Część wspólna: wybrana bryła = A, potem wskaż B;
 snap; kolor) · **Plik** (eksport STEP, powrót do podglądu).
 
 **Szkic → bryła:** zakładka **Szkic** → wybierz płaszczyznę (domyślnie pozioma) → spust = kolejne punkty obrysu (gogle: czubek kontrolera
-rzutowany na płaszczyznę, pierwszy punkt ustala, na jakiej wysokości leży płaszczyzna; PC: klik). **Łuk** = trzy punkty: początek, punkt na łuku, koniec.
+rzutowany na płaszczyznę, pierwszy punkt ustala, na jakiej wysokości leży płaszczyzna; PC: klik). Rodzaje łuków:
+**Łuk styczny** — jeden punkt: łuk płynnie przedłuża poprzedni odcinek (jak w SolidWorksie; pierwszy odcinek to zawsze linia),
+**Łuk 3 pkt** — początek, punkt na łuku, koniec, **Zaokrąglij** — spust przy narożniku między dwiema liniami (świeci na żółto) wstawia promień
+(„Promień”: 2 / 5 / 10 / 20 / 50 mm; działa też na zamkniętym obrysie, B cofa).
 Punkty przyciągają się do siatki i do istniejących punktów. Punkt na pierwszym punkcie (albo „Zamknij”) zamyka obrys.
 Odcinek, który przecinałby obrys, świeci na czerwono i nie zostanie dodany. B / „Usuń ostatni” = cofnij odcinek.
 Potem: **Wyciągnij** — odsuń rękę (mysz) od płaszczyzny, podgląd pokazuje bryłę, spust = gotowe (albo „Wpisz wysokość”, minus = w drugą stronę);
 **Obrót** — wskaż prosty odcinek obrysu jako oś (żółty), spust = bryła obrotowa (360°, „Zmień kąt”: 270 / 180 / 90°).
+
+**Powierzchnie** (zakładka Powierzchnie):
+- **Płaska ze szkicu** — zamknięty obrys z zakładki Szkic zamienia się w płaską powierzchnię (bez grubości).
+- **Wstążka (2 ręce)** — trzymaj OBA spusty i prowadź ręce; powierzchnia rozpina się między czubkami kontrolerów. Puść = gotowe.
+- **Między 2 krzywymi** — dwa razy: trzymaj spust i prowadź rękę (krzywa); po drugiej krzywej powstaje powierzchnia pomiędzy nimi. PC: klikaj punkty, Enter kończy krzywą.
+- **Tnij bryłę** — wybierz powierzchnię → „Tnij bryłę” → wskaż bryłę: powstają dwie części (nad i pod powierzchnią), powierzchnia się chowa.
+  Powierzchnia musi przechodzić przez całą bryłę (bryła poza zasięgiem powierzchni zostaje w części „pod”).
+- **Pogrub** — powierzchnia staje się bryłą o grubości 1–20 mm („Wpisz grubość”: dowolna, minus = w drugą stronę); grubość można później zmienić w Edycji.
+Powierzchnie zapisują się w STEP jako powierzchnie (w SolidWorksie: Powierzchnia‑Import). Wszystko można cofnąć (B / Ctrl+Z).
 
 **Cofanie:** każda zmiana brył (dodanie, przesunięcie, obrót, skala, wymiary, boolean, kopia, usunięcie, grupy, kolor, widoczność) zapisuje
 stan sprzed zmiany; B / Ctrl+Z / „Cofnij” przywraca go (do 40 kroków). „Przejmij oryginał” nie da się cofnąć — historia zaczyna się od tego miejsca.
@@ -181,7 +194,7 @@ Test silnika (w folderze projektu, Node.js): `node test/szkicownik_test.mjs` —
 - `tla.js`, `tla/` – tła 360° (rysowane przez program + 2 zdjęcia, licencje w `tla/LICENCJE.md`).
 - `szkicownik/` – Szkicownik brył (silnik geometrii, biblioteki w `szkicownik/lib/`).
 - `test/szkicownik_test.mjs` – testy geometrii Szkicownika w Node.
-- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (144 sprawdzenia, w tym Szkicownik na PC i w emulatorze gogli; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
+- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (152 sprawdzenia, w tym Szkicownik na PC i w emulatorze gogli; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
   `pip install playwright` oraz w folderze projektu
   `npm install --no-save three@0.187.0 occt-import-js@0.0.23 three-mesh-bvh@0.9.16 iwer@2.6.0`.
 

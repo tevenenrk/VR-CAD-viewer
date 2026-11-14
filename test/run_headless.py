@@ -1195,6 +1195,83 @@ def test_szkicownik_pc(browser):
     page.keyboard.press("Shift+ArrowRight")
     E("await SZ.frames(2);")
 
+    # szkic: łuk styczny + zaokrąglenie narożnika, wyciągnięcie wpisaną wysokością
+    h0 = E("return S.historia.length;")
+    n0 = E("return S.projekt.bryly.length;")
+    klik("tab:szkic")
+    klik("sz:linia")
+    st = E("await SZ.frames(2); return SZ.ekran(S.api.controls.target.clone());")
+    page.mouse.click(st[0] - 260, st[1] + 120)
+    E("await SZ.frames(2);")
+    szkic_klik(60, 0)
+    klik("sz:lukStyczny")
+    szkic_klik(60, 40)
+    klik("sz:linia")
+    szkic_klik(0, 40); szkic_klik(0, 0)
+    klik("sz:zaokraglij")
+    szkic_klik(0, 40)
+    r = E("""const s = S.szkic.s; const L = s.segmenty.find(x => x.typ === 'luk');
+             return { z: s.zamkniety, n: s.segmenty.length, luki: s.segmenty.filter(x => x.typ === 'luk').length, m: L && L.m.map((v, i) => v - s.punkty[0][i]) };""")
+    check("szkic PC: łuk styczny (półokrąg dalej od linii) i zaokrąglenie narożnika R10", r["z"] and r["n"] == 5 and r["luki"] == 2, str(r))
+    klik("sz:wysokosc")
+    for k in ["2", "0", "Enter"]:
+        page.keyboard.press(k)
+    E("await SZ.czekaj();")
+    r = E("const b = S.projekt.bryly[S.projekt.bryly.length - 1]; return { n: S.projekt.bryly.length, typ: b.def.typ, vol: b.objetosc, id: b.id };")
+    oczek = (2400 + 3.14159265358979 * 400 / 2 - (100 - 3.14159265358979 * 25)) * 20
+    check("szkic PC: wyciągnięcie obrysu z łukiem stycznym i zaokrągleniem", r["n"] == n0 + 1 and r["typ"] == "wyciagniecie" and abs(r["vol"] - oczek) < 1, f"{r['vol']:.1f} / {oczek:.1f}")
+    bryla_id = r["id"]
+    # powierzchnia między dwiema krzywymi (PC: punkty na płaszczyźnie przez środek bryły), cięcie bryły, pogrubienie
+    page.keyboard.press("Escape")
+    klik("tab:pow")
+    klik("narz:krzywe")
+    E(f"window.__widok = [S.api.controls.target.clone(), S.api.camera.position.clone()]; const c = SZ.srodekBryly('{bryla_id}'); S.api.controls.target.copy(c); S.api.controls.update(); await SZ.frames(2);")
+    r0 = E(f"""const b = S.bryla('{bryla_id}'), u = S.osGoryIndeks();
+               const min = b.poz.map((v, i) => v + b.ramka.min[i]), max = b.poz.map((v, i) => v + b.ramka.max[i]);
+               const h = S.naSiatke(S.swiatDoCad(S.api.controls.target))[u];
+               return {{ min, max, h, u }};""")
+    def krzywa(y):
+        for x in (r0["min"][0] - 20, (r0["min"][0] + r0["max"][0]) / 2, r0["max"][0] + 20):
+            p3 = [x, y, r0["h"]] if r0["u"] == 2 else [x, r0["h"], y]
+            xy = E(f"return SZ.ekran(S.cadDoSwiata({p3}));")
+            page.mouse.click(xy[0], xy[1])
+            E("await SZ.frames(2);")
+        page.keyboard.press("Enter")
+        E("await SZ.czekaj();")
+    krzywa(r0["min"][1] - 20)
+    stan1 = E("return { a: !!(S.krzywe && S.krzywe.a), n: S.projekt.bryly.length };")
+    krzywa(r0["max"][1] + 20)
+    r = E("const p = S.projekt.bryly[S.projekt.bryly.length - 1]; return { typ: p.def.typ, rodzaj: p.def.rodzaj, pole: p.pole, id: p.id, zazn: S.zazn.join() === p.id };")
+    check("powierzchnia PC: dwie krzywe (klik + Enter) → powierzchnia między nimi", stan1["a"] and r["typ"] == "powierzchnia" and r["rodzaj"] == "krzywe" and r["pole"] > 100 and r["zazn"], f"{stan1} {r}")
+    pow_id = r["id"]
+    klik("narz:wybierz")
+    klik("pw:tnij")
+    czeka = E("return S.oczekujeB && S.oczekujeB.op;")
+    klik("tab:bryly")
+    E(f"S.przewin = S.projekt.bryly.findIndex(b => b.id === '{bryla_id}');")
+    klik(f"sel:{bryla_id}")
+    E("await SZ.czekaj();")
+    r = E(f"""const cz = S.projekt.bryly.filter(b => b.def.typ === 'podzial');
+              return {{ cz: cz.length, suma: cz.reduce((s, b) => s + b.objetosc, 0), stara: !!S.bryla('{bryla_id}'), powUkryta: !S.bryla('{pow_id}').widoczna }};""")
+    check("cięcie PC: „Tnij bryłę” + wskazanie bryły → dwie części o łącznej objętości bryły", czeka == "tnij" and r["cz"] == 2 and abs(r["suma"] - oczek) < 5 and not r["stara"] and r["powUkryta"], str(r))
+    E(f"S.przewin = S.projekt.bryly.findIndex(b => b.id === '{pow_id}');")
+    klik(f"sel:{pow_id}")
+    klik("tab:pow")
+    klik("pw:pogrub")
+    E("await SZ.czekaj();")
+    r = E(f"const b = S.projekt.bryly.find(x => x.def.typ === 'pogrubienie'); return {{ jest: !!b, vol: b && b.objetosc, znikla: !S.bryla('{pow_id}') }};")
+    pole_pow = E(f"return {r0['max'][0] - r0['min'][0] + 40} * {r0['max'][1] - r0['min'][1] + 40};")
+    check("pogrubienie PC: powierzchnia → bryła o grubości 5 mm", r["jest"] and r["znikla"] and abs(r["vol"] - pole_pow * 5) / (pole_pow * 5) < 0.05, f"{r} ≈ {pole_pow * 5:.0f}")
+    page.screenshot(path=str(OUT / "screenshot_szk_pow.png"))
+    # cofnij wszystko z tego fragmentu (Ctrl+Z), żeby dalsze sprawdzenia widziały te same bryły co wcześniej
+    for _ in range(12):
+        if E(f"return S.historia.length;") <= h0: break
+        page.keyboard.press("Control+z")
+        E("await SZ.czekaj();")
+    E("S.api.controls.target.copy(window.__widok[0]); S.api.camera.position.copy(window.__widok[1]); S.api.controls.update(); await SZ.frames(2);")
+    check("cofanie (Ctrl+Z) zdejmuje pogrubienie, cięcie, powierzchnię i wyciągnięcie", E("return S.projekt.bryly.length;") == n0, f"{E('return S.projekt.bryly.map(b => b.nazwa);')}")
+    klik("tab:bryly")
+
     # eksport STEP: prawdziwe pobranie pliku
     klik("tab:plik")
     pobrane = {}
@@ -1396,6 +1473,29 @@ def test_szkicownik_vr(browser):
     check("szkicownik VR: wyciągnięcie ruchem ręki (40 mm) → bryła 60×40×40", r["pod"] and r["hh"] == 40 and r["n"] == 1 and r["typ"] == "wyciagniecie"
           and abs(r["vol"] - 96000) < 0.01, str(r))
     check("szkicownik VR: B cofa wyciągnięcie, zakładka Bryły = narzędzie Wybierz", r["poB"] == 0 and r["narz"] == "wybierz", str(r))
+
+    # wstążka: oba spusty, ręce prowadzone razem → powierzchnia rozpięta między czubkami; B cofa
+    r = E("""const n0 = S.projekt.bryly.length;
+             const hv = await SZ.klik('tab:pow');
+             await SZ.klik('narz:wstazka');
+             const y = 1.3, z0 = -0.45;
+             T.tipAt('left', [-0.1, y, z0]); T.tipAt('right', [0.1, y, z0]); await T.frames(3);
+             T.btn('left', 'trigger', 1); T.btn('right', 'trigger', 1); await T.frames(3);
+             const start = !!S.wstazka;
+             for (let i = 1; i <= 15; i++) { T.tipAt('left', [-0.1, y, z0 - i * 0.01]); T.tipAt('right', [0.1, y + 0.002 * i, z0 - i * 0.01]); await T.frames(2); }
+             const pary = S.wstazka ? S.wstazka.lewa.length : 0;
+             T.btn('left', 'trigger', 0); T.btn('right', 'trigger', 0); await T.frames(3);
+             await SZ.czekaj();
+             const p = S.projekt.bryly[S.projekt.bryly.length - 1];
+             const sw = new V.THREE.Vector3(); S.root.getWorldScale(sw);
+             const wynik = { n: S.projekt.bryly.length - n0, typ: p && p.def.typ, pole: p && p.pole, oczek: 0.2 * 0.15 / (sw.x * sw.x) };
+             T.pose('right', [0.6, 1.6, 0.3], [1.5, 2.5, 0.5]); await T.frames(3);
+             await T.click('right', 'b-button'); await SZ.czekaj();
+             await SZ.klik('tab:bryly');
+             return { hv, start, pary, ...wynik, poB: S.projekt.bryly.length - n0 };""")
+    check("szkicownik VR: wstążka z dwóch rąk → powierzchnia między czubkami kontrolerów",
+          r["hv"] == "tab:pow" and r["start"] and r["pary"] >= 5 and r["n"] == 1 and r["typ"] == "powierzchnia" and abs(r["pole"] - r["oczek"]) / r["oczek"] < 0.1, str(r))
+    check("szkicownik VR: B cofa wstążkę", r["poB"] == 0, str(r))
 
     # spust w pustym miejscu = odznacz
     E("T.pose('right', [0.6, 1.6, 0.3], [1.5, 2.5, 0.5]); await T.frames(3); await T.click('right', 'trigger');")

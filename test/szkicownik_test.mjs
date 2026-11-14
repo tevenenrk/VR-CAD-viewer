@@ -24,7 +24,7 @@ import occtimportjs from '../node_modules/occt-import-js/dist/occt-import-js.js'
 import { GEO, cadDoSceny, scenaDoCad, macierzBryly, przeksztalcPunkt, dopasujCzesci } from '../szkicownik/geometria.js';
 import { SilnikGeometrii, BladGeometrii } from '../szkicownik/klient.js';
 import { Projekt } from '../szkicownik/projekt.js';
-import { Szkic, samoprzeciecia, pole, poJednejStronie } from '../szkicownik/szkic2d.js';
+import { Szkic, samoprzeciecia, pole, poJednejStronie, lukZ3 } from '../szkicownik/szkic2d.js';
 
 const KATALOG = fileURLToPath(new URL('.', import.meta.url));
 const wyniki = [];
@@ -122,6 +122,26 @@ console.log('\n=== SZKICOWNIK: GEOMETRIA W NODE ===');
   l.cofnij();
   sprawdz('szkic: usuń ostatni otwiera obrys', !l.zamkniety && l.segmenty.length === 3);
   sprawdz('oś obrotu: obrys po jednej stronie osi', poJednejStronie(s.segmenty, [0, 0], [0, 50]) && !poJednejStronie(s.segmenty, [50, -10], [50, 60]));
+}
+
+// 2c. Łuk styczny i zaokrąglenie narożnika (czysty JS)
+{
+  const s = new Szkic('XY');
+  s.dodaj('linia', [0, 0]); s.dodaj('linia', [40, 0]);
+  const r = s.dodaj('lukStyczny', [40, 40]);
+  const L = lukZ3(s.segmenty[1].a, s.segmenty[1].m, s.segmenty[1].b);
+  sprawdz('łuk styczny: przedłuża linię bez załamania (środek 40,20, R20)', r.ok && L && Math.abs(L.c[0] - 40) < 1e-9 && Math.abs(L.c[1] - 20) < 1e-9 && Math.abs(L.r - 20) < 1e-9,
+          JSON.stringify(s.segmenty[1]));
+  const n = new Szkic('XY'); n.dodaj('linia', [0, 0]);
+  sprawdz('łuk styczny bez poprzedniego odcinka → czytelny błąd', !n.dodaj('lukStyczny', [10, 10]).ok);
+  const p = new Szkic('XY');
+  [[0, 0], [100, 0], [100, 50], [0, 50], [0, 0]].forEach((q) => p.dodaj('linia', q));
+  const z1 = p.zaokraglij(p.wierzcholek([99, 1]), 10), z0 = p.zaokraglij(p.wierzcholek([1, 1]), 10);
+  sprawdz('zaokrąglenie narożników R10 (także narożnika startu)', z1.ok && z0.ok && p.segmenty.length === 6 && samoprzeciecia(p.segmenty).length === 0 &&
+          Math.abs(Math.abs(pole(p.segmenty)) - (5000 - 2 * (100 - Math.PI * 25))) < 0.2, `pole ${pole(p.segmenty).toFixed(2)}`);
+  const zz = p.zaokraglij(p.wierzcholek([100, 50]), 60);
+  p.cofnij();
+  sprawdz('za duży promień → błąd z maksimum; Usuń ostatni cofa zaokrąglenie', !zz.ok && /za duży/.test(zz.blad) && p.segmenty.length === 5, zz.blad);
 }
 
 const silnik = new SilnikGeometrii({ utworzWorker: workerNode, limity: { BOOLEAN_TIMEOUT_MS: TEST.TIMEOUT_TESTOWY_MS } });
@@ -290,6 +310,50 @@ try {
     sprawdz('cofanie: przywrócone bryły eksportują się poprawnie', exp.length === 2 && t1 && blisko(t1.max[0] - t1.min[0], 40, TEST.TOL_RAMKA_MM),
             exp.map((c) => c.nazwa).join(', '));
     await projekt.usun([dol.id, tuleja.id, pol.id, pk.id]);
+  }
+
+  // 8f. Powierzchnie: płaska ze szkicu, między krzywymi (wstążka), cięcie bryły, pogrubienie, eksport, cofanie
+  {
+    const prost = [[0, 0], [60, 0], [60, 40], [0, 40]].map((p, i, t) => ({ typ: 'linia', a: p, b: t[(i + 1) % 4] }));
+    const plaska = await projekt.dodaj({ typ: 'powierzchnia', rodzaj: 'plaska', plaszczyzna: 'XY', odsuniecie: 5, obrys: prost }, { nazwa: 'Plaska' });
+    sprawdz('powierzchnia płaska ze szkicu: pole 2400 mm², objętość 0', Math.abs(plaska.pole - 2400) < 0.01 && plaska.objetosc === 0, `pole ${plaska.pole}`);
+    const gruba = await projekt.pogrub(plaska.id, 4);
+    sprawdz('pogrubienie płaskiej powierzchni o 4 mm → bryła 9600 mm³', Math.abs(gruba.objetosc - 9600) < 0.01 && !projekt.bryla(plaska.id) && gruba.def.typ === 'pogrubienie',
+            gruba.objetosc.toFixed(2));
+    // wstążka: dwie pofalowane krzywe nad sześcianem 100 mm (z od 1000 do 1100)
+    const A = [], B = [];
+    for (let i = 0; i <= 12; i++) { const x = 900 + i * 25; A.push([x, -80, 1050 + 6 * Math.sin(i)]); B.push([x, 280, 1050 + 6 * Math.cos(i)]); }
+    const wst = await projekt.dodaj({ typ: 'powierzchnia', rodzaj: 'krzywe', a: A, b: B }, { nazwa: 'Wstazka' });
+    sprawdz('powierzchnia między dwiema krzywymi (wstążka)', wst.pole > 300 * 360 * 0.9 && wst.objetosc === 0, `pole ${wst.pole.toFixed(0)}`);
+    const kost = await projekt.dodaj({ typ: 'prostopadloscian', dx: 100, dy: 100, dz: 100 }, { nazwa: 'Kostka', poz: [1000, 100, 1050] });
+    const [g, d] = await projekt.podziel(kost.id, wst.id);
+    sprawdz('cięcie bryły wstążką: dwie części, razem objętość sześcianu, powierzchnia schowana',
+            !projekt.bryla(kost.id) && Math.abs(g.objetosc + d.objetosc - 1e6) < 100 && g.objetosc > 3e5 && d.objetosc > 3e5 && !projekt.bryla(wst.id).widoczna,
+            `${g.objetosc.toFixed(0)} + ${d.objetosc.toFixed(0)}`);
+    let blad = null;
+    try { await projekt.boolean(g.id, wst.id, 'suma'); } catch (e) { blad = e; }
+    sprawdz('suma z powierzchnią → czytelny błąd', blad && /powierzchnia/.test(blad.message), blad && blad.message);
+    blad = null;
+    const daleko = await projekt.dodaj({ typ: 'kula', r: 10 }, { poz: [5000, 5000, 5000] });
+    try { await projekt.podziel(daleko.id, wst.id); } catch (e) { blad = e; }
+    sprawdz('powierzchnia obok bryły → „nie przecina tej bryły”', blad && /nie przecina/.test(blad.message), blad && blad.message);
+    const wstGr = await projekt.dodaj({ typ: 'powierzchnia', rodzaj: 'krzywe', a: A, b: B }, { nazwa: 'Wstazka 2' });
+    const plyta = await projekt.pogrub(wstGr.id, 3);
+    sprawdz('pogrubienie wygiętej wstążki o 3 mm', Math.abs(plyta.objetosc - wst.pole * 3) / (wst.pole * 3) < 0.02, `${plyta.objetosc.toFixed(0)} ≈ ${(wst.pole * 3).toFixed(0)}`);
+    const exp = await czytajSTEP(await projekt.eksportSTEP({ zakres: 'nowe', ids: [g.id, d.id, wst.id] }));
+    sprawdz('eksport STEP: części po cięciu i powierzchnia', exp.length === 3 && exp.some((c) => c.nazwa === 'Wstazka'), exp.map((c) => c.nazwa).join(', '));
+    // cofanie podziału (migawka sprzed) i odtworzenie części z definicji (bez BREP)
+    const m0 = projekt.migawka();
+    const kost2 = await projekt.dodaj({ typ: 'prostopadloscian', dx: 100, dy: 100, dz: 100 }, { nazwa: 'Kostka2', poz: [1000, 100, 1050] });
+    const m1 = projekt.migawka();
+    await projekt.podziel(kost2.id, wst.id);
+    await projekt.przywroc(m1);
+    sprawdz('cofanie cięcia: bryła wraca w całości', projekt.bryla(kost2.id) && Math.abs(projekt.bryla(kost2.id).objetosc - 1e6) < 1);
+    const sw = await silnik.wykonaj('zbuduj', { id: 'tmp_pd', def: g.def, wysrodkuj: true });
+    sprawdz('część po cięciu odtwarzana z definicji (np. po restarcie wątku)', Math.abs(sw.objetosc - g.objetosc) < 1, sw.objetosc.toFixed(0));
+    await silnik.wykonaj('usun', { ids: ['tmp_pd'] });
+    await projekt.przywroc(m0);
+    await projekt.usun([gruba.id, g.id, d.id, wst.id, daleko.id, plyta.id]);
   }
 
   // 9. Strażnik czasu: ciężki boolean przerwany, wątek odtworzony, bryły nietknięte

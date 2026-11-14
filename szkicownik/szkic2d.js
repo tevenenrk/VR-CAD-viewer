@@ -11,6 +11,7 @@ export const SZKIC = {
   TOL_DOMKNIECIA_MM: 15,          // koniec bliżej początku niż to = obrys się domyka
   SNAP_PUNKT_MM: 12,              // przyciąganie do istniejących punktów szkicu
   ODCINKI_LUKU: 32,               // łuk przybliżany tyloma odcinkami (podgląd, test przecięć)
+  TOL_WIERZCHOLKA_MM: 25,         // zaokrąglenie: narożnik najbliżej wskazanego punktu, nie dalej niż tyle
   EPS: 1e-6,
 };
 
@@ -124,6 +125,34 @@ export function przyciagnij(p, punkty, siatka, tolPunkt = SZKIC.SNAP_PUNKT_MM) {
   return { p: [Math.round(p[0] / g) * g, Math.round(p[1] / g) * g], punkt: null };
 }
 
+// Kierunek styczny na końcu odcinka (w punkcie b), jednostkowy
+export function kierunekKonca(s) {
+  if (s.typ !== 'luk') { const d = sub(s.b, s.a), L = Math.hypot(...d) || 1; return [d[0] / L, d[1] / L]; }
+  const L = lukZ3(s.a, s.m, s.b);
+  if (!L) { const d = sub(s.b, s.a), n = Math.hypot(...d) || 1; return [d[0] / n, d[1] / n]; }
+  const r = sub(s.b, L.c), n = Math.hypot(...r) || 1;
+  return L.ccw ? [-r[1] / n, r[0] / n] : [r[1] / n, -r[0] / n];
+}
+
+// Łuk styczny: zaczyna się w a w kierunku t i kończy w b → punkt środkowy łuku m (null = b leży na prostej, wtedy linia)
+export function lukStyczny(a, t, b) {
+  const d = sub(b, a), L2 = d[0] * d[0] + d[1] * d[1];
+  const n = [-t[1], t[0]];                          // w lewo od kierunku
+  const dn = d[0] * n[0] + d[1] * n[1];
+  if (L2 < SZKIC.EPS || Math.abs(dn) < 1e-6 * Math.sqrt(L2)) return null;
+  const r = L2 / (2 * dn);                          // promień ze znakiem (+ = środek po lewej)
+  const c = [a[0] + n[0] * r, a[1] + n[1] * r];
+  // środek łuku: na dwusiecznej cięciwy, po stronie, w którą skręca kierunek t
+  const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  let w = sub(mid, c), wl = Math.hypot(...w);
+  if (wl < SZKIC.EPS) w = [-d[1], d[0]], wl = Math.hypot(...w);   // półokrąg: prostopadle do cięciwy
+  let m = [c[0] + w[0] / wl * Math.abs(r), c[1] + w[1] / wl * Math.abs(r)];
+  // sprawdź kierunek: łuk a→m→b musi startować zgodnie z t
+  const t0 = kierunekKonca({ typ: 'luk', a: b, m, b: a });  // styczna w a przy przejściu b→a
+  if (t0[0] * t[0] + t0[1] * t[1] > 0) m = [2 * c[0] - m[0], 2 * c[1] - m[1]];   // druga połowa okręgu
+  return m;
+}
+
 // Odległość punktu od odcinka prostego (do wskazania osi obrotu)
 export function odlOdOdcinka(p, a, b) {
   const d = sub(b, a), L = d[0] * d[0] + d[1] * d[1];
@@ -149,18 +178,30 @@ export class Szkic {
     this.segmenty = [];
     this.zamkniety = false;
     this.lukSrodek = null;                       // łuk: wskazany punkt pośredni, czeka na koniec
+    this.historia = [];                          // stany sprzed zmian (Usuń ostatni / B cofa też zaokrąglenie)
+  }
+  _zapamietaj() {
+    this.historia.push(JSON.stringify({ start: this.start, segmenty: this.segmenty, zamkniety: this.zamkniety }));
   }
   get ostatni() { return this.segmenty.length ? this.segmenty[this.segmenty.length - 1].b : this.start; }
+  // kierunek, w którym kończy się obrys (do łuku stycznego); null = brak odcinka
+  get kierunek() { return this.segmenty.length ? kierunekKonca(this.segmenty[this.segmenty.length - 1]) : null; }
   get punkty() { return this.start ? [this.start, ...this.segmenty.map((s) => s.b)] : []; }
 
   // Dodaj odcinek kończący się w p. Zwraca { ok, blad, kolizja, zamknieto }
   dodaj(typ, p, m = null) {
     if (this.zamkniety) return { ok: false, blad: 'Obrys jest już zamknięty' };
-    if (!this.start) { this.start = [...p]; return { ok: true }; }
+    if (!this.start) { this._zapamietaj(); this.start = [...p]; return { ok: true }; }
     const a = this.ostatni;
     let b = [...p];
-    const domyka = this.segmenty.length >= (typ === 'luk' ? 1 : 2) && odl(b, this.start) <= SZKIC.TOL_DOMKNIECIA_MM;
+    const domyka = this.segmenty.length >= (typ === 'linia' ? 2 : 1) && odl(b, this.start) <= SZKIC.TOL_DOMKNIECIA_MM;
     if (domyka) b = [...this.start];
+    if (typ === 'lukStyczny') {                 // łuk styczny do poprzedniego odcinka
+      const t = this.kierunek;
+      if (!t) return { ok: false, blad: 'Łuk styczny zaczyna się od poprzedniego odcinka — najpierw narysuj linię' };
+      m = lukStyczny(a, t, b);
+      typ = m ? 'luk' : 'linia';                // punkt na przedłużeniu = zwykła linia
+    }
     if (odl(a, b) < SZKIC.EPS) return { ok: false, blad: 'Za krótki odcinek' };
     const s = typ === 'luk' ? { typ: 'luk', a: [...a], m: [...m], b } : { typ: 'linia', a: [...a], b };
     if (typ === 'luk' && !lukZ3(a, m, b)) return { ok: false, blad: 'Punkty łuku leżą na jednej prostej' };
@@ -176,19 +217,55 @@ export class Szkic {
     if (domyka) sasiedzi.push(0);
     const k = kolizja(this.segmenty, s, sasiedzi.filter((i) => i >= 0));
     if (k >= 0) return { ok: false, blad: `Obrys przecina się sam ze sobą (z odcinkiem ${k + 1})`, kolizja: k };
+    if (domyka && Math.abs(pole([...this.segmenty, s])) < 1) return { ok: false, blad: 'Obrys ma zerowe pole' };
+    this._zapamietaj();
     this.segmenty.push(s);
-    if (domyka) {
-      if (Math.abs(pole(this.segmenty)) < 1) { this.segmenty.pop(); return { ok: false, blad: 'Obrys ma zerowe pole' }; }
-      this.zamkniety = true;
-    }
+    if (domyka) this.zamkniety = true;
     return { ok: true, zamknieto: domyka };
   }
 
   cofnij() {
     this.lukSrodek = null;
-    if (this.zamkniety) { this.zamkniety = false; this.segmenty.pop(); return; }
-    if (this.segmenty.length) this.segmenty.pop();
-    else { this.start = null; this.odsuniecie = null; }
+    const h = this.historia.pop();
+    if (!h) { this.start = null; this.segmenty = []; this.zamkniety = false; this.odsuniecie = null; return; }
+    const st = JSON.parse(h);
+    this.start = st.start; this.segmenty = st.segmenty; this.zamkniety = st.zamkniety;
+    if (!this.start) this.odsuniecie = null;
+  }
+
+  // Zaokrąglenie narożnika między dwiema liniami (promień r mm). i = numer wierzchołka (0 = start, tylko w zamkniętym obrysie)
+  zaokraglij(i, r) {
+    const n = this.segmenty.length;
+    if (!(r > 0)) return { ok: false, blad: 'Promień musi być większy od zera' };
+    const iPrzed = i === 0 ? (this.zamkniety ? n - 1 : -1) : i - 1, iPo = i < n ? i : -1;
+    if (iPrzed < 0 || iPo < 0 || iPrzed === iPo) return { ok: false, blad: 'Tu nie ma narożnika (koniec obrysu)' };
+    const s1 = this.segmenty[iPrzed], s2 = this.segmenty[iPo];
+    if (s1.typ !== 'linia' || s2.typ !== 'linia') return { ok: false, blad: 'Zaokrąglam tylko narożnik między dwiema liniami' };
+    const P = s1.b, u1 = sub(s1.a, P), u2 = sub(s2.b, P), l1 = Math.hypot(...u1), l2 = Math.hypot(...u2);
+    const e1 = [u1[0] / l1, u1[1] / l1], e2 = [u2[0] / l2, u2[1] / l2];
+    const cos = Math.max(-1, Math.min(1, e1[0] * e2[0] + e1[1] * e2[1])), kat = Math.acos(cos);
+    if (kat > Math.PI - 1e-3) return { ok: false, blad: 'Narożnik jest prosty — nie ma czego zaokrąglać' };
+    const d = r / Math.tan(kat / 2);
+    if (d >= l1 - 1e-6 || d >= l2 - 1e-6) return { ok: false, blad: `Promień ${r} mm za duży dla tego narożnika (max ok. ${Math.floor(Math.min(l1, l2) * Math.tan(kat / 2))} mm)` };
+    const T1 = [P[0] + e1[0] * d, P[1] + e1[1] * d], T2 = [P[0] + e2[0] * d, P[1] + e2[1] * d];
+    const bis = [e1[0] + e2[0], e1[1] + e2[1]], bl = Math.hypot(...bis);
+    const C = [P[0] + bis[0] / bl * r / Math.sin(kat / 2), P[1] + bis[1] / bl * r / Math.sin(kat / 2)];
+    const m = [C[0] - bis[0] / bl * r, C[1] - bis[1] / bl * r];
+    this._zapamietaj();
+    s1.b = T1; s2.a = T2;
+    const luk = { typ: 'luk', a: [...T1], m, b: [...T2] };
+    if (i === 0) { this.segmenty.push(luk); this.start = [...T2]; }   // narożnik startu: łuk na koniec, start przesunięty
+    else this.segmenty.splice(i, 0, luk);
+    return { ok: true, luk };
+  }
+
+  // Narożnik najbliżej punktu p (indeks wierzchołka) albo -1
+  wierzcholek(p, tol = SZKIC.TOL_WIERZCHOLKA_MM) {
+    let best = -1, bd = tol;
+    const pk = this.punkty;
+    const ile = this.zamkniety ? pk.length - 1 : pk.length;        // w zamkniętym obrysie ostatni = start
+    for (let i = 0; i < ile; i++) { const dd = odl(p, pk[i]); if (dd <= bd) { bd = dd; best = i; } }
+    return best;
   }
 
   // Zamknij linią do punktu startowego
