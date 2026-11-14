@@ -120,6 +120,20 @@ const KOMENDY = {
     return { wynik: { ...w, id: idWyniku, lok, srodek, brep }, transfer };
   },
 
+  // cofanie: bryła z zapisu BREP albo z parametrów, z siatką do wyświetlenia
+  async odtworzJedna({ id, def, lok, brep }) {
+    const { R } = await startuj();
+    let s = null;
+    if (brep) { try { s = R.deserializeShape(brep); } catch { s = null; } }
+    if (!s) {
+      s = G.zbudujDef(def, pobierzOryginal);
+      if (lok && (lok[0] || lok[1] || lok[2])) s = s.translate(lok);
+    }
+    zapamietaj(id, s);
+    const { w, transfer } = pakuj(s);
+    return { wynik: { ...w, id }, transfer };
+  },
+
   // kopia gotowej bryły (bez liczenia od nowa)
   kopiuj({ id, zrodlo }) {
     zapamietaj(id, lokalna(zrodlo).clone());

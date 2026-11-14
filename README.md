@@ -28,7 +28,7 @@ Przeglądarka modeli CAD (STEP / IGES / STL, np. eksport z SolidWorksa) w przegl
 | Grip przy części | chwyć **część** albo **grupę części w sferze** (tryb w panelu) |
 | Trzymasz część + prawy spust | **kopia** części zostaje w tym miejscu, a Ty dalej trzymasz oryginał |
 | Trzymasz część + A | **ukryj** trzymaną część (B – cofnij) |
-| Wskaż + spust na części | w panelu otwiera się **strona części**: Ukryj, Półprzezroczysta, Tylko ta, kolory, Kolor oryginalny |
+| Wskaż + spust na części | w panelu otwiera się **strona części**: Ukryj, Półprzezroczysta, Tylko ta, kolory, Kolor oryginalny, **Grupy części** |
 | Grip w pustym miejscu | chwyć cały model |
 | Oba gripy | obracaj i powiększaj trzymany element albo cały model |
 | A | zrzut ekranu |
@@ -38,8 +38,8 @@ Przeglądarka modeli CAD (STEP / IGES / STL, np. eksport z SolidWorksa) w przegl
 | Prawa gałka ↑↓ | grubość pędzla / gumki, przy Przekroju przesuw płaszczyzny, w innych narzędziach skala modelu |
 | Lewa gałka ↑↓ | wielkość sfery chwytu (tryb Grupa) |
 
-Panel w goglach ma trzy zakładki:
-- **Narzędzia** – narzędzie, chwytanie, kolor, rozmiar, przekrój (Włącz / X / Y / Z / Odwróć), cofnij, usuń rysunki / miary / komentarze, zrzut, skala, resety.
+Panel w goglach wisi kilka centymetrów nad lewym kontrolerem (kontroler go nie zasłania); przyciski mają ikony i są pogrupowane w ramki. Trzy zakładki:
+- **Narzędzia** – narzędzie (spust), chwytanie (grip), kolor, rozmiar, przekrój (Włącz / X / Y / Z / Odwróć), cofnij, usuń rysunki / miary / komentarze, zrzut, skala, resety.
 - **Drzewo** – drzewo złożenia: kwadrat = pokaż/ukryj, kółko = półprzezroczysta, nazwa = wybierz część (świeci na pomarańczowo), „Pokaż wszystko”, „Tylko wybrana”, „Ukryj wybraną”.
 - **Menu** – plik z Google Drive albo z „Ostatnich plików”, „Wczytaj ponownie”, oś góry Y/Z, „Na stół / Skala 1:1”, dokładność siatki, przełączenie VR ↔ AR, wyjście z gogli, stan chmury i wysyłanie zaległych zrzutów.
 
@@ -49,7 +49,11 @@ Do gogli można wejść bez wczytanego modelu — panel otworzy się wtedy na za
 
 **Przekrój:** narzędzie Przekrój → trzymaj spust: płaszczyzna idzie za kontrolerem jak nóż (blisko osi X/Y/Z sama się do niej przyciąga), puść = zostaje. Prawa gałka przesuwa płaszczyznę. Powierzchnia przekroju jest zamalowana (kolor części zmieszany z pomarańczowym).
 
-**PC:** lewy przycisk myszy – obrót, prawy – przesuw, kółko – zoom, klik – wybór części (zmiana koloru w panelu), Ctrl+Z – cofnij. „Dodaj komentarz” → klik w model → wpisz tekst (albo „Dyktuj”) → „Zapisz”. Klik w płytkę = edycja. Panel „Przekrój”: Włącz, osie X/Y/Z, suwak położenia, Odwróć. Panel „Drzewo złożenia”: pokaż/ukryj, wybór, „Tylko wybrana”.
+**Grupy części:** Wskaż + spust na pierwszej części → „Zaznaczaj wiele” → spust na kolejnych częściach → „Grupuj”. Grupa zostaje grupą:
+grip na dowolnej jej części chwyta całą grupę, kopia kopiuje całą grupę, w drzewie przy nazwie widać ⟨Grupa N⟩, a „Zapisz STEP” zapisuje ją jako podzłożenie.
+Rozbicie: spust na części z grupy (zaznacza się cała grupa) → „Rozgrupuj”. Na PC: Ctrl + klik = kilka części, przyciski „Grupuj zaznaczone” / „Rozgrupuj”.
+
+**PC:** lewy przycisk myszy – obrót, prawy – przesuw, kółko – zoom, klik – wybór części (zmiana koloru w panelu), Ctrl + klik – kilka części, Ctrl+Z – cofnij. „Dodaj komentarz” → klik w model → wpisz tekst (albo „Dyktuj”) → „Zapisz”. Klik w płytkę = edycja. Panel „Przekrój”: Włącz, osie X/Y/Z, suwak położenia, Odwróć. Panel „Drzewo złożenia”: pokaż/ukryj, wybór, „Tylko wybrana”.
 
 ## Zrzuty ekranu — gdzie lądują
 
@@ -89,7 +93,7 @@ Klucz zostaje tylko w tej przeglądarce (ustawienia są osobne na PC i na Quest)
 
 Sprawdzone automatycznie w Chrome i w emulatorze Meta Quest 3 (IWER). Na prawdziwych goglach czeka na test.
 
-## Szkicownik brył (w budowie — etap 3 z 5)
+## Szkicownik brył (w budowie — etap 4 z 5)
 
 Tryb do szybkiego tworzenia brył zastępczych (gabarytów) w goglach, z eksportem do STEP (prawdziwe bryły, nie siatka).
 Plan: `docs/szkicownik-plan.md`. Wejście: przycisk **„Szkicownik brył”** w panelu na PC albo w goglach **X → Menu → „Szkicownik brył ▸”**.
@@ -98,7 +102,9 @@ Pierwsze wejście ładuje OpenCascade (23 MB), potem przeglądarka trzyma go w p
 Co już działa: prostopadłościan, walec, kula **tworzone rozciąganiem ręką** (jak w Gravity Sketch: narzędzie bryły, spust w punkcie A,
 przeciągnij do B, puść — podgląd z wymiarami na żywo, snap do siatki), lista brył (pokaż/ukryj, wybór),
 przesuwanie / obracanie / skalowanie ze snapem (domyślnie 10 mm i 15°), położenie, obrót i skala wpisywane liczbą,
-suma / różnica / część wspólna, kopiowanie, grupy, **przejęcie oryginalnego modelu** jako elementów złożenia
+suma / różnica / część wspólna, kopiowanie, grupy, **szkic 2D** (linie i łuki na płaszczyźnie XY / XZ / YZ) zamieniany w bryłę
+**wyciągnięciem** albo **obrotem wokół krawędzi obrysu**, **cofanie** (B w goglach, Ctrl+Z na PC, do 40 kroków),
+**przejęcie oryginalnego modelu** jako elementów złożenia
 (można je przesuwać, kopiować i grupować), eksport STEP: wszystko / tylko nowe / sam oryginał / zaznaczone.
 Wczytany model jest półprzezroczystym tłem i Szkicownik pracuje w jego współrzędnych — gabaryty trafią w SolidWorksie na swoje miejsce.
 Zbyt długa operacja (ponad 5 s) jest przerywana, bryły zostają bez zmian.
@@ -112,22 +118,35 @@ Zbyt długa operacja (ponad 5 s) jest przerywana, bryły zostają bez zmian.
 | Spust w pustym miejscu | odznacz |
 | Grip na bryle (promień) | chwyć i przesuń / obróć ręką — snap po siatce. Żółty punkt = tu złapiesz, zielony = tu trzymasz |
 | Trzymasz bryłę + prawy spust | kopia zostaje w miejscu, dalej trzymasz oryginał |
-| Trzymasz bryłę + A | usuń trzymaną bryłę (cofanie — etap 5) |
+| Trzymasz bryłę + A | usuń trzymaną bryłę (B — cofnij) |
 | Grip w pustym miejscu | przesuń całą scenę |
 | Oba gripy | obrót + skala trzymanej bryły (albo sceny) |
 | Prawa gałka ↑↓ | skala całej sceny |
-| A (nic nie trzymasz) | zrzut ekranu · **X** panel · **Y** reset widoku · **B** (cofanie — etap 5) |
+| B | **cofnij** (w szkicu: usuń ostatni odcinek) |
+| A (nic nie trzymasz) | zrzut ekranu · **X** panel · **Y** reset widoku |
 
-Panel (lewy kontroler): **Bryły** (narzędzia Wybierz / Prostopadłościan / Walec / Kula, przejmij oryginał, kopiuj, usuń, lista, grupy) · **Edycja** (dokładne wymiary, położenie,
+Panel (lewy kontroler, kilka cm nad nim, przyciski z ikonami pogrupowane w ramki): **Bryły** (narzędzia Wybierz / Prostopadłościan / Walec / Kula; Cofnij, Kopiuj, Usuń, Grupuj, Rozgrupuj;
+lista brył, przejmij oryginał) · **Szkic** (płaszczyzna, Linia / Łuk, Usuń ostatni, Zamknij, Anuluj; Wyciągnij, Wpisz wysokość, Obrót, kąt obrotu) · **Edycja** (dokładne wymiary, położenie,
 obrót, skala — klik w pole otwiera klawiaturę numeryczną; Suma / Różnica / Część wspólna: wybrana bryła = A, potem wskaż B;
 snap; kolor) · **Plik** (eksport STEP, powrót do podglądu).
+
+**Szkic → bryła:** zakładka **Szkic** → wybierz płaszczyznę (domyślnie pozioma) → spust = kolejne punkty obrysu (gogle: czubek kontrolera
+rzutowany na płaszczyznę, pierwszy punkt ustala, na jakiej wysokości leży płaszczyzna; PC: klik). **Łuk** = trzy punkty: początek, punkt na łuku, koniec.
+Punkty przyciągają się do siatki i do istniejących punktów. Punkt na pierwszym punkcie (albo „Zamknij”) zamyka obrys.
+Odcinek, który przecinałby obrys, świeci na czerwono i nie zostanie dodany. B / „Usuń ostatni” = cofnij odcinek.
+Potem: **Wyciągnij** — odsuń rękę (mysz) od płaszczyzny, podgląd pokazuje bryłę, spust = gotowe (albo „Wpisz wysokość”, minus = w drugą stronę);
+**Obrót** — wskaż prosty odcinek obrysu jako oś (żółty), spust = bryła obrotowa (360°, „Zmień kąt”: 270 / 180 / 90°).
+
+**Cofanie:** każda zmiana brył (dodanie, przesunięcie, obrót, skala, wymiary, boolean, kopia, usunięcie, grupy, kolor, widoczność) zapisuje
+stan sprzed zmiany; B / Ctrl+Z / „Cofnij” przywraca go (do 40 kroków). „Przejmij oryginał” nie da się cofnąć — historia zaczyna się od tego miejsca.
 
 **PC (test bez gogli):** panel 3D po prawej stronie ekranu klikasz myszą (klik = spust). Narzędzie bryły: przeciągnij myszą po płaszczyźnie
 (poziom środka obrotu kamery albo wierzch wskazanej bryły; wysokość prostopadłościanu = krótszy bok, potem można ją zmienić w Edycji),
 Esc = wróć do Wybierz. Klik w bryłę = wybór, uchwyty
 przesuwu/obrotu/skali (W / E / R), strzałki i PageUp/PageDown = krok siatki (Shift ×10), Q / Shift+Q = obrót o kąt snapu,
 + / − = skala, Del = usuń, Ctrl+D = kopiuj, Ctrl+G = grupuj (Ctrl+Shift+G rozgrupuj), Ctrl+A = zaznacz wszystko,
-Esc = odznacz, cyfry + Enter w klawiaturze numerycznej.
+Ctrl+Z = cofnij, Esc = odznacz, cyfry + Enter w klawiaturze numerycznej. W szkicu: klik = punkt (przeciąganie dalej obraca widok),
+Backspace = usuń ostatni, Enter = zamknij obrys, L / A = linia / łuk, Esc = wyjście ze szkicu.
 
 Po „Wróć do podglądu” bryły ze Szkicownika stają się **zwykłymi częściami podglądu** (w drzewie pod „Szkicownik”): chwytasz je,
 powiększasz dwiema rękami, kopiujesz prawym spustem, ukrywasz, a „Zapisz STEP” zapisuje je razem z resztą. Przesunięcia części
@@ -142,7 +161,7 @@ Test silnika (w folderze projektu, Node.js): `node test/szkicownik_test.mjs` —
 - `test/make_test_step.py` – generator złożenia testowego (CadQuery).
 - `szkicownik/` – Szkicownik brył (silnik geometrii, biblioteki w `szkicownik/lib/`).
 - `test/szkicownik_test.mjs` – testy geometrii Szkicownika w Node.
-- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (95 sprawdzeń, w tym Szkicownik na PC i w emulatorze gogli; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
+- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (133 sprawdzenia, w tym Szkicownik na PC i w emulatorze gogli; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
   `pip install playwright` oraz w folderze projektu
   `npm install --no-save three@0.187.0 occt-import-js@0.0.23 three-mesh-bvh@0.9.16 iwer@2.6.0`.
 

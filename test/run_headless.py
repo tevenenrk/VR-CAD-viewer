@@ -51,6 +51,7 @@ src = src.replace("https://cdn.jsdelivr.net/npm/three@0.187.0/", f"http://localh
 src = re.sub(r"https://cdn\.jsdelivr\.net/npm/occt-import-js@[\d.]+/", f"http://localhost:{PORT}/node_modules/occt-import-js/", src)
 src = re.sub(r"https://cdn\.jsdelivr\.net/npm/three-mesh-bvh@[\d.]+/", f"http://localhost:{PORT}/node_modules/three-mesh-bvh/", src)
 src = src.replace("import('./szkicownik/", "import('../szkicownik/")   # kopia strony leży w test/
+src = src.replace("from './ikony.js'", "from '../ikony.js'")
 (OUT / "index_local.html").write_text(src, encoding="utf-8")
 
 IWER_JS = (ROOT / "node_modules" / "iwer" / "build" / "iwer.min.js").read_text(encoding="utf-8")
@@ -580,6 +581,49 @@ def test_xr(browser):
              return { h, op, op2 };""")
     check("drzewo w goglach: przycisk ◐ = półprzezroczysta", abs(r["op"] - 0.3) < 1e-6 and r["op2"] == 1, str(r))
 
+    # grupowanie części w podglądzie: Wskaż + spust na części, „Zaznaczaj wiele”, druga część z drzewa, „Grupuj”;
+    # grip na jednej przesuwa całą grupę; B cofa przesunięcie; „Rozgrupuj” rozbija grupę
+    r = E("""V.paletteAction('tool:wskaz'); V.paletteAction('grab:czesc'); await T.frames(2);
+             const wskaz = async (n) => {             // promień z kierunku, z którego część widać jako pierwszą
+               const p = T.centerOf(n);
+               let eye = null;
+               for (const k of [[0, 0.3, 0.05], [0.05, 0.05, 0.3], [0.3, 0.05, 0.05], [-0.3, 0.05, 0.05], [0.05, 0.05, -0.3], [0.05, -0.3, 0.05]]) {
+                 const e = new V.THREE.Vector3(p.x + k[0], p.y + k[1], p.z + k[2]);
+                 const hit = V.pick(e, p.clone().sub(e));
+                 if (hit && hit.object.name === n) { eye = e; break; }
+               }
+               if (!eye) return 'nie widać: ' + n;
+               T.pose('right', eye.toArray(), p.toArray()); await T.frames(4); await T.click('right', 'trigger');
+             };
+             await wskaz('Slup');
+             const h = await T.palClick('grp:wiele');
+             const w2 = await wskaz('Wspornik_L');
+             const zazn = V.selectedMeshes.map(m => m.name).sort();
+             const strona = V.pal.page;
+             await T.palClick('grp:grupuj');
+             const g = V.grupyCzesci.length, wiele = V.S.wiele, wDrzewie = V.treeRows.some(x => x.name === 'Wspornik_L' && x.isPart);
+             await T.palClick('cz:back');
+             const a0 = T.centerOf('Slup'), b0 = T.centerOf('Wspornik_L'), c0 = T.centerOf('Plyta_bazowa');
+             T.tipAt('right', a0.toArray()); await T.frames(4);
+             T.btn('right', 'squeeze', 1); await T.frames(4);
+             const held = T.ctrl('right').userData.held;
+             const trzyma = held && held.meshes ? held.meshes.map(m => m.name).sort() : [];
+             T.tipAt('right', [a0.x + 0.1, a0.y, a0.z]); await T.frames(4);
+             T.btn('right', 'squeeze', 0); await T.frames(3);
+             const da = T.centerOf('Slup').x - a0.x, db = T.centerOf('Wspornik_L').x - b0.x, dc = T.centerOf('Plyta_bazowa').x - c0.x;
+             await T.click('right', 'b-button');
+             const cofX = T.centerOf('Slup').x - a0.x;
+             await wskaz('Slup');
+             const zaznGr = V.selectedMeshes.length;
+             await T.palClick('grp:rozgrupuj');
+             const g2 = V.grupyCzesci.length;
+             await T.palClick('cz:back');
+             return { h, w2, zazn, strona, g, wiele, trzyma, da, db, dc, cofX, zaznGr, g2 };""")
+    check("podgląd: zaznaczanie wielu części (spust + drzewo) i „Grupuj”", r["h"] == "grp:wiele" and r["zazn"] == ["Slup", "Wspornik_L"] and r["g"] == 1 and not r["wiele"], str(r))
+    check("podgląd: grip na części z grupy przesuwa całą grupę (reszta stoi)", r["trzyma"] == ["Slup", "Wspornik_L"] and abs(r["da"] - r["db"]) < 1e-6 and r["da"] > 0.01 and abs(r["dc"]) < 1e-9, str(r))
+    check("podgląd: B cofa przesunięcie grupy, klik w część zaznacza całą grupę, „Rozgrupuj” ją rozbija",
+          abs(r["cofX"]) < 1e-6 and r["zaznGr"] == 2 and r["g2"] == 0, str(r))
+
     # trzymasz część: prawy spust = kopia w tym miejscu (dalej trzymasz oryginał), A = ukryj; B cofa
     shots0 = page.inner_text("#shotCount")
     r = E("""const p0 = T.centerOf('Slup'), n0 = V.parts.length;
@@ -922,6 +966,77 @@ def test_szkicownik_pc(browser):
     check("szkicownik PC: grupa z dwóch części, klik zaznacza całą grupę", r["g"] == 1 and r["zazn"] == 2, str(r))
     check("szkicownik PC: Shift+strzałka przesuwa grupę o 100 mm", abs(r["x"][0] - px[0] - 100) < 1e-6 and abs(r["x"][1] - px[1] - 100) < 1e-6, f"{px} → {r['x']}")
 
+    # szkic 2D na PC: prostokąt kliknięciami, wyciągnięcie myszą, cofanie (Ctrl+Z); obrót wokół krawędzi; kolizja odcinków
+    n_przed = E("return S.projekt.bryly.length;")
+    klik("tab:szkic")
+    r = E("return { n: S.narzedzie, pl: S.plaszczyznaSzkicu(), szk: !!S.szkic };")
+    check("szkicownik PC: zakładka Szkic włącza szkic na płaszczyźnie poziomej (XY przy osi Z)", r["n"] == "szkic" and r["pl"] == "XY" and r["szk"], str(r))
+    def szkic_klik(du, dv):
+        xy = E(f"""const s = S.szkic.s; return SZ.ekran(S.cadDoSwiata(S.zPlaszczyzny([s.start[0] + ({du}), s.start[1] + ({dv})], s.odsuniecie)));""")
+        page.mouse.click(xy[0], xy[1])
+        E("await SZ.frames(2);")
+    def prostokat(bledny=False):
+        st = E("await SZ.frames(2); return SZ.ekran(S.api.controls.target.clone());")
+        page.mouse.click(st[0] - 260, st[1] + 120)
+        E("await SZ.frames(2);")
+        szkic_klik(60, 0); szkic_klik(60, 40)
+        info = None
+        if bledny:
+            szkic_klik(30, -20)
+            info = E("return { seg: S.szkic.s.segmenty.length, blad: S.szkic.blad && S.szkic.blad.idx, msg: S.msg };")
+            page.keyboard.press("Backspace")
+            E("await SZ.frames(2);")
+            info["poCofnieciu"] = E("return S.szkic.s.segmenty.length;")
+            szkic_klik(60, 40)
+        szkic_klik(0, 40); szkic_klik(0, 0)
+        return info
+    prostokat()
+    r = E("return { z: S.szkic.s.zamkniety, n: S.szkic.s.segmenty.length, o: S.szkic.s.odsuniecie, widac: S.szkicWidok.grupa.visible };")
+    check("szkicownik PC: prostokąt 4 kliknięciami, klik w pierwszy punkt zamyka obrys", r["z"] and r["n"] == 4 and r["widac"], str(r))
+    klik("sz:wyciagnij")
+    xy = E("""const s = S.szkic.s, c = [s.start[0] + 30, s.start[1] + 20];
+              const p = S.zPlaszczyzny(c, s.odsuniecie); p[2] += 50; return SZ.ekran(S.cadDoSwiata(p));""")
+    page.mouse.move(xy[0], xy[1], steps=4)
+    E("await SZ.frames(3);")
+    pod = E("return { h: S.szkic.h, bryla: S.szkicWidok.bryla.visible };")
+    page.mouse.click(xy[0], xy[1])
+    E("await SZ.czekaj();")
+    r = E("""const b = S.projekt.bryly[S.projekt.bryly.length - 1];
+             return { n: S.projekt.bryly.length, typ: b.def.typ, h: b.def.h, vol: b.objetosc, zmin: b.poz[2] + b.ramka.min[2], o: b.def.odsuniecie, zazn: S.zazn.join() === b.id };""")
+    check("szkicownik PC: wyciągnięcie myszą — podgląd bryły, wysokość z ruchu (50 mm)", pod["bryla"] and pod["h"] == 50, str(pod))
+    check("szkicownik PC: bryła z wyciągnięcia 60×40×50 stoi na płaszczyźnie szkicu",
+          r["n"] == n_przed + 1 and r["typ"] == "wyciagniecie" and r["h"] == 50 and abs(r["vol"] - 120000) < 0.01 and abs(r["zmin"] - r["o"]) < 1e-6 and r["zazn"], str(r))
+    page.keyboard.press("Control+z")
+    E("await SZ.czekaj();")
+    check("szkicownik PC: Ctrl+Z cofa wyciągnięcie", E("return S.projekt.bryly.length;") == n_przed and "Cofnięto" in E("return S.msg;"), E("return S.msg;"))
+    info = prostokat(bledny=True)
+    check("szkicownik PC: odcinek przecinający obrys odrzucony (czerwony), Backspace usuwa ostatni",
+          info["seg"] == 2 and info["blad"] == 0 and "przecina" in info["msg"] and info["poCofnieciu"] == 1, str(info))
+    klik("sz:obrot")
+    xy = E("const s = S.szkic.s; return SZ.ekran(S.cadDoSwiata(S.zPlaszczyzny([s.start[0] + 30, s.start[1] + 2], s.odsuniecie)));")
+    page.mouse.move(xy[0], xy[1], steps=4)
+    E("await SZ.frames(3);")
+    os_idx = E("return S.szkic.osIdx;")
+    page.mouse.click(xy[0], xy[1])
+    E("await SZ.czekaj();")
+    r = E("const b = S.projekt.bryly[S.projekt.bryly.length - 1]; return { n: S.projekt.bryly.length, typ: b.def.typ, vol: b.objetosc };")
+    check("szkicownik PC: obrót 360° wokół wskazanej krawędzi (walec Ø80 × 60)", os_idx == 0 and r["n"] == n_przed + 1 and r["typ"] == "obrot"
+          and abs(r["vol"] - 3.14159265358979 * 1600 * 60) < 0.5, f"oś {os_idx}, {r}")
+    page.keyboard.press("Control+z")
+    E("await SZ.czekaj();")
+    page.keyboard.press("Escape")
+    E("await SZ.frames(2);")
+    r = E("return { n: S.projekt.bryly.length, narz: S.narzedzie, str: S.strona, widac: S.szkicWidok.grupa.visible };")
+    check("szkicownik PC: cofnięty obrót, Esc kończy szkic (szkic schowany)", r["n"] == n_przed and r["narz"] == "wybierz" and r["str"] == "bryly" and not r["widac"], str(r))
+    # cofanie przesunięcia grupy, potem znów przesunięcie (dalsze testy go oczekują)
+    page.keyboard.press("Control+z")
+    E("await SZ.czekaj();")
+    r = E("return [SZ.bryla('Slup').poz[0], SZ.bryla('Wspornik_L').poz[0]];")
+    check("szkicownik PC: Ctrl+Z cofa przesunięcie grupy", abs(r[0] - px[0]) < 1e-6 and abs(r[1] - px[1]) < 1e-6, f"{r} (przed: {px})")
+    klik(f"sel:{ids[0]}")
+    page.keyboard.press("Shift+ArrowRight")
+    E("await SZ.frames(2);")
+
     # eksport STEP: prawdziwe pobranie pliku
     klik("tab:plik")
     pobrane = {}
@@ -1087,8 +1202,45 @@ def test_szkicownik_vr(browser):
     check("szkicownik VR: trzymana bryła + prawy spust = kopia zostaje w miejscu", r["n1"] == r["n0"] + 1 and r["kop"] and r["dalej"] > 1, str(r))
     check("szkicownik VR: trzymana bryła + A = usunięta (bez zrzutu)", r["usunieta"] and r["n2"] == r["n0"] and r["bezZrzutu"], str(r))
 
-    # spust w pustym miejscu = odznacz, B = komunikat o cofaniu
-    E("T.pose('right', [0.6, 1.6, 0.3], [1.5, 2.5, 0.5]); await T.frames(3); await T.click('right', 'trigger'); await T.click('right', 'b-button');")
+    # B = cofnij: usunięta bryła wraca; potem usuwamy ją znowu panelem
+    r = E("""const ids0 = S.projekt.bryly.map(b => b.id);
+             T.pose('right', [0.6, 1.6, 0.3], [1.5, 2.5, 0.5]); await T.frames(3);
+             await T.click('right', 'b-button'); await SZ.czekaj();
+             const wrocila = S.projekt.bryly.find(b => !ids0.includes(b.id));
+             const msg = S.msg;
+             if (wrocila) { S.wybierz(wrocila.id); await SZ.klik('usun'); await SZ.czekaj(); }
+             return { wrocila: !!wrocila, msg, n: S.projekt.bryly.length, n0: ids0.length };""")
+    check("szkicownik VR: B cofa usunięcie bryły", r["wrocila"] and "Cofnięto" in r["msg"] and r["n"] == r["n0"], str(r))
+
+    # szkic w goglach: prostokąt czubkiem kontrolera, wyciągnięcie ruchem ręki, B = cofnij
+    r = E("""const n0 = S.projekt.bryly.length;
+             const hv = await SZ.klik('tab:szkic');
+             const s = () => S.szkic.s;
+             T.tipAt('right', [0.35, 1.3, -0.55]); await T.frames(4);
+             const kursor = !!S.szkic.kursor;
+             await T.click('right', 'trigger');
+             const o = s().odsuniecie, st = [...s().start];
+             const wp = (du, dv, dn = 0) => { const p = S.zPlaszczyzny([st[0] + du, st[1] + dv], o + dn); return S.cadDoSwiata(p).toArray(); };
+             for (const [du, dv] of [[60, 0], [60, 40], [0, 40], [0, 0]]) { T.tipAt('right', wp(du, dv)); await T.frames(3); await T.click('right', 'trigger'); }
+             const zamkniety = s().zamkniety;
+             await SZ.klik('sz:wyciagnij');
+             T.tipAt('right', wp(30, 20, 40)); await T.frames(4);
+             const hh = S.szkic.h, pod = S.szkicWidok.bryla.visible;
+             await T.click('right', 'trigger'); await SZ.czekaj();
+             const b = S.projekt.bryly[S.projekt.bryly.length - 1];
+             const wynik = { n: S.projekt.bryly.length - n0, typ: b.def.typ, h: b.def.h, vol: b.objetosc };
+             T.pose('right', [0.6, 1.6, 0.3], [1.5, 2.5, 0.5]); await T.frames(3);
+             await T.click('right', 'b-button'); await SZ.czekaj();
+             const poB = S.projekt.bryly.length - n0;
+             await SZ.klik('tab:bryly');
+             return { hv, kursor, zamkniety, hh, pod, ...wynik, poB, narz: S.narzedzie };""")
+    check("szkicownik VR: szkic czubkiem kontrolera — obrys zamknięty", r["hv"] == "tab:szkic" and r["kursor"] and r["zamkniety"], str(r))
+    check("szkicownik VR: wyciągnięcie ruchem ręki (40 mm) → bryła 60×40×40", r["pod"] and r["hh"] == 40 and r["n"] == 1 and r["typ"] == "wyciagniecie"
+          and abs(r["vol"] - 96000) < 0.01, str(r))
+    check("szkicownik VR: B cofa wyciągnięcie, zakładka Bryły = narzędzie Wybierz", r["poB"] == 0 and r["narz"] == "wybierz", str(r))
+
+    # spust w pustym miejscu = odznacz
+    E("T.pose('right', [0.6, 1.6, 0.3], [1.5, 2.5, 0.5]); await T.frames(3); await T.click('right', 'trigger');")
     check("szkicownik VR: spust w pustym miejscu odznacza", E("return S.zazn.length;") == 0)
 
     # eksport z gogli (pobranie)
