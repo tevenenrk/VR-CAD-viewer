@@ -189,7 +189,7 @@
       <b>Spust</b> – wybrane narzędzie: Wskaż / Rysuj / Gumka / Miarka / Kolor / Komentarz / Przekrój<br>
       <b>Komentarz</b>: spust na części, przeciągnij w bok i puść = płytka ze strzałką, potem wpisz tekst (klawiatura w panelu albo „Mów”)<br>
       <b>Przekrój</b>: trzymaj spust – płaszczyzna cięcia idzie za kontrolerem jak nóż; prawa gałka – przesuw płaszczyzny<br>
-      <b>Grip</b> przy części – chwyć część albo grupę w sferze (wybór w panelu); trzymając: <b>prawy spust</b> = kopia w tym miejscu, <b>A</b> = ukryj<br>
+      <b>Grip</b> przy części / rysunku – chwyć element albo wszystko w sferze (wybór w panelu); trzymając: <b>prawy spust</b> = kopia w tym miejscu, <b>A</b> = ukryj, <b>wciśnięcie gałki</b> = grupa (drugi raz = rozgrupuj)<br>
       <b>Wskaż + spust</b> na części – strona części w panelu: ukryj, półprzezroczysta, kolor<br>
       <b>Grip</b> w pustym miejscu – chwyć cały model<br>
       <b>Oba gripy</b> – obracaj i powiększaj trzymany element / model<br>
@@ -240,6 +240,7 @@ const CONFIG = {
   // Kontrolery Quest (numery przycisków wg standardu WebXR „xr-standard”)
   DOMINANT_HAND: 'right',      // ręka „główna”: A = zrzut, B = cofnij; panel narzędzi na drugiej ręce
   BTN: { TRIGGER: 0, GRIP: 1, STICK: 3, AX: 4, BY: 5 },
+  GRUPUJ_PRZYCISK: 3,          // trzymasz gripem kilka elementów + WCIŚNIĘCIE GAŁKI (drążka) tej ręki = grupa (drugi raz = rozgrupuj)
   STICK_DEADZONE: 0.25,
   SIZE_SPEED: 1.2,             // szybkość zmiany rozmiaru / skali gałką (na sekundę)
   TIP_OFFSET: 0.03,            // końcówka narzędzia (sfera chwytu) przed kontrolerem (m)
@@ -877,10 +878,13 @@ function hideObjects(objs) {
 // ----------------------------------------------------------------------------
 let grupyCzesci = [], licznikGrupCzesci = 0;
 const grupaCzesci = (p) => (p && p.grupa ? grupyCzesci.find((g) => g.id === p.grupa) || null : null);
+// element, który może być w grupie: część (mesh.userData.part) albo rysunek (stroke.root.userData.stroke)
+const obiektGrupy = (mesh) => (mesh ? mesh.userData.part || mesh.userData.stroke || null : null);
+const elementyGrupy = (id) => [...parts.filter((q) => q.grupa === id).map((q) => q.mesh), ...strokes.filter((x) => x.grupa === id).map((x) => x.root)];
 function czlonkowieGrupy(mesh) {
-  const p = mesh && mesh.userData.part;
-  if (!p || !p.grupa) return mesh ? [mesh] : [];
-  return parts.filter((q) => q.grupa === p.grupa).map((q) => q.mesh);
+  const o = obiektGrupy(mesh);
+  if (!o || !o.grupa) return mesh ? [mesh] : [];
+  return elementyGrupy(o.grupa);
 }
 function rozszerzOGrupy(meshes) {             // chwyt części z grupy = cała grupa (widoczne części)
   const out = new Set();
@@ -889,7 +893,7 @@ function rozszerzOGrupy(meshes) {             // chwyt części z grupy = cała 
 }
 function sprzatnijGrupyCzesci() {
   for (const g of [...grupyCzesci]) {
-    const cz = parts.filter((q) => q.grupa === g.id);
+    const cz = [...parts.filter((q) => q.grupa === g.id), ...strokes.filter((x) => x.grupa === g.id)];
     if (cz.length < 2) { cz.forEach((q) => { q.grupa = null; }); grupyCzesci = grupyCzesci.filter((x) => x !== g); }
   }
   odswiezGrupyWDrzewie();
@@ -902,20 +906,46 @@ function odswiezGrupyWDrzewie() {
     r.el.querySelector('span').textContent = r.name + (g ? `  ⟨${g.nazwa}⟩` : '');
   }
 }
-function grupujZaznaczone() {
-  const lista = selectedMeshes.map((m) => m.userData.part).filter(Boolean);
-  if (lista.length < 2) { say('Zaznacz co najmniej dwie części (Zaznaczaj wiele / Ctrl+klik)'); return null; }
+const opisElementow = (lista) => {
+  const nc = lista.filter((o) => !(o instanceof Stroke)).length, nr = lista.length - nc;
+  return [nc ? `${nc} części` : '', nr ? `${nr} rys.` : ''].filter(Boolean).join(' + ');
+};
+function grupujElementy(meshes) {                // części i rysunki → jedna grupa
+  const lista = [...new Set(meshes.map(obiektGrupy).filter(Boolean))];
+  if (lista.length < 2) { say('Do grupy potrzeba co najmniej dwóch elementów (części albo rysunków)'); return null; }
   pushUndo({ type: 'grupa', items: lista.map((q) => ({ p: q, prev: q.grupa || null })) });
   const g = { id: 'g' + (++licznikGrupCzesci), nazwa: 'Grupa ' + licznikGrupCzesci };
   grupyCzesci.push(g);
   lista.forEach((q) => { q.grupa = g.id; });
   sprzatnijGrupyCzesci();
-  say(`${g.nazwa}: ${lista.length} części — chwytasz i zapisujesz je razem (B – cofnij)`);
+  say(`${g.nazwa}: ${opisElementow(lista)} — chwytasz je razem (B – cofnij)`);
   return g;
 }
+function rozgrupujElementy(meshes) {
+  const lista = [...new Set(meshes.map(obiektGrupy).filter((q) => q && q.grupa))];
+  if (!lista.length) { say('Te elementy nie są w grupie'); return 0; }
+  pushUndo({ type: 'grupa', items: lista.map((q) => ({ p: q, prev: q.grupa })) });
+  lista.forEach((q) => { q.grupa = null; });
+  sprzatnijGrupyCzesci();
+  say(`Rozgrupowano: ${opisElementow(lista)} (B – cofnij)`);
+  return lista.length;
+}
+// Trzymane gripem: jeśli to już dokładnie jedna grupa → rozgrupuj, inaczej → zgrupuj
+function przelaczGrupeTrzymanych(meshes) {
+  const lista = [...new Set(meshes.map(obiektGrupy).filter(Boolean))];
+  const g = lista.length && lista[0].grupa;
+  const jednaGrupa = g && lista.every((q) => q.grupa === g) && elementyGrupy(g).length === lista.length;
+  if (jednaGrupa) { rozgrupujElementy(meshes); return 'rozgrupowano'; }
+  return grupujElementy(meshes) ? 'zgrupowano' : null;
+}
+function grupujZaznaczone() {
+  const lista = selectedMeshes.map(obiektGrupy).filter(Boolean);
+  if (lista.length < 2) { say('Zaznacz co najmniej dwa elementy (sfera, Zaznaczaj wiele albo Ctrl+klik)'); return null; }
+  return grupujElementy(selectedMeshes);
+}
 function rozgrupujZaznaczone() {
-  const lista = selectedMeshes.map((m) => m.userData.part).filter((q) => q && q.grupa);
-  if (!lista.length) { say('Zaznaczone części nie są w grupie'); return; }
+  const lista = selectedMeshes.map(obiektGrupy).filter((q) => q && q.grupa);
+  if (!lista.length) { say('Zaznaczone elementy nie są w grupie'); return; }
   pushUndo({ type: 'grupa', items: lista.map((q) => ({ p: q, prev: q.grupa })) });
   lista.forEach((q) => { q.grupa = null; });
   sprzatnijGrupyCzesci();
@@ -1023,6 +1053,29 @@ function copyParts(meshes) {
   return copies;
 }
 
+// Kopia trzymanych elementów (części i rysunki) w miejscu; grupa → nowa grupa; jedno B cofa całość
+function kopiujTrzymane(meshes) {
+  const przed = undoStack.length;
+  const czesci = copyParts(meshes.filter((m) => m.userData.part));
+  const rys = meshes.filter((m) => m.userData.stroke).map((m) => {
+    const k = m.userData.stroke.kopia();
+    strokes.push(k);
+    pushUndo({ type: 'add', obj: k, list: strokes });
+    return k;
+  });
+  const zGrup = new Set(meshes.map((m) => obiektGrupy(m) && obiektGrupy(m).grupa));
+  if (rys.length && czesci.length + rys.length > 1 && zGrup.size === 1 && [...zGrup][0]) {   // kopia całej grupy = nowa grupa
+    const g0 = czesci.length && czesci[0].userData.part.grupa;
+    const g = g0 ? grupyCzesci.find((x) => x.id === g0) : { id: 'g' + (++licznikGrupCzesci), nazwa: 'Grupa ' + licznikGrupCzesci };
+    if (!g0) grupyCzesci.push(g);
+    czesci.forEach((c) => { c.userData.part.grupa = g.id; });
+    rys.forEach((k) => { k.grupa = g.id; });
+  }
+  const wpisy = undoStack.splice(przed);
+  if (wpisy.length) pushUndo(wpisy.length === 1 ? wpisy[0] : { type: 'wiele', items: wpisy });
+  return [...czesci, ...rys.map((k) => k.root)];
+}
+
 function removeCopies(meshes) {
   releaseAll();
   for (const c of meshes) {
@@ -1097,14 +1150,15 @@ function showPicked(obj) {
   const p = obj.userData.part;
   ui.picked.style.display = 'block';
   const g = p && grupaCzesci(p);
-  ui.pickedText.textContent = (selectedMeshes.length > 1 && p ? `Zaznaczone części: ${selectedMeshes.length}\n` : '') +
-    (p ? `Część: ${p.name}\nŚcieżka: ${p.path.join(' › ')}` : `Podzłożenie: ${obj.name}`) + (g ? `\nW grupie: ${g.nazwa}` : '');
+  const st = obj.userData.stroke, gs = st && grupaCzesci(st);
+  ui.pickedText.textContent = (selectedMeshes.length > 1 ? `Zaznaczone: ${opisElementow(selectedMeshes.map(obiektGrupy).filter(Boolean))}\n` : '') +
+    (p ? `Część: ${p.name}\nŚcieżka: ${p.path.join(' › ')}` : st ? 'Rysunek' : `Podzłożenie: ${obj.name}`) + (g || gs ? `\nW grupie: ${(g || gs).nazwa}` : '');
   const first = meshesOf(obj)[0];
   if (first) ui.partColor.value = '#' + mats(first)[0].color.getHexString();
   ui.partGhost.classList.toggle('primary', isGhost(obj));
   ui.partNoSection.classList.toggle('primary', selectedMeshes.length > 0 && selectedMeshes.every((m) => m.userData.part && m.userData.part.bezPrzekroju));
   ui.partGroup.disabled = selectedMeshes.length < 2;
-  ui.partUngroup.disabled = !selectedMeshes.some((m) => m.userData.part && m.userData.part.grupa);
+  ui.partUngroup.disabled = !selectedMeshes.some((m) => obiektGrupy(m) && obiektGrupy(m).grupa);
   if (p && p.el) { p.el.classList.add('active'); p.el.scrollIntoView({ block: 'nearest' }); }
 }
 
@@ -1248,9 +1302,9 @@ function wZasiegu(center) {
   if (S.grabMode === 'czesc') {
     const cz = partsInSphere(center, CONFIG.PART_GRAB_RADIUS, true), dCz = partsInSphere.odl;
     const rs = rysunkiWSferze(center, CONFIG.PART_GRAB_RADIUS, true);
-    return rs.lista.length && rs.odl < dCz ? rs.lista : rozszerzOGrupy(cz);
+    return rozszerzOGrupy(rs.lista.length && rs.odl < dCz ? rs.lista : cz);
   }
-  return [...rozszerzOGrupy(partsInSphere(center, S.sphere, false)), ...rysunkiWSferze(center, S.sphere, false).lista];
+  return rozszerzOGrupy([...partsInSphere(center, S.sphere, false), ...rysunkiWSferze(center, S.sphere, false).lista]);
 }
 
 function isInside(mesh, localPoint) {
@@ -1388,6 +1442,7 @@ class Stroke {
     this.root.frustumCulled = false;
     this.root.name = 'Rysunek';
     this.root.userData.stroke = this;            // rysunek można chwycić gripem jak część
+    this.grupa = null;                           // grupa (wspólna z częściami)
     this.capA = new THREE.Mesh(SPHERE_GEO, this.mat); this.capA.userData.sharedGeo = true;
     this.capB = new THREE.Mesh(SPHERE_GEO, this.mat); this.capB.userData.sharedGeo = true;
     this.capA.visible = this.capB.visible = false;
@@ -1450,6 +1505,15 @@ class Stroke {
     return d;
   }
   dispose() { this.root.removeFromParent(); this.geo.dispose(); this.mat.dispose(); }
+  // kopia w tym samym miejscu (te same punkty i grubości, to samo położenie)
+  kopia() {
+    const k = new Stroke(this.color);
+    this.points.forEach((p, i) => k.addPoint(p, this.radii[i]));
+    k.finish();
+    k.root.position.copy(this.root.position); k.root.quaternion.copy(this.root.quaternion); k.root.scale.copy(this.root.scale);
+    k.root.visible = this.root.visible;
+    return k;
+  }
 }
 
 const MEASURE_MAT = new THREE.MeshBasicMaterial({ color: CONFIG.MEASURE_COLOR });
@@ -1820,6 +1884,7 @@ function removeAnno(obj, list) {
   const i = list.indexOf(obj);
   if (i >= 0) list.splice(i, 1);
   obj.root.removeFromParent();
+  if (obj instanceof Stroke && obj.grupa) sprzatnijGrupyCzesci();
   pushUndo({ type: 'remove', objs: [obj], list });
 }
 
@@ -1827,6 +1892,7 @@ function clearAnno(list, what) {
   if (!list.length) { say(`Brak: ${what}`); return; }
   const objs = list.splice(0);
   objs.forEach((o) => o.root.removeFromParent());
+  if (list === strokes) sprzatnijGrupyCzesci();
   pushUndo({ type: 'remove', objs, list });
   say(`Usunięto: ${what} (${objs.length})`);
 }
@@ -1842,13 +1908,23 @@ function pushUndo(u) {
 function undo() {
   const u = undoStack.pop();
   if (!u) { say('Nic do cofnięcia'); return; }
-  if (u.type === 'add') {
+  cofnijWpis(u);
+  if (selectedObj) showPicked(selectedObj);
+}
+
+function cofnijWpis(u) {
+  if (u.type === 'wiele') {                      // jedna czynność złożona z kilku zmian (np. kopia części i rysunków)
+    [...u.items].reverse().forEach(cofnijWpis);
+    say('Cofnięto');
+  } else if (u.type === 'add') {
     const i = u.list.indexOf(u.obj);
     if (i >= 0) u.list.splice(i, 1);
     u.obj.dispose();
+    if (u.obj instanceof Stroke && u.obj.grupa) sprzatnijGrupyCzesci();
     say(u.obj instanceof Stroke ? 'Cofnięto rysunek' : u.obj instanceof Note ? 'Cofnięto komentarz' : 'Cofnięto pomiar');
   } else if (u.type === 'remove') {
     u.objs.forEach((o) => { annoRoot.add(o.root); u.list.push(o); });
+    if (u.objs.some((o) => o instanceof Stroke && o.grupa)) sprzatnijGrupyCzesci();
     say('Cofnięto usunięcie');
   } else if (u.type === 'move') {
     releaseAll();
@@ -1886,7 +1962,6 @@ function undo() {
     sprzatnijGrupyCzesci();
     say('Cofnięto grupowanie');
   }
-  if (selectedObj) showPicked(selectedObj);
 }
 
 // ============================================================================
@@ -1965,9 +2040,9 @@ function layoutPalette() {
                    { id: 'grab:model', text: GRABS.model, icon: 'model', active: S.grabMode === 'model' },
                    { id: 'sphere:-', text: '', icon: 'minus', disabled: S.grabMode !== 'grupa', flex: 0.45 },
                    { id: 'sphere:+', text: '', icon: 'plus', disabled: S.grabMode !== 'grupa', flex: 0.45 }], IN0, IN1);
-    const zazn = selectedMeshes.filter((m) => m.userData.part).length;
+    const zazn = selectedMeshes.filter(obiektGrupy).length;
     row(598, 76, [{ id: 'grp:grupuj', text: `Grupuj zaznaczone (${zazn})`, icon: 'grupuj', disabled: zazn < 2, flex: 1.5 },
-                  { id: 'grp:rozgrupuj', text: 'Rozgrupuj', icon: 'rozgrupuj', disabled: !selectedMeshes.some((m) => m.userData.part && m.userData.part.grupa) },
+                  { id: 'grp:rozgrupuj', text: 'Rozgrupuj', icon: 'rozgrupuj', disabled: !selectedMeshes.some((m) => obiektGrupy(m) && obiektGrupy(m).grupa) },
                   { id: 'grp:odznacz', text: 'Odznacz', icon: 'anuluj', disabled: !selectedMeshes.length, flex: 0.9 }], IN0, IN1);
     card(704, 236, S.tool === 'przekroj' ? 'Przekrój — prawa gałka przesuwa płaszczyznę' : 'Kolor i grubość — prawa gałka');
     if (S.tool === 'przekroj') {
@@ -2569,11 +2644,11 @@ function endHold(c) {
   }
   if (target.kind === 'parts') {
     pushUndo({ type: 'move', items: target.undo });
-    const cz = target.meshes.filter((m) => m.userData.part);
-    if (target.zSfery && cz.length > 1) {        // sfera złapała kilka części → zostają zaznaczone (gotowe do „Grupuj”)
-      selectedObj = cz[0]; selectedMeshes = cz;
+    const el = target.meshes.filter(obiektGrupy);
+    if (target.zSfery && el.length > 1) {        // sfera złapała kilka elementów → zostają zaznaczone (gotowe do „Grupuj”)
+      selectedObj = el.find((m) => m.userData.part) || el[0]; selectedMeshes = el;
       showPicked(selectedObj);
-      say(`Sfera: ${cz.length} części zaznaczone — „Grupuj zaznaczone” w panelu`);
+      if (!target.grupowano) say(`Sfera: ${opisElementow(el.map(obiektGrupy))} zaznaczone — gałka (wciśnij) albo „Grupuj zaznaczone”`);
     }
   }
 }
@@ -2793,6 +2868,13 @@ function handleXRInput(dt) {
       else if (main) requestScreenshot(); else togglePalette();
     }
     if (buttonPressedEdge(c, CONFIG.BTN.BY)) { if (main) undo(); else resetModelPose(); }
+    if (buttonPressedEdge(c, CONFIG.GRUPUJ_PRZYCISK)) {       // trzymasz kilka elementów + gałka = grupa / rozgrupuj
+      const t = u.held || (controllers.find((o) => o.userData.held) || {}).userData?.held;
+      if (t && t.kind === 'parts') {
+        const wynik = przelaczGrupeTrzymanych(t.meshes);
+        if (wynik) { t.grupowano = true; pulse(c, 0.7, wynik === 'zgrupowano' ? 80 : 40); }
+      } else say('Trzymaj gripem kilka elementów (np. sferą) i wciśnij gałkę — zrobi się z nich grupa');
+    }
 
     // Gałki: prawa = rozmiar narzędzia / skala modelu, lewa = sfera chwytu
     if (gp && gp.axes.length >= 4) {
@@ -2848,10 +2930,10 @@ function handleXRInput(dt) {
     if (trig && !u.trigPrev) {
       if (u.gestureDone) { u.gestureDone = false; u.uiConsumed = true; }      // już obsłużone w zdarzeniu spustu
       else if (u.uiHover) { paletteAction(u.uiHover); u.uiConsumed = true; pulse(c, 0.3, 20); }
-      else if (main && heldPartsTarget()) {          // trzymasz część: prawy spust = kopia w tym miejscu
-        const cp = copyParts(heldPartsTarget().meshes);
+      else if (main && heldPartsTarget()) {          // trzymasz część / rysunek: prawy spust = kopia w tym miejscu
+        const cp = kopiujTrzymane(heldPartsTarget().meshes);
         u.uiConsumed = true; pulse(c, 0.6, 40);
-        say(`Kopia: ${cp.map((m) => m.name).join(', ')} (B – cofnij)`);
+        say(`Kopia: ${cp.length > 3 ? cp.length + ' elementów' : cp.map((m) => m.name).join(', ')} (B – cofnij)`);
       }
       else toolStart(c);
     } else if (trig && !u.uiConsumed) {

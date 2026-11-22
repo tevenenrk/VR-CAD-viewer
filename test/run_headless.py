@@ -737,6 +737,58 @@ def test_xr(browser):
              return { pod, trzyma, dy, cof, n: V.strokes.length };""")
     check("rysunek chwytany gripem i przesuwany (B cofa przesunięcie)", r["pod"] and r["trzyma"] and abs(r["dy"] - 0.1) < 0.005 and abs(r["cof"]) < 1e-6, str(r))
 
+    # rysunki jak elementy: sfera łapie słup i dwa rysunki, wciśnięcie gałki = grupa; chwyt jednego = cała grupa;
+    # spust = kopia całej grupy (jedno B cofa), gałka drugi raz = rozgrupuj
+    r = E("""V.paletteAction('page:narzedzia'); V.paletteAction('tool:rysuj'); await T.frames(2);
+             const c = T.centerOf('Slup');
+             const rysuj = async (dy) => {
+               T.tipAt('right', [c.x - 0.03, c.y + dy, c.z + 0.025]); await T.frames(3); T.btn('right', 'trigger', 1); await T.frames(3);
+               for (let i = 1; i <= 6; i++) { T.tipAt('right', [c.x - 0.03 + i * 0.01, c.y + dy, c.z + 0.025]); await T.frames(2); }
+               T.btn('right', 'trigger', 0); await T.frames(3);
+             };
+             const n0 = V.strokes.length;
+             await rysuj(0.02); await rysuj(-0.02);
+             const s1 = V.strokes[n0], s2 = V.strokes[n0 + 1], slup = T.part('Slup').userData.part;
+             V.paletteAction('tool:wskaz'); V.paletteAction('grab:grupa'); V.S.sphere = 0.06; await T.frames(2);
+             T.tipAt('right', c.toArray()); await T.frames(4);
+             T.btn('right', 'squeeze', 1); await T.frames(4);
+             const held = T.ctrl('right').userData.held;
+             const trzyma = held && held.meshes ? held.meshes.filter(m => m === s1.root || m === s2.root || m.name === 'Slup').length : 0;
+             await T.click('right', 'thumbstick');
+             const g = s1.grupa, wGrupie = !!g && s2.grupa === g && slup.grupa === g;
+             T.btn('right', 'squeeze', 0); await T.frames(3);
+             // chwyt samego rysunku (tryb Część) → jedzie cała grupa
+             V.paletteAction('grab:czesc'); await T.frames(2);
+             const pkt = (s) => s.root.localToWorld(s.points[Math.floor(s.points.length / 2)].clone());
+             const m1 = pkt(s1), a2 = pkt(s2), aS = T.centerOf('Slup');
+             T.tipAt('right', m1.toArray()); await T.frames(4);
+             T.btn('right', 'squeeze', 1); await T.frames(4);
+             const ile = T.ctrl('right').userData.held ? T.ctrl('right').userData.held.meshes.length : 0;
+             T.tipAt('right', [m1.x + 0.05, m1.y, m1.z]); await T.frames(4);
+             const d2 = pkt(s2).x - a2.x, dS = T.centerOf('Slup').x - aS.x;
+             // spust = kopia całej grupy w miejscu
+             const ns = V.strokes.length, np = V.parts.length;
+             await T.click('right', 'trigger');
+             const kopie = { rys: V.strokes.length - ns, cz: V.parts.length - np };
+             const gk = V.strokes[V.strokes.length - 1].grupa, nowaGrupa = !!gk && gk !== g;
+             T.btn('right', 'squeeze', 0); await T.frames(3);
+             await T.click('right', 'b-button');     // cofa przesunięcie
+             await T.click('right', 'b-button');     // cofa kopię (części i rysunki naraz)
+             const poB = { rys: V.strokes.length - ns, cz: V.parts.length - np };
+             // gałka przy trzymaniu grupy = rozgrupuj
+             T.tipAt('right', pkt(s1).toArray()); await T.frames(4);
+             T.btn('right', 'squeeze', 1); await T.frames(4);
+             await T.click('right', 'thumbstick');
+             const rozgr = !s1.grupa && !s2.grupa && !slup.grupa;
+             T.btn('right', 'squeeze', 0); await T.frames(3);
+             V.paletteAction('clear:strokes'); await T.frames(2);
+             return { trzyma, wGrupie, ile, d2, dS, kopie, nowaGrupa, poB, rozgr };""")
+    check("rysunki jak elementy: sfera + wciśnięcie gałki = grupa (słup + 2 rysunki)", r["trzyma"] == 3 and r["wGrupie"], str(r))
+    check("chwyt jednego rysunku przesuwa całą grupę (rysunki i część)", r["ile"] >= 3 and abs(r["d2"] - 0.05) < 0.003 and abs(r["dS"] - 0.05) < 0.003, str(r))
+    check("spust przy trzymanej grupie = kopia całej grupy (nowa grupa), jedno B cofa całą kopię",
+          r["kopie"] == {"rys": 2, "cz": 1} and r["nowaGrupa"] and r["poB"] == {"rys": 0, "cz": 0}, str(r))
+    check("gałka przy trzymanej grupie = rozgrupuj", r["rozgr"], str(r))
+
     # rozstrzelenie modelu (zakładka Widok) i złożenie z powrotem
     r = E("""const h = await T.palClick('page:widok');
              const c0 = Object.fromEntries(V.parts.map(p => [p.name, T.centerOf(p.name)]));
