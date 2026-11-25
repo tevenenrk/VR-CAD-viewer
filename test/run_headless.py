@@ -803,6 +803,51 @@ def test_xr(browser):
     check("rozstrzelenie: części odsuwają się od środka, „Złóż” wraca na miejsce",
           r["h"] == "page:widok" and abs(r["f"] - 0.3) < 1e-9 and r["dalej"] and r["ruch"] > 0.01 and r["wrocily"] < 1e-6, str(r))
 
+    # Belka: spust w A, przeciągnij do B, puść → bryła o przekroju a × b (gałki zmieniają wymiary), okrąg; zapis STEP; B cofa
+    r = E("""V.paletteAction('page:narzedzia'); await T.frames(3); const h = await T.palClick('tool:belka'); await T.frames(2);
+             const n0 = V.parts.length, s0 = V.pivot.scale.x;
+             const A = T.centerOf('Plyta_bazowa').add(new V.THREE.Vector3(0, 0.12, 0.12));
+             T.tipAt('right', A.toArray()); await T.frames(3);
+             const kursor = T.ctrl('right').userData.cursor.visible;
+             // prawa gałka w górę = większy bok a
+             window.__xrDevice.controllers.right.updateAxes('thumbstick', 0, -1); await T.frames(12);
+             window.__xrDevice.controllers.right.updateAxes('thumbstick', 0, 0); await T.frames(2);
+             const a = V.S.belka.a;
+             V.S.belka.a = 30; V.S.belka.b = 10;
+             T.btn('right', 'trigger', 1); await T.frames(3);
+             for (let i = 1; i <= 10; i++) { T.tipAt('right', [A.x + i * 0.02, A.y + i * 0.0004, A.z]); await T.frames(2); }
+             const podglad = !!(V.belkaPodglad && V.belkaPodglad.visible);
+             T.btn('right', 'trigger', 0); await T.frames(3);
+             const p = V.parts[V.parts.length - 1];
+             const os = new V.THREE.Vector3(0, 1, 0).applyQuaternion(p.mesh.quaternion);
+             return { h, kursor, a, podglad, n: V.parts.length - n0, nazwa: p.name, def: p.zr.def, os: os.toArray().map(v => Math.round(v * 1e6) / 1e6),
+                      oczekL: Math.round(0.2 / s0 * 1000), galaz: p.path[0] };""")
+    d = r["def"]
+    check("Belka: kursor na czubku, prawa gałka zmienia bok a", r["h"] == "tool:belka" and r["kursor"] and r["a"] > 20, str(r))
+    check("Belka: A → B tworzy bryłę 30 × 10 mm na długości ruchu, kierunek przyciągnięty do osi X",
+          r["podglad"] and r["n"] == 1 and r["nazwa"].startswith("Belka") and r["galaz"] == "Belki" and d["typ"] == "prostopadloscian"
+          and d["dx"] == 30 and d["dz"] == 10 and abs(d["dy"] - r["oczekL"]) <= 2 and abs(abs(r["os"][0]) - 1) < 1e-6, str(r))
+    with page.expect_download(timeout=180000) as dl:
+        E("await V.zapiszStep(false);")
+    zapis = OUT / "zapis_belka.step"
+    dl.value.save_as(str(zapis))
+    cz = [c for c in czytaj_step(zapis) if c["nazwa"].startswith("Belka")]
+    dlug = [round(c["max"][0] - c["min"][0]) for c in cz]
+    check("Belka w zapisanym STEP (prawdziwa bryła, długość jak w goglach)", len(cz) == 1 and abs(dlug[0] - d["dy"]) <= 1, f"{[c['nazwa'] for c in cz]} {dlug}")
+    r = E("""const n0 = V.parts.length;
+             const h = await T.palClick('belka:okrag');
+             const A = T.centerOf('Plyta_bazowa').add(new V.THREE.Vector3(0.05, 0.05, 0.12));
+             T.tipAt('right', A.toArray()); await T.frames(3);
+             T.btn('right', 'trigger', 1); await T.frames(3);
+             for (let i = 1; i <= 8; i++) { T.tipAt('right', [A.x, A.y + i * 0.015, A.z]); await T.frames(2); }
+             T.btn('right', 'trigger', 0); await T.frames(3);
+             const p = V.parts[V.parts.length - 1];
+             const def = p.zr.def;
+             await T.click('right', 'b-button'); await T.click('right', 'b-button');
+             await T.palClick('belka:prostokat'); V.paletteAction('tool:wskaz'); V.paletteAction('page:widok'); await T.frames(3);
+             return { h, def, n: V.parts.length - n0 };""")
+    check("Belka okrągła (Ø 20 mm, pionowo); B dwa razy usuwa obie belki", r["h"] == "belka:okrag" and r["def"]["typ"] == "walec" and r["def"]["r"] == 10 and r["n"] == -1, str(r))
+
     # tła: generowane (kosmos), zdjęcie z repozytorium (planeta), z internetu (atrapa Poly Haven)
     r = E("""const w = async (warunek) => { for (let k = 0; k < 200 && !warunek(); k++) await new Promise(r => setTimeout(r, 50)); await T.frames(2); };
              const h1 = await T.palClick('tlo:kosmos'); await w(() => !V.tlo.laduje);
@@ -1250,6 +1295,17 @@ def test_szkicownik_pc(browser):
     # szkic: łuk styczny + zaokrąglenie narożnika, wyciągnięcie wpisaną wysokością
     h0 = E("return S.historia.length;")
     n0 = E("return S.projekt.bryly.length;")
+    n_start = n0
+    klik("narz:belka")
+    klik("bk:okrag")
+    pg = przeciagnij(160, 0)
+    E("await SZ.czekaj();")
+    r = E("const b = S.projekt.bryly[S.projekt.bryly.length - 1]; return { n: S.projekt.bryly.length, nazwa: b.nazwa, def: b.def };")
+    check("szkicownik PC: Belka okrągła przeciągnięciem myszą (Ø 20, długość na siatce)",
+          r["n"] == n0 + 1 and r["nazwa"].startswith("Belka") and r["def"]["typ"] == "walec" and r["def"]["r"] == 10 and r["def"]["h"] % 10 == 0, f"{pg} {r}")
+    klik("bk:prostokat")
+    klik("narz:wybierz")
+    n0 = E("return S.projekt.bryly.length;")
     klik("tab:szkic")
     klik("sz:linia")
     st = E("await SZ.frames(2); return SZ.ekran(S.api.controls.target.clone());")
@@ -1321,7 +1377,7 @@ def test_szkicownik_pc(browser):
         page.keyboard.press("Control+z")
         E("await SZ.czekaj();")
     E("S.api.controls.target.copy(window.__widok[0]); S.api.camera.position.copy(window.__widok[1]); S.api.controls.update(); await SZ.frames(2);")
-    check("cofanie (Ctrl+Z) zdejmuje pogrubienie, cięcie, powierzchnię i wyciągnięcie", E("return S.projekt.bryly.length;") == n0, f"{E('return S.projekt.bryly.map(b => b.nazwa);')}")
+    check("cofanie (Ctrl+Z) zdejmuje pogrubienie, cięcie, powierzchnię, wyciągnięcie i belkę", E("return S.projekt.bryly.length;") == n_start, f"{E('return S.projekt.bryly.map(b => b.nazwa);')}")
     klik("tab:bryly")
 
     # eksport STEP: prawdziwe pobranie pliku
@@ -1548,6 +1604,32 @@ def test_szkicownik_vr(browser):
     check("szkicownik VR: wstążka z dwóch rąk → powierzchnia między czubkami kontrolerów",
           r["hv"] == "tab:pow" and r["start"] and r["pary"] >= 5 and r["n"] == 1 and r["typ"] == "powierzchnia" and abs(r["pole"] - r["oczek"]) / r["oczek"] < 0.1, str(r))
     check("szkicownik VR: B cofa wstążkę", r["poB"] == 0, str(r))
+
+    # Belka w Szkicowniku: A → B czubkiem kontrolera, długość na siatce, gałka = bok a; B cofa
+    r = E("""const n0 = S.projekt.bryly.length;
+             const hv = await SZ.klik('narz:belka');
+             const A = [0.2, 1.3, -0.5];
+             T.tipAt('right', A); await T.frames(3);
+             T.pose('left', [-0.25, 1.1, -0.25]); await T.frames(2);
+             window.__xrDevice.controllers.right.updateAxes('thumbstick', 0, -1); await T.frames(10);
+             window.__xrDevice.controllers.right.updateAxes('thumbstick', 0, 0); await T.frames(2);
+             const a = S.belka.a;
+             S.belka.a = 30; S.belka.b = 20;
+             T.btn('right', 'trigger', 1); await T.frames(3);
+             for (let i = 1; i <= 8; i++) { T.tipAt('right', [A[0], A[1], A[2] - i * 0.02]); await T.frames(2); }
+             const opis = S.tworzenie && S.tworzenie.ksztalt && S.tworzenie.ksztalt.opis;
+             T.btn('right', 'trigger', 0); await SZ.czekaj();
+             const b = S.projekt.bryly[S.projekt.bryly.length - 1];
+             const wynik = { n: S.projekt.bryly.length - n0, nazwa: b.nazwa, def: b.def, obr: b.obr, vol: b.objetosc };
+             T.pose('right', [0.6, 1.6, 0.3], [1.5, 2.5, 0.5]); await T.frames(3);
+             await T.click('right', 'b-button'); await SZ.czekaj();
+             await SZ.klik('narz:wybierz');
+             return { hv, a, opis, ...wynik, poB: S.projekt.bryly.length - n0 };""")
+    d = r["def"]
+    check("szkicownik VR: Belka od A do B (30 × 20 mm, długość na siatce 10 mm), gałka zmienia bok a",
+          r["hv"] == "narz:belka" and r["a"] > 20 and r["opis"] and r["n"] == 1 and r["nazwa"].startswith("Belka") and d["typ"] == "prostopadloscian"
+          and d["dx"] == 30 and d["dz"] == 20 and d["dy"] % 10 == 0 and d["dy"] > 0 and abs(r["vol"] - 600 * d["dy"]) < 0.1, str(r))
+    check("szkicownik VR: B cofa belkę", r["poB"] == 0, str(r))
 
     # spust w pustym miejscu = odznacz
     E("T.pose('right', [0.6, 1.6, 0.3], [1.5, 2.5, 0.5]); await T.frames(3); await T.click('right', 'trigger');")

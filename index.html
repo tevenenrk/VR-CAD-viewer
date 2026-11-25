@@ -264,6 +264,13 @@ const CONFIG = {
   DRAW_MAX_POINTS: 600,        // punktów na jedną linię (dłuższa linia dzieli się automatycznie)
   ERASER_DEFAULT: 0.025, ERASER_MIN: 0.005, ERASER_MAX: 0.2,     // promień gumki (m)
 
+  // Belka: prosta bryła od punktu A do B (spust w A, przeciągnij, puść w B); wymiary w mm modelu
+  BELKA_A_MM: 20, BELKA_B_MM: 20, BELKA_D_MM: 20,                // bok a, bok b (prostokąt) albo średnica (okrąg)
+  BELKA_MIN_MM: 1, BELKA_MAX_MM: 2000,
+  BELKA_KROK_MM: 1,            // długość i wymiary zaokrąglane do tylu mm
+  BELKA_SNAP_DEG: 6,           // kierunek bliski osi X / Y / Z → dokładnie wzdłuż osi
+  BELKA_GRUPA: 'Belki',        // gałąź drzewa z belkami
+
   // Chwytanie części
   PART_GRAB_RADIUS: 0.02,      // tryb „Część”: zasięg dotyku końcówki kontrolera (m)
   GHOST_OPACITY: 0.3,          // część „półprzezroczysta” (0 = niewidoczna, 1 = pełna)
@@ -378,9 +385,10 @@ const S = {                                   // ustawienia narzędzi (panel w g
   brush: CONFIG.BRUSH_DEFAULT,
   eraser: CONFIG.ERASER_DEFAULT,
   sphere: CONFIG.SPHERE_DEFAULT,
+  belka: { ksztalt: 'prostokat', a: CONFIG.BELKA_A_MM, b: CONFIG.BELKA_B_MM, d: CONFIG.BELKA_D_MM },
   paletteVisible: true,
 };
-const TOOLS = { wskaz: 'Wskaż', rysuj: 'Rysuj', gumka: 'Gumka', miarka: 'Miarka', kolor: 'Kolor', komentarz: 'Komentarz', przekroj: 'Przekrój' };
+const TOOLS = { wskaz: 'Wskaż', rysuj: 'Rysuj', belka: 'Belka', gumka: 'Gumka', miarka: 'Miarka', kolor: 'Kolor', komentarz: 'Komentarz', przekroj: 'Przekrój' };
 const GRABS = { model: 'Cały model', czesc: 'Część', grupa: 'Sfera' };
 
 let strokes = [], measures = [], notes = [], undoStack = [];
@@ -1950,7 +1958,7 @@ function cofnijWpis(u) {
   } else if (u.type === 'kopia') {
     removeCopies(u.meshes);
     sprzatnijGrupyCzesci();
-    say('Cofnięto kopię');
+    say('Cofnięto ' + (u.opis || 'kopię'));
   } else if (u.type === 'przekroj') {
     u.items.forEach(({ mesh, prev }) => ustawBezPrzekroju([mesh], prev, true));
     say('Cofnięto wyłączenie z przekroju');
@@ -2001,6 +2009,7 @@ function fmtMB(bytes) { return bytes ? (bytes / 1048576).toFixed(bytes < 1048576
 
 function sizeText() {
   if (S.tool === 'rysuj') return 'Grubość pędzla: ' + fmtLen(S.brush * 2);
+  if (S.tool === 'belka') return belkaTekst();
   if (S.tool === 'gumka') return 'Gumka: ' + fmtLen(S.eraser * 2);
   if (S.tool === 'przekroj') return sectionText();
   const s = pivot.scale.x;
@@ -2032,7 +2041,7 @@ function layoutPalette() {
   if (pal.page === 'narzedzia') {
     const T = (id) => ({ id: 'tool:' + id, text: TOOLS[id], icon: id, active: S.tool === id });
     card(112, 318, 'Narzędzie — spust');
-    row(152, 124, [T('wskaz'), T('rysuj'), T('gumka'), T('miarka')], IN0, IN1);
+    row(152, 124, [T('wskaz'), T('rysuj'), T('belka'), T('gumka'), T('miarka')], IN0, IN1);
     row(290, 124, [T('kolor'), T('komentarz'), T('przekroj'), { id: 'undo', text: 'Cofnij (B)', icon: 'cofnij' }], IN0, IN1);
     card(444, 246, 'Chwytanie — grip (części, grupy i rysunki)');
     row(484, 100, [{ id: 'grab:czesc', text: GRABS.czesc, icon: 'czesc', active: S.grabMode === 'czesc' },
@@ -2044,13 +2053,23 @@ function layoutPalette() {
     row(598, 76, [{ id: 'grp:grupuj', text: `Grupuj zaznaczone (${zazn})`, icon: 'grupuj', disabled: zazn < 2, flex: 1.5 },
                   { id: 'grp:rozgrupuj', text: 'Rozgrupuj', icon: 'rozgrupuj', disabled: !selectedMeshes.some((m) => obiektGrupy(m) && obiektGrupy(m).grupa) },
                   { id: 'grp:odznacz', text: 'Odznacz', icon: 'anuluj', disabled: !selectedMeshes.length, flex: 0.9 }], IN0, IN1);
-    card(704, 236, S.tool === 'przekroj' ? 'Przekrój — prawa gałka przesuwa płaszczyznę' : 'Kolor i grubość — prawa gałka');
+    card(704, 236, S.tool === 'przekroj' ? 'Przekrój — prawa gałka przesuwa płaszczyznę'
+      : S.tool === 'belka' ? (S.belka.ksztalt === 'okrag' ? 'Belka okrągła — prawa gałka: średnica' : 'Belka — prawa gałka: bok a, lewa: bok b')
+      : 'Kolor i grubość — prawa gałka');
     if (S.tool === 'przekroj') {
       const nb = ileBezPrzekroju();
       row(744, 84, [{ id: 'sec:toggle', text: section.on ? 'Wyłącz' : 'Włącz', flex: 1.2 },
         ...['X', 'Y', 'Z'].map((ax) => ({ id: 'sec:' + ax, text: ax, active: section.on && section.axis === ax, flex: 0.6 })),
         { id: 'sec:flip', text: 'Odwróć', flex: 1.1 }, { id: 'sec:wszystkie', text: nb ? `Tnij wszystko (${nb})` : 'Tnie wszystko', disabled: !nb, flex: 1.7 }], IN0, IN1);
     } else row(744, 84, CONFIG.COLORS.map((color, i) => ({ id: 'color:' + i, kind: 'swatch', color, active: S.colorIdx === i })), IN0, IN1);
+    if (S.tool === 'belka') {
+      const okr = S.belka.ksztalt === 'okrag';
+      row(840, 84, [{ id: 'belka:prostokat', text: 'Prostokąt', icon: 'prostokat', active: !okr, flex: 1.6 },
+                    { id: 'belka:okrag', text: 'Okrąg', icon: 'okrag', active: okr, flex: 1.25 },
+                    { id: 'size:-', text: okr ? 'Ø−' : 'a−', flex: 0.5 }, { id: 'size:+', text: okr ? 'Ø+' : 'a+', flex: 0.5 },
+                    { id: 'belka:b-', text: 'b−', disabled: okr, flex: 0.5 }, { id: 'belka:b+', text: 'b+', disabled: okr, flex: 0.5 },
+                    { id: 'sizeinfo', kind: 'info', text: okr ? `Ø ${fmtMm(S.belka.d)}` : `${fmtMm(S.belka.a)} × ${fmtMm(S.belka.b)}`, align: 'center', flex: 1.2 }], IN0, IN1);
+    } else
     row(840, 84, [{ id: 'size:-', text: '', icon: 'minus', flex: 0.6 }, { id: 'sizeinfo', kind: 'info', text: sizeText(), align: 'center', flex: 2 },
                   { id: 'size:+', text: '', icon: 'plus', flex: 0.6 }], IN0, IN1);
     card(954, 158, 'Widok (tło, rozstrzelenie, porządki: zakładka Widok)');
@@ -2356,6 +2375,10 @@ function paletteAction(id) {
   else if (k === 'sphere') S.sphere = clamp(S.sphere * (v === '+' ? 1.25 : 0.8), CONFIG.SPHERE_MIN, CONFIG.SPHERE_MAX);
   else if (k === 'color') S.colorIdx = Number(v);
   else if (k === 'size') adjustToolSize(v === '+' ? 1.25 : 0.8, true);
+  else if (k === 'belka') {
+    if (v === 'prostokat' || v === 'okrag') { S.belka.ksztalt = v; say('Belka: ' + belkaTekst()); }
+    else zmienBelke('b', v === 'b+' ? 1.25 : 0.8, true);
+  }
   else if (k === 'undo') undo();
   else if (k === 'clear') v === 'strokes' ? clearAnno(strokes, 'rysunki') : v === 'notes' ? clearAnno(notes, 'komentarze') : clearAnno(measures, 'miary');
   else if (k === 'shot') requestScreenshot();
@@ -2433,6 +2456,7 @@ function paletteAction(id) {
 }
 
 function adjustToolSize(f, button) {
+  if (S.tool === 'belka') { zmienBelke(S.belka.ksztalt === 'okrag' ? 'd' : 'a', f, button); return; }
   if (S.tool === 'rysuj') S.brush = clamp(S.brush * f, CONFIG.BRUSH_MIN, CONFIG.BRUSH_MAX);
   else if (S.tool === 'gumka') S.eraser = clamp(S.eraser * f, CONFIG.ERASER_MIN, CONFIG.ERASER_MAX);
   else if (S.tool === 'przekroj') {
@@ -2704,6 +2728,7 @@ const usesRay = (tool) => tool === 'wskaz' || tool === 'miarka' || tool === 'kol
 function toolStart(c) {
   const u = c.userData;
   u.activeTool = S.tool;
+  if (u.activeTool === 'belka') { zacznijBelke(c); return; }
   if (!cadRoot) return;
   if (u.activeTool === 'rysuj') {
     u.stroke = new Stroke(CONFIG.COLORS[S.colorIdx]);
@@ -2754,6 +2779,7 @@ function endNoteDrag(c) {
 
 function toolHold(c) {
   const u = c.userData;
+  if (u.activeTool === 'belka') { ciagnijBelke(c); return; }
   if (!cadRoot) return;
   if (u.activeTool === 'wskaz') {
     if (u.rayHit) { frameHL.point.add(u.rayHit.object); showLabelAt(partName(u.rayHit.object), u.rayHit.point); }
@@ -2774,6 +2800,7 @@ function toolHold(c) {
 
 function toolEnd(c) {
   const u = c.userData;
+  if (u.activeTool === 'belka') { zakonczBelke(c); u.activeTool = null; return; }
   if (u.activeTool === 'wskaz') {
     label.sprite.visible = false;
   } else if (u.activeTool === 'rysuj' && u.stroke) {
@@ -2838,8 +2865,9 @@ function eraseAt(c) {
 
 function updateCursor(c) {
   const u = c.userData;
-  u.tip.position.z = -(S.tool === 'rysuj' || S.tool === 'gumka' ? CONFIG.DRAW_TIP_OFFSET : CONFIG.TIP_OFFSET);
-  u.cursor.visible = S.tool === 'rysuj' || S.tool === 'gumka';
+  u.tip.position.z = -(S.tool === 'rysuj' || S.tool === 'gumka' || S.tool === 'belka' ? CONFIG.DRAW_TIP_OFFSET : CONFIG.TIP_OFFSET);
+  u.cursor.visible = S.tool === 'rysuj' || S.tool === 'gumka' || (S.tool === 'belka' && !u.belka);
+  if (S.tool === 'belka') { u.cursor.material.color.set(CONFIG.COLORS[S.colorIdx]); u.cursor.material.opacity = 0.9; u.cursor.scale.setScalar(0.006); }
   if (S.tool === 'rysuj') {
     u.cursor.material.color.set(CONFIG.COLORS[S.colorIdx]); u.cursor.material.opacity = 0.9; u.cursor.scale.setScalar(S.brush);
   } else if (S.tool === 'gumka') {
@@ -2882,6 +2910,7 @@ function handleXRInput(dt) {
       if (Math.abs(y) > CONFIG.STICK_DEADZONE) {
         const f = Math.exp(-y * CONFIG.SIZE_SPEED * dt);
         if (main) adjustToolSize(f);
+        else if (S.tool === 'belka' && S.belka.ksztalt === 'prostokat') zmienBelke('b', f);
         else if (S.grabMode === 'grupa') S.sphere = clamp(S.sphere * f, CONFIG.SPHERE_MIN, CONFIG.SPHERE_MAX);
       }
     }
@@ -2922,7 +2951,8 @@ function handleXRInput(dt) {
       }
     }
     // Rysuj / Gumka: krótka linia od kontrolera do kulki (widać, gdzie i jak grubo rysujesz)
-    if (!u.uiHover && (S.tool === 'rysuj' || S.tool === 'gumka')) rayLen = CONFIG.DRAW_TIP_OFFSET;
+    if (!u.uiHover && (S.tool === 'rysuj' || S.tool === 'gumka' || S.tool === 'belka')) rayLen = CONFIG.DRAW_TIP_OFFSET;
+    if (S.tool === 'belka' && main && !u.belka && !u.uiHover && cadRoot) showLabelAt(belkaTekst(), tipWorld(c, new THREE.Vector3()));
     u.ray.scale.z = rayLen;
 
     // Spust: klik w panel albo narzędzie
@@ -2956,6 +2986,111 @@ function handleXRInput(dt) {
   odswiezOkno();
 }
 
+
+// ============================================================================
+// BELKA: prosta bryła od punktu A do B (przekrój prostokąt a × b albo okrąg Ø) — zwykła część złożenia
+// ============================================================================
+let belkaPodglad = null, licznikBelek = 0;
+const belkaTekst = () => (S.belka.ksztalt === 'okrag' ? `Belka Ø ${fmtMm(S.belka.d)} mm` : `Belka ${fmtMm(S.belka.a)} × ${fmtMm(S.belka.b)} mm`);
+const fmtMm = (v) => String(Math.round(v * 10) / 10).replace('.', ',');
+
+function zmienBelke(wymiar, f, przycisk) {
+  const v = clamp(S.belka[wymiar] * f, CONFIG.BELKA_MIN_MM, CONFIG.BELKA_MAX_MM);
+  S.belka[wymiar] = przycisk ? Math.max(CONFIG.BELKA_MIN_MM, Math.round(v / CONFIG.BELKA_KROK_MM) * CONFIG.BELKA_KROK_MM) : v;
+}
+
+// oś góry modelu w układzie cadRoot (SolidWorks Y, opcja Z)
+const osGoryCad = () => (ui.upAxis.value === 'Z' ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0));
+
+// A, B w układzie cadRoot (m) → wymiary w mm, długość, macierz (geometria mm wyśrodkowana, oś belki = Y geometrii)
+function ksztaltBelki(A, B) {
+  const d = B.clone().sub(A);
+  let L = d.length() * 1000;
+  if (L < 2 * CONFIG.BELKA_KROK_MM) return null;
+  d.normalize();
+  for (const os of [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)]) {   // przyciąganie do osi
+    const cos = d.dot(os);
+    if (Math.abs(cos) > Math.cos(THREE.MathUtils.degToRad(CONFIG.BELKA_SNAP_DEG))) { d.copy(os).multiplyScalar(Math.sign(cos)); break; }
+  }
+  L = Math.max(CONFIG.BELKA_KROK_MM, Math.round(L / CONFIG.BELKA_KROK_MM) * CONFIG.BELKA_KROK_MM);
+  const y = d, up = osGoryCad();
+  let x = new THREE.Vector3().crossVectors(y, up);         // bok a poziomo, bok b „w górę”
+  if (x.lengthSq() < 1e-8) x.set(1, 0, 0); else x.normalize();
+  const z = new THREE.Vector3().crossVectors(x, y).normalize();
+  x.crossVectors(y, z).normalize();
+  const okr = S.belka.ksztalt === 'okrag';
+  const a = okr ? S.belka.d : Math.round(S.belka.a / CONFIG.BELKA_KROK_MM) * CONFIG.BELKA_KROK_MM;
+  const b = okr ? S.belka.d : Math.round(S.belka.b / CONFIG.BELKA_KROK_MM) * CONFIG.BELKA_KROK_MM;
+  const srodek = A.clone().addScaledVector(y, L / 2000);
+  const R = new THREE.Matrix4().makeBasis(x, y, z);
+  const M = new THREE.Matrix4().copy(R).setPosition(srodek).multiply(new THREE.Matrix4().makeScale(0.001, 0.001, 0.001));
+  const def = okr ? { typ: 'walec', r: a / 2, h: L } : { typ: 'prostopadloscian', dx: a, dy: L, dz: b };
+  return { def, L, a, b, okr, M, koniec: A.clone().addScaledVector(y, L / 1000),
+           opis: (okr ? `Ø${fmtMm(a)}` : `${fmtMm(a)}×${fmtMm(b)}`) + ` · L = ${fmtMm(L)} mm` };
+}
+
+function geometriaBelki(k) {
+  const g = k.okr ? new THREE.CylinderGeometry(k.a / 2, k.a / 2, k.L, 48) : new THREE.BoxGeometry(k.a, k.L, k.b);
+  g.computeBoundingBox(); g.computeBoundingSphere();
+  return g;
+}
+
+function zacznijBelke(c) {
+  if (!cadRoot) {                                 // bez modelu: pusty model w skali 1:1 tam, gdzie stoisz
+    zapewnijCadRoot();
+    pivot.position.set(0, 0, 0); pivot.quaternion.identity(); pivot.scale.setScalar(1);
+    offsetGroup.position.set(0, 0, 0);
+  }
+  cadRoot.updateMatrixWorld(true);
+  c.userData.belka = { A: cadRoot.worldToLocal(tipWorld(c, new THREE.Vector3())), k: null };
+  if (!belkaPodglad) {
+    belkaPodglad = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.45, depthWrite: false }));
+    belkaPodglad.matrixAutoUpdate = false;
+    belkaPodglad.renderOrder = 6;
+  }
+  belkaPodglad.visible = false;
+}
+
+function ciagnijBelke(c) {
+  const st = c.userData.belka;
+  if (!st || !cadRoot) return;
+  cadRoot.updateMatrixWorld(true);
+  st.k = ksztaltBelki(st.A, cadRoot.worldToLocal(tipWorld(c, new THREE.Vector3())));
+  if (belkaPodglad.parent !== cadRoot) cadRoot.add(belkaPodglad);
+  belkaPodglad.visible = !!st.k;
+  if (!st.k) { label.sprite.visible = false; return; }
+  const k = st.k;
+  const geoTyp = k.okr ? 'walec' : 'box';
+  if (belkaPodglad.userData.typ !== geoTyp) {
+    belkaPodglad.geometry.dispose();
+    belkaPodglad.geometry = k.okr ? new THREE.CylinderGeometry(0.5, 0.5, 1, 32) : new THREE.BoxGeometry(1, 1, 1);
+    belkaPodglad.userData.typ = geoTyp;
+  }
+  belkaPodglad.material.color.set(CONFIG.COLORS[S.colorIdx]);
+  belkaPodglad.matrix.copy(k.M).multiply(new THREE.Matrix4().makeScale(k.a, k.L, k.b));
+  belkaPodglad.matrixWorldNeedsUpdate = true;
+  showLabelAt(k.opis, cadRoot.localToWorld(k.koniec.clone()));
+}
+
+function zakonczBelke(c) {
+  const st = c.userData.belka;
+  c.userData.belka = null;
+  if (belkaPodglad) belkaPodglad.visible = false;
+  label.sprite.visible = false;
+  if (!st) return null;
+  if (!st.k) { say('Za krótko — przeciągnij dalej'); return null; }
+  const k = st.k;
+  const nazwa = `Belka ${++licznikBelek}`;
+  const p = dodajCzescSzkicu({ nazwa, kolor: CONFIG.COLORS[S.colorIdx], geometria: geometriaBelki(k), macierz: k.M, galaz: CONFIG.BELKA_GRUPA,
+                               zr: { typ: 'szkic', def: k.def, lok: [0, 0, 0], G: new THREE.Matrix4().toArray() } });
+  p.mesh.userData.sharedGeo = false;              // własna geometria (zwalniana przy usunięciu)
+  p.belka = true;
+  pushUndo({ type: 'kopia', meshes: [p.mesh], opis: 'belkę' });   // B = usuń tę belkę
+  pulse(c, 0.5, 40);
+  say(`${nazwa}: ${k.opis} (B – cofnij)`);
+  return p;
+}
 // ============================================================================
 // WEJŚCIE W VR / AR
 // ============================================================================
@@ -3985,11 +4120,11 @@ function szkicownikApi() {                     // to, czego szkicownik potrzebuj
 // ----------------------------------------------------------------------------
 // BRYŁY ZE SZKICOWNIKA JAKO ZWYKŁE CZĘŚCI PODGLĄDU (chwytanie, skala, kopie, ukrywanie, zapis STEP)
 // ----------------------------------------------------------------------------
-function grupaSzkicu() {
-  let g = cadRoot.children.find((o) => o.userData.grupaSzkicu);
+function grupaSzkicu(nazwa = CONFIG.SZKIC_GRUPA) {
+  let g = cadRoot.children.find((o) => o.userData.grupaSzkicu && o.name === nazwa);
   if (!g) {
     g = new THREE.Group();
-    g.name = CONFIG.SZKIC_GRUPA;
+    g.name = nazwa;
     g.userData.grupaSzkicu = true;
     cadRoot.add(g);
     addTreeRow(g, g.name, 0, false);
@@ -3998,8 +4133,8 @@ function grupaSzkicu() {
 }
 
 // macierz: geometria → układ cadRoot (metry); zr: { typ: 'szkic', id, def, lok, G } (G: układ bryły → geometria)
-function dodajCzescSzkicu({ nazwa, kolor, geometria, macierz, widoczna = true, zr }) {
-  const g = grupaSzkicu();
+function dodajCzescSzkicu({ nazwa, kolor, geometria, macierz, widoczna = true, zr, galaz }) {
+  const g = grupaSzkicu(galaz);
   const mat = newMaterial([0, 0, 0]);
   mat.color.set(kolor); mat.userData.origColor = mat.color.clone();
   const mesh = new THREE.Mesh(geometria, mat);
@@ -4202,7 +4337,7 @@ function exposeDebug() {                      // do testów automatycznych i dia
     get recentList() { return recentList; }, get szkicownik() { return szkicownik; }, przelaczSzkicownik,
     get pliki() { return pliki; }, zapiszStep, loadFiles, copyParts, hideObjects, selectObject, grupujZaznaczone, rozgrupujZaznaczone,
     get grupyCzesci() { return grupyCzesci; }, get selectedMeshes() { return selectedMeshes; },
-    okno, OKNO, otworzOkno, odswiezOkno, tlo, rozstrzel, ustawRozstrzelenie, ustawTlo, ustawBezPrzekroju, get blysk() { return blysk; }, browser,
+    okno, OKNO, otworzOkno, odswiezOkno, tlo, rozstrzel, ustawRozstrzelenie, get belkaPodglad() { return belkaPodglad; }, ustawTlo, ustawBezPrzekroju, get blysk() { return blysk; }, browser,
     scene, modelSize, pivot, S, pal, PAL, controllers, renderer, THREE, section, cadBox, settings, drive, browser, voice,
     pick(o, d) { raycaster.set(o, d.clone().normalize()); return pickRay(); },
     requestScreenshot, shotStore, modelStore, undo, paletteAction, layoutPalette, refreshPaletteTexture, editKey, openNoteEditor, closeNoteEditor, createNote,
