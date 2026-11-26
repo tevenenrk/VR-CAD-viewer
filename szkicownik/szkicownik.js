@@ -59,8 +59,12 @@ export const SZK = {
   KRZYWA_KROK_M: 0.008,           // krzywa / wstążka z ręki: nowy punkt co tyle (m w świecie)
   KOLOR_KRZYWEJ: 0xbf5af2,        // narysowana krzywa (czeka na drugą)
   POWIERZCHNIA_PRZEZROCZYSTOSC: 0.8,
+  // belka: bryła od punktu A do B, przekrój prostokąt a × b albo okrąg Ø (mm); gałki: prawa = a / Ø, lewa = b
+  BELKA_A_MM: 20, BELKA_B_MM: 20, BELKA_D_MM: 20, BELKA_MIN_MM: 1, BELKA_MAX_MM: 2000,
+  BELKA_PREDKOSC: 1.2,            // zmiana wymiaru gałką (na sekundę, mnożnik)
+  BELKA_SNAP_DEG: 6,              // kierunek bliski osi X / Y / Z → dokładnie wzdłuż osi
 };
-const PRYMITYWY = ['prostopadloscian', 'walec', 'kula'];
+const PRYMITYWY = ['prostopadloscian', 'walec', 'kula', 'belka'];
 const PLASZCZYZNY = {             // jak GEO.PLASZCZYZNY w geometria.js (u × v = n)
   XY: { u: [1, 0, 0], v: [0, 1, 0], n: [0, 0, 1] },
   XZ: { u: [1, 0, 0], v: [0, 0, -1], n: [0, 1, 0] },
@@ -142,6 +146,7 @@ export class Szkicownik {
     this.narzSzkicu = 'linia';
     this.katObrotu = 360;
     this.promienZaokr = SZK.PROMIEN_ZAOKR_MM;
+    this.belka = { ksztalt: 'prostokat', a: SZK.BELKA_A_MM, b: SZK.BELKA_B_MM, d: SZK.BELKA_D_MM };
     this.gruboscPow = SZK.GRUBOSC_MM;
     this.krzywe = null;            // powierzchnia między krzywymi: { a: [punkty] | null, biezaca: [punkty] | null, zrodlo }
     this.wstazka = null;           // wstążka z dwóch rąk: { lewa: [], prawa: [] }
@@ -628,8 +633,19 @@ export class Szkicownik {
     if (n === 'szkic') { this.zacznijSzkic(); this.powiedz(`Szkic na płaszczyźnie ${this.plaszczyznaSzkicu()}: ` + (vr ? 'spust = punkt' : 'klik = punkt')); return; }
     if (n === 'krzywe') { this.krzywe = { a: null, biezaca: null, zrodlo: null }; this.powiedz(vr ? 'Krzywa 1: trzymaj spust i prowadź rękę, puść = koniec' : 'Krzywa 1: klikaj punkty, Enter = koniec krzywej'); return; }
     if (n === 'wstazka') { this.powiedz(vr ? 'Wstążka: trzymaj OBA spusty i prowadź ręce — powierzchnia rozpina się między nimi' : 'Wstążka działa w goglach (dwie ręce)'); return; }
+    if (n === 'belka') { this.powiedz(`${this.belkaTekst()}: ` + (vr ? 'spust w A, przeciągnij do B, puść · gałki = wymiary' : 'przeciągnij myszą od A do B')); return; }
     this.powiedz(n === 'wybierz' ? 'Narzędzie: wybierz / chwyć'
       : `${PROJEKT.NAZWY[n]}: ` + (vr ? 'spust w punkcie początkowym, przeciągnij, puść' : 'przeciągnij myszą (Esc = wybierz)'));
+  }
+
+  belkaTekst() {
+    const B = this.belka;
+    return B.ksztalt === 'okrag' ? `Belka Ø ${fmt(B.d, 1)} mm` : `Belka ${fmt(B.a, 1)} × ${fmt(B.b, 1)} mm`;
+  }
+
+  zmienBelke(wymiar, f, przycisk = false) {
+    const v = Math.min(SZK.BELKA_MAX_MM, Math.max(SZK.BELKA_MIN_MM, this.belka[wymiar] * f));
+    this.belka[wymiar] = przycisk ? Math.max(SZK.BELKA_MIN_MM, Math.round(v)) : v;
   }
 
   osGoryIndeks() { return this.api.upAxis === 'Z' ? 2 : 1; }
@@ -641,6 +657,7 @@ export class Szkicownik {
 
   // Bryła z dwóch punktów (mm CAD, na siatce). naPlaszczyznie = PC: B leży na płaszczyźnie startu, wysokość dobierana sama
   ksztaltZPunktow(typ, A, B, naPlaszczyznie) {
+    if (typ === 'belka') return this.ksztaltBelki(A, B);
     const g = this.krok();
     const u = this.osGoryIndeks(), [h0, h1] = [0, 1, 2].filter((i) => i !== u);
     const d = [0, 1, 2].map((i) => B[i] - A[i]);
@@ -662,6 +679,33 @@ export class Szkicownik {
     const D = zaokr(2 * Math.hypot(...d));       // kula: A = środek, odległość = promień
     const poz = [...A]; if (naPlaszczyznie) poz[u] += D / 2;
     return { def: { typ: 'kula', r: D / 2 }, poz, obr: [0, 0, 0], opis: `Ø${fmt(D)} mm` };
+  }
+
+  // Belka od A do B (mm CAD): długość na siatce, kierunek bliski osi → wzdłuż osi; bok a poziomo, bok b „w górę”
+  ksztaltBelki(A, B) {
+    const g = this.krok();
+    const d = new THREE.Vector3(B[0] - A[0], B[1] - A[1], B[2] - A[2]);
+    let L = d.length();
+    if (L < g * 0.999) return null;
+    d.normalize();
+    for (const os of [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)]) {
+      const cos = d.dot(os);
+      if (Math.abs(cos) > Math.cos(SZK.BELKA_SNAP_DEG * DEG)) { d.copy(os).multiplyScalar(Math.sign(cos)); break; }
+    }
+    L = Math.max(g, Math.round(L / g) * g);
+    const up = new THREE.Vector3(0, 0, 0); up.setComponent(this.osGoryIndeks(), 1);
+    const x = new THREE.Vector3().crossVectors(d, up);
+    if (x.lengthSq() < 1e-8) x.set(1, 0, 0); else x.normalize();
+    const z = new THREE.Vector3().crossVectors(x, d).normalize();
+    x.crossVectors(d, z).normalize();
+    const e = new THREE.Euler().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, d, z), 'XYZ');
+    const r6 = (v) => Math.round(v * 1e6) / 1e6;
+    const obr = [e.x, e.y, e.z].map((v) => r6(v / DEG));
+    const okr = this.belka.ksztalt === 'okrag';
+    const a = Math.round(okr ? this.belka.d : this.belka.a), b = Math.round(this.belka.b);
+    const poz = [0, 1, 2].map((i) => r6(A[i] + d.getComponent(i) * L / 2));
+    const def = okr ? { typ: 'walec', r: a / 2, h: L } : { typ: 'prostopadloscian', dx: a, dy: L, dz: b };
+    return { def, poz, obr, nazwa: 'Belka', opis: (okr ? `Ø${fmt(a)}` : `${fmt(a)} × ${fmt(b)}`) + ` · L = ${fmt(L)} mm` };
   }
 
   zacznijTworzenie(A, zrodlo, naPlaszczyznie = false, plaszczyzna = null) {
@@ -686,7 +730,8 @@ export class Szkicownik {
     if (!t.ksztalt) { this.powiedz('Za krótko — przeciągnij dalej, żeby nadać wymiar'); this.przypnijUchwyty(); return null; }
     const k = t.ksztalt;
     return this.zadanie(null, async () => {
-      const b = await this.projekt.dodaj(k.def, { poz: k.poz, obr: k.obr });
+      const nazwa = k.nazwa ? `${k.nazwa} ${this.projekt.bryly.filter((x) => x.nazwa.startsWith(k.nazwa + ' ')).length + 1}` : undefined;
+      const b = await this.projekt.dodaj(k.def, { poz: k.poz, obr: k.obr, nazwa });
       this.wiele = false; this.zazn = [b.id]; this.prowadzaca = b.id; this.przypnijUchwyty();
       this.powiedz(`Dodano: ${b.nazwa}  ${k.opis}`);
       return b;
@@ -1009,7 +1054,14 @@ export class Szkicownik {
         else this.resetWidoku();
       }
       const gp = src.gamepad;
-      if (glowna && gp && gp.axes.length >= 4 && Math.abs(gp.axes[3]) > SZK.STICK_DEADZONE && !a.controllers.some((o) => o.userData.szk && o.userData.szk.chwyt)) {
+      if (this.narzedzie === 'belka' && gp && gp.axes.length >= 4 && Math.abs(gp.axes[3]) > SZK.STICK_DEADZONE) {   // belka: prawa = a / Ø, lewa = b
+        const f = Math.exp(-gp.axes[3] * SZK.BELKA_PREDKOSC * dt);
+        if (glowna) this.zmienBelke(this.belka.ksztalt === 'okrag' ? 'd' : 'a', f);
+        else if (this.belka.ksztalt === 'prostokat') this.zmienBelke('b', f);
+        if (this.tworzenie) this.ciagnijTworzenie(this.tworzenie.B);
+        this.msg = this.belkaTekst(); this.msgCzas = 1.5;
+      }
+      else if (glowna && gp && gp.axes.length >= 4 && Math.abs(gp.axes[3]) > SZK.STICK_DEADZONE && !a.controllers.some((o) => o.userData.szk && o.userData.szk.chwyt)) {
         const piv = this.pivotSceny();
         piv.scale.setScalar(Math.min(SZK.SKALA_SCENY_MAX, Math.max(SZK.SKALA_SCENY_MIN, piv.scale.x * Math.exp(-gp.axes[3] * SZK.SKALA_SCENY_PREDKOSC * dt))));
       }
@@ -1986,6 +2038,7 @@ export class Szkicownik {
                 : `Krzywa ${nr}: klikaj punkty, Enter = koniec krzywej` + (nr === 2 ? ' → powierzchnia' : '');
     }
     if (this.narzedzie === 'wstazka') return vr ? (this.wstazka ? 'Rozciągasz wstążkę — puść spust = gotowe' : 'Trzymaj OBA spusty i prowadź ręce') : 'Wstążka działa w goglach';
+    if (this.narzedzie === 'belka') return vr ? `${this.belkaTekst()} · spust w A → przeciągnij → puść w B` : `${this.belkaTekst()} · przeciągnij myszą od A do B · Esc = wybierz`;
     if (this.narzedzie !== 'wybierz') return vr ? 'Spust w punkcie A → przeciągnij → puść' : 'Przeciągnij myszą po płaszczyźnie · Esc = wybierz';
     return vr ? 'Spust: wybierz · Grip: chwyć (prawy spust = kopia, A = usuń) · B: cofnij' : 'Klik: wybierz · Ctrl+Z: cofnij';
   }
@@ -2014,12 +2067,21 @@ export class Szkicownik {
     const lista = this.projekt ? this.projekt.bryly : [];
     const brak = !this.zazn.length;
     U.ramka(112, 196, 'Narzędzie — spust: rozciągnij bryłę od punktu do punktu');
-    U.rzadW(150, 140, [['wybierz', 'Wybierz'], ['prostopadloscian', 'Prostopadłościan'], ['walec', 'Walec'], ['kula', 'Kula']]
-      .map(([id, text]) => ({ id: 'narz:' + id, text, icon: id, active: this.narzedzie === id, flex: id === 'prostopadloscian' ? 1.35 : 1 })));
+    U.rzadW(150, 140, [['wybierz', 'Wybierz'], ['prostopadloscian', 'Prostopadłościan'], ['walec', 'Walec'], ['kula', 'Kula'], ['belka', 'Belka']]
+      .map(([id, text]) => ({ id: 'narz:' + id, text, icon: id, active: this.narzedzie === id, flex: id === 'prostopadloscian' ? 1.45 : 1 })));
+    if (this.narzedzie === 'belka') {
+      const okr = this.belka.ksztalt === 'okrag';
+      U.ramka(322, 196, `${this.belkaTekst()} — gałki: prawa ${okr ? 'Ø' : 'a'}` + (okr ? '' : ', lewa b'));
+      U.rzadW(360, 140, [{ id: 'bk:prostokat', text: 'Prostokąt', icon: 'prostokat', active: !okr, flex: 1.2 },
+                         { id: 'bk:okrag', text: 'Okrąg', icon: 'okrag', active: okr },
+                         { id: 'bk:a-', sub: okr ? 'Ø' : 'a', text: '−', flex: 0.6 }, { id: 'bk:a+', sub: okr ? 'Ø' : 'a', text: '+', flex: 0.6 },
+                         { id: 'bk:b-', sub: 'b', text: '−', disabled: okr, flex: 0.6 }, { id: 'bk:b+', sub: 'b', text: '+', disabled: okr, flex: 0.6 }]);
+    } else {
     U.ramka(322, 196, 'Działania na zaznaczonych');
     U.rzadW(360, 140, [this.przyciskCofnij(), { id: 'kopiuj', text: 'Kopiuj', icon: 'kopiuj', disabled: brak }, { id: 'usun', text: 'Usuń', icon: 'usun', disabled: brak },
                        { id: 'grupuj', text: 'Grupuj', icon: 'grupuj', disabled: this.zazn.length < 2 },
                        { id: 'rozgrupuj', text: 'Rozgrupuj', icon: 'rozgrupuj', disabled: !this.zazn.some((id) => this.bryla(id)?.grupa), flex: 1.15 }]);
+    }
     const moznaPrzejac = !!(a.cadRoot && this.plikiDoPrzejecia().length);
     const przejety = !!(this.projekt && Object.keys(this.projekt.pliki).length);
     U.ramka(532, 628, `Bryły (${lista.length})` + (this.zazn.length ? ` · zaznaczone: ${this.zazn.length}` : ''));
@@ -2229,6 +2291,11 @@ export class Szkicownik {
       case 'eksport': this.eksport(v); break;
       // szkic
       case 'pl': this.ustawPlaszczyzne(v); break;
+      case 'bk':
+        if (v === 'prostokat' || v === 'okrag') this.belka.ksztalt = v;
+        else this.zmienBelke(v[0] === 'a' ? (this.belka.ksztalt === 'okrag' ? 'd' : 'a') : 'b', v.endsWith('+') ? 1.25 : 0.8, true);
+        this.powiedz(this.belkaTekst());
+        break;
       case 'pw':
         if (v === 'plaska') this.powierzchniaZeSzkicu();
         else if (v === 'tnij') this.zacznijCiecie();
@@ -2285,7 +2352,7 @@ export class Szkicownik {
     const b = t ? null : this.wybrana(), w = b && this.wezly.get(b.id);
     const obiekt = t ? this.podglad.grupa : w && w.holder;
     if (!obiekt || !obiekt.visible) { e.sprite.visible = false; return; }
-    const tekst = t ? `${PROJEKT.NAZWY[t.def.typ]}  ${t.opis}` : this.opisBryly(b);
+    const tekst = t ? `${t.nazwa || PROJEKT.NAZWY[t.def.typ]}  ${t.opis}` : this.opisBryly(b);
     if (tekst !== e.tekst) {
       e.tekst = tekst;
       const ctx = e.canvas.getContext('2d'), W = 1024, H = 128;

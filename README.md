@@ -24,7 +24,7 @@ Przeglądarka modeli CAD (STEP / IGES / STL, np. eksport z SolidWorksa) w przegl
 
 | Przycisk | Działanie |
 |---|---|
-| Spust | wybrane narzędzie: **Wskaż** (nazwa i wybór części), **Rysuj** (linia w powietrzu, grubość zależy od siły nacisku; kulka pędzla 8 cm przed kontrolerem), **Gumka**, **Miarka** (od punktu do punktu na powierzchni), **Kolor** (maluje część), **Komentarz** (płytka ze strzałką), **Przekrój** (płaszczyzna cięcia w ręce) |
+| Spust | wybrane narzędzie: **Wskaż** (nazwa i wybór części), **Rysuj** (linia w powietrzu, grubość zależy od siły nacisku; kulka pędzla 8 cm przed kontrolerem), **Belka** (prosta bryła od A do B), **Gumka**, **Miarka** (od punktu do punktu na powierzchni), **Kolor** (maluje część), **Komentarz** (płytka ze strzałką), **Przekrój** (płaszczyzna cięcia w ręce) |
 | Grip przy części | chwyć **część** albo **wszystko w sferze** (tryb w panelu); tak samo chwytasz **rysunki** z narzędzia Rysuj |
 | Trzymasz część / rysunek + prawy spust | **kopia** zostaje w tym miejscu (cała grupa, jeśli trzymasz grupę), a Ty dalej trzymasz oryginał |
 | Trzymasz kilka elementów + **wciśnięcie gałki** | trzymane części i rysunki stają się **grupą**; ponowne wciśnięcie przy trzymanej grupie = rozgrupuj |
@@ -62,6 +62,11 @@ Grupa zachowuje się jak jeden przedmiot: grip na dowolnym jej elemencie (także
 **Grupy części — wskazywaniem:** Wskaż + spust na pierwszej części → w okienku „Zaznaczaj wiele” → spust na kolejnych częściach → „Grupuj”. Grupa zostaje grupą:
 grip na dowolnej jej części chwyta całą grupę, kopia kopiuje całą grupę, w drzewie przy nazwie widać ⟨Grupa N⟩, a „Zapisz STEP” zapisuje ją jako podzłożenie.
 Rozbicie: spust na części z grupy (zaznacza się cała grupa) → „Rozgrupuj”. Na PC: Ctrl + klik = kilka części, przyciski „Grupuj zaznaczone” / „Rozgrupuj”.
+
+**Belka:** narzędzie Belka → spust w punkcie A, przeciągnij do B, puść — powstaje prosta bryła na tej długości (napis pokazuje długość w mm,
+kierunek bliski osi X / Y / Z sam się do niej przyciąga). Przekrój w panelu: **Prostokąt** (prawa gałka = bok a, lewa gałka = bok b) albo **Okrąg**
+(prawa gałka = średnica); to samo przyciskami a− / a+ / b− / b+. Kolor z palety. Belka jest zwykłą częścią (gałąź „Belki” w drzewie): chwytasz ją,
+grupujesz, kopiujesz, ukrywasz, a „Zapisz STEP” zapisuje ją jako prawdziwą bryłę. B cofa. Działa też bez wczytanego modelu.
 
 **Rysunki jako obiekty:** linie z narzędzia Rysuj chwytasz gripem tak jak części (w trybie Część — najbliższy rysunek albo część, w trybie Sfera — wszystko w sferze),
 przesuwasz, obracasz dwiema rękami, prawy spust = kopia, A ukrywa trzymany rysunek, gałka = grupa, B cofa.
@@ -147,7 +152,8 @@ Zbyt długa operacja (ponad 5 s) jest przerywana, bryły zostają bez zmian.
 | B | **cofnij** (w szkicu: usuń ostatni odcinek) |
 | A (nic nie trzymasz) | zrzut ekranu · **X** panel · **Y** reset widoku |
 
-Panel (lewy kontroler, kilka cm nad nim, przyciski z ikonami pogrupowane w ramki): **Bryły** (narzędzia Wybierz / Prostopadłościan / Walec / Kula; Cofnij, Kopiuj, Usuń, Grupuj, Rozgrupuj;
+Panel (lewy kontroler, kilka cm nad nim, przyciski z ikonami pogrupowane w ramki): **Bryły** (narzędzia Wybierz / Prostopadłościan / Walec / Kula / **Belka**
+— od A do B, przekrój prostokąt a × b albo okrąg Ø, gałki: prawa a / Ø, lewa b, długość na siatce snapu; Cofnij, Kopiuj, Usuń, Grupuj, Rozgrupuj;
 lista brył, przejmij oryginał) · **Szkic** (płaszczyzna, Linia / Łuk styczny / Łuk 3 pkt / Zaokrąglij + promień, Usuń ostatni, Zamknij, Anuluj; Wyciągnij, Wpisz wysokość, Obrót, kąt obrotu, Powierzchnia)
 · **Powierzchnie** (Płaska ze szkicu, Wstążka, Między 2 krzywymi; Tnij bryłę, Pogrub, grubość) · **Edycja** (dokładne wymiary, położenie,
 obrót, skala — klik w pole otwiera klawiaturę numeryczną; Suma / Różnica / Część wspólna: wybrana bryła = A, potem wskaż B;
@@ -197,7 +203,7 @@ Test silnika (w folderze projektu, Node.js): `node test/szkicownik_test.mjs` —
 - `tla.js`, `tla/` – tła 360° (rysowane przez program + 2 zdjęcia, licencje w `tla/LICENCJE.md`).
 - `szkicownik/` – Szkicownik brył (silnik geometrii, biblioteki w `szkicownik/lib/`).
 - `test/szkicownik_test.mjs` – testy geometrii Szkicownika w Node.
-- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (156 sprawdzeń, w tym Szkicownik na PC i w emulatorze gogli; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
+- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (163 sprawdzenia, w tym Szkicownik na PC i w emulatorze gogli; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
   `pip install playwright` oraz w folderze projektu
   `npm install --no-save three@0.187.0 occt-import-js@0.0.23 three-mesh-bvh@0.9.16 iwer@2.6.0`.
 
