@@ -10,12 +10,13 @@
 // ---------------------------------------------------------------------------
 export const KLIENT = {
   BOOLEAN_TIMEOUT_MS: 5000,       // suma / różnica / część wspólna
+  CIECIE_TIMEOUT_MS: 12000,       // cięcie płaszczyznami / powierzchnią, pogrubianie (do zmiany w Szkicowniku: Plik → Limit czasu)
   OP_TIMEOUT_MS: 20000,           // budowa bryły, eksport STEP
   START_TIMEOUT_MS: 120000,       // pierwsze wczytanie OpenCascade (23 MB) — na Quest może trwać
   WCZYTANIE_TIMEOUT_MS: 300000,   // wczytanie plików STEP / STL, zapis całego złożenia, odtworzenie stanu po restarcie
 };
 
-const TIMEOUT_KOMENDY = { boolean: 'BOOLEAN_TIMEOUT_MS', start: 'START_TIMEOUT_MS', wczytajOryginal: 'WCZYTANIE_TIMEOUT_MS', wczytajPlik: 'WCZYTANIE_TIMEOUT_MS',
+const TIMEOUT_KOMENDY = { boolean: 'BOOLEAN_TIMEOUT_MS', tnijPlaszczyznami: 'CIECIE_TIMEOUT_MS', podziel: 'CIECIE_TIMEOUT_MS', pogrub: 'CIECIE_TIMEOUT_MS', start: 'START_TIMEOUT_MS', wczytajOryginal: 'WCZYTANIE_TIMEOUT_MS', wczytajPlik: 'WCZYTANIE_TIMEOUT_MS',
                           odtworz: 'WCZYTANIE_TIMEOUT_MS', eksport: 'WCZYTANIE_TIMEOUT_MS' };
 
 export class BladGeometrii extends Error {
@@ -98,7 +99,7 @@ export class SilnikGeometrii {
     const w = this.worker;
     if (!w) return Promise.reject(new BladGeometrii('AWARIA', 'Wątek geometrii nie działa'));
     const id = ++this.licznik;
-    const ms = this.limity[TIMEOUT_KOMENDY[cmd] || 'OP_TIMEOUT_MS'];
+    const ms = this.limity[TIMEOUT_KOMENDY[cmd] || 'OP_TIMEOUT_MS'];   // limity można zmieniać w trakcie (np. z panelu)
     return new Promise((resolve, reject) => {
       const p = { resolve, reject, worker: w, cmd, zRestartem, timer: null };
       p.timer = setTimeout(() => {

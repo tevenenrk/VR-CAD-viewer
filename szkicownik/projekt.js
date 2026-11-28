@@ -14,7 +14,7 @@ export const PROJEKT = {
   WERSJA_PLIKU: 1,
   KOLORY: ['#8fa3b8', '#e0a458', '#7cb518', '#5fa8d3', '#c77dff', '#f28482', '#84a59d', '#ffd166'],
   NAZWY: { prostopadloscian: 'Prostopadłościan', walec: 'Walec', kula: 'Kula', wyciagniecie: 'Wyciągnięcie', obrot: 'Obrót', boolean: 'Bryła',
-           powierzchnia: 'Powierzchnia', pogrubienie: 'Pogrubienie', podzial: 'Część' },
+           powierzchnia: 'Powierzchnia', pogrubienie: 'Pogrubienie', podzial: 'Część', ciecie: 'Kawałek' },
   NAZWA_NOWYCH: 'Szkicownik',     // podzłożenie z nowymi bryłami w eksporcie STEP
   NAZWA_PROJEKTU: 'Szkicownik',   // nazwa złożenia, gdy nie ma oryginału
   NAZWA_GRUPY: 'Grupa',           // „Grupa 1”, „Grupa 2”…
@@ -91,6 +91,33 @@ export class Projekt {
     this.przyZmianie('dodano', { bryla: d, siatka: wd.siatka });
     this.przyZmianie('zmieniono', { bryla: P });
     return [g, d];
+  }
+
+  // Cięcie bryły płaszczyznami (1 albo 2 kwadraty, mm CAD): bryła zastąpiona kawałkami (każdy osobną bryłą)
+  async tnijPlaszczyznami(idBryly, plaszczyzny) {
+    const A = this.bryla(idBryly);
+    if (!A) throw new Error('Wybierz bryłę do pocięcia');
+    if (A.def.typ === 'powierzchnia') throw new Error('To jest powierzchnia — tnie się tylko bryły');
+    const ids = [1, 2, 3, 4].map(() => this.nowyId());
+    const pl = kopia(plaszczyzny);
+    const wyniki = await this.silnik.wykonaj('tnijPlaszczyznami', { ids, a: { id: A.id, ...transformacja(A) }, plaszczyzny: pl });
+    const operand = { nazwa: A.nazwa, def: kopia(A.def), lok: [...A.lok], ...transformacja(A) };
+    const kawalki = wyniki.map((w, i) => ({
+      id: w.id, nazwa: `${A.nazwa} (${i + 1})`,
+      kolor: i === 0 ? A.kolor : PROJEKT.KOLORY[(PROJEKT.KOLORY.indexOf(A.kolor) + 2 * i + 1) % PROJEKT.KOLORY.length],
+      widoczna: true, zrodlo: A.zrodlo, sciezka: [...A.sciezka], grupa: A.grupa || null,
+      def: { typ: 'ciecie', a: operand, plaszczyzny: pl, znaki: w.znaki },
+      lok: w.lok, poz: w.srodek, obr: [0, 0, 0], skala: 1, objetosc: w.objetosc, pole: 0, ramka: w.ramka, brep: w.brep,
+    }));
+    const nieuzyte = ids.slice(wyniki.length);
+    const i = this.bryly.indexOf(A);
+    this.bryly = this.bryly.filter((b) => b !== A);
+    this.bryly.splice(Math.min(i, this.bryly.length), 0, ...kawalki);
+    await this.silnik.wykonaj('usun', { ids: [A.id, ...nieuzyte] });
+    this.sprzatnijGrupy();
+    this.przyZmianie('usunieto', { ids: [A.id] });
+    kawalki.forEach((b, k) => this.przyZmianie('dodano', { bryla: b, siatka: wyniki[k].siatka }));
+    return kawalki;
   }
 
   // Pogrubienie powierzchni: powstaje bryła, powierzchnia znika

@@ -109,6 +109,7 @@ export function dopasujCzesci(bryly, czesci) {
 //    | { typ: 'powierzchnia', rodzaj: 'krzywe', a: [[x,y,z]…], b: [[x,y,z]…] }        (pomiędzy dwiema krzywymi, np. wstążka z dwóch rąk)
 //    | { typ: 'pogrubienie', z: bryla (powierzchnia), grubosc }                          (powierzchnia → bryła o grubości, w stronę normalnej)
 //    | { typ: 'podzial', strona: 'gora'|'dol', a: bryla, b: bryla (powierzchnia) }       (część bryły nad / pod powierzchnią)
+//    | { typ: 'ciecie', a: bryla, plaszczyzny: [{ o, u, v, n, bok }], znaki: [+1|-1, …] } (kawałek bryły po cięciu kwadratowymi płaszczyznami)
 // Prymitywy są wyśrodkowane w swoim początku układu; oś walca = oś góry (Y).
 // bryla: { def, lok: [mm] (przesunięcie geometrii przed obrotem), poz, obr, skala }
 // pobierzOryginal(plik, indeks) → bryła z wczytanego pliku (w układzie pliku)
@@ -140,6 +141,8 @@ export function zbudujDef(def, pobierzOryginal) {
       return zbudujPowierzchnie(def);
     case 'pogrubienie':
       return pogrub(zbudujBryle(def.z, pobierzOryginal), def.grubosc);
+    case 'ciecie':
+      return kawalekCiecia(zbudujBryle(def.a, pobierzOryginal), def.plaszczyzny, def.znaki);
     case 'podzial': {
       const czesci = podziel(zbudujBryle(def.a, pobierzOryginal), zbudujBryle(def.b, pobierzOryginal));
       return def.strona === 'dol' ? czesci.dol : czesci.gora;
@@ -176,9 +179,20 @@ export function przeksztalc(ksztalt, { poz = [0, 0, 0], obr = [0, 0, 0], skala =
 }
 
 // Punkt szkicu [u, v] na płaszczyźnie (odsunięcie o) → punkt CAD [x, y, z] w mm
-export function punktPlaszczyzny(plaszczyzna, o, [u, v]) {
+// Płaszczyzna szkicu: nazwa ('XY' | 'XZ' | 'YZ', przez początek układu) albo własna { o, u, v, n } (postawiona ręką / na ścianie bryły)
+export function ukladPlaszczyzny(plaszczyzna) {
+  if (plaszczyzna && typeof plaszczyzna === 'object') {
+    for (const k of ['u', 'v', 'n']) if (!Array.isArray(plaszczyzna[k]) || plaszczyzna[k].length !== 3) throw new Error('Zła płaszczyzna szkicu');
+    return { o0: plaszczyzna.o || [0, 0, 0], u: plaszczyzna.u, v: plaszczyzna.v, n: plaszczyzna.n };
+  }
   const pl = GEO.PLASZCZYZNY[plaszczyzna];
-  return [0, 1, 2].map((i) => pl.n[i] * o + pl.u[i] * u + pl.v[i] * v);
+  if (!pl) throw new Error('Nieznana płaszczyzna szkicu: ' + plaszczyzna);
+  return { o0: [0, 0, 0], u: pl.u, v: pl.v, n: pl.n };
+}
+
+export function punktPlaszczyzny(plaszczyzna, o, [u, v]) {
+  const pl = ukladPlaszczyzny(plaszczyzna);
+  return [0, 1, 2].map((i) => pl.o0[i] + pl.n[i] * o + pl.u[i] * u + pl.v[i] * v);
 }
 
 // ---------------------------------------------------------------------------
@@ -291,13 +305,73 @@ export function podziel(bryla, pow) {
   return { gora, dol, objetosci: [vg, vd] };
 }
 
+// ---------------------------------------------------------------------------
+// CIĘCIE KWADRATOWYMI PŁASZCZYZNAMI (trzymanymi w rękach): każda płaszczyzna dzieli bryłę w obrębie swojego kwadratu.
+// Płaszczyzna: { o: środek, u, v: kierunki boków, n: normalna (u × v), bok: długość boku } — mm, układ CAD.
+// Kawałek o znakach [+1, -1] = część po stronie normalnej pierwszej płaszczyzny i po drugiej stronie drugiej.
+// ---------------------------------------------------------------------------
+function pryzmaKwadratu(pl, L) {
+  const h = pl.bok / 2;
+  const P = (a, b) => [0, 1, 2].map((i) => pl.o[i] + pl.u[i] * a + pl.v[i] * b);
+  const sciana = R.makePolygon([P(-h, -h), P(h, -h), P(h, h), P(-h, h)]);
+  const pm = new oc.BRepPrimAPI_MakePrism(sciana.wrapped, new R.Vector(pl.n.map((x) => x * L)).wrapped, false, true);
+  const s = R.cast(pm.Shape());
+  pm.delete();
+  return s;
+}
+
+function sprawdzPlaszczyzne(pl) {
+  for (const k of ['o', 'u', 'v', 'n']) if (!Array.isArray(pl[k]) || pl[k].length !== 3 || pl[k].some((x) => !Number.isFinite(x))) throw new Error('Zła płaszczyzna cięcia');
+  if (!(pl.bok > 0)) throw new Error('Płaszczyzna cięcia musi mieć bok większy od zera');
+}
+
+function dlugoscPryzmy(bryla, plaszczyzny) {
+  const r = ramka(bryla);
+  const przek = Math.hypot(r.max[0] - r.min[0], r.max[1] - r.min[1], r.max[2] - r.min[2]);
+  return 4 * (przek + Math.max(...plaszczyzny.map((p) => p.bok))) + 10;
+}
+
+export function kawalekCiecia(bryla, plaszczyzny, znaki) {
+  plaszczyzny.forEach(sprawdzPlaszczyzne);
+  const L = dlugoscPryzmy(bryla, plaszczyzny);
+  let s = bryla.clone();
+  plaszczyzny.forEach((pl, i) => {
+    const p = pryzmaKwadratu(pl, L);
+    s = znaki[i] > 0 ? s.intersect(p) : s.cut(p);
+  });
+  return s;
+}
+
+// Wszystkie niepuste kawałki (1 płaszczyzna → do 2, 2 płaszczyzny → do 4). Mniej niż 2 = płaszczyzny nie przecinają bryły.
+export function tnijPlaszczyznami(bryla, plaszczyzny) {
+  if (!liczBryly(bryla)) throw new Error('Ciąć można tylko bryłę (nie powierzchnię)');
+  if (!plaszczyzny.length || plaszczyzny.length > 2) throw new Error('Cięcie: jedna albo dwie płaszczyzny');
+  plaszczyzny.forEach(sprawdzPlaszczyzne);
+  const L = dlugoscPryzmy(bryla, plaszczyzny);
+  const pryzmy = plaszczyzny.map((pl) => pryzmaKwadratu(pl, L));
+  const kombinacje = plaszczyzny.length === 1 ? [[1], [-1]] : [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+  const wynik = [];
+  for (const znaki of kombinacje) {
+    let s;
+    try {
+      s = bryla.clone();
+      pryzmy.forEach((p, i) => { s = znaki[i] > 0 ? s.intersect(p) : s.cut(p); });
+    } catch (e) {
+      throw new Error('Cięcie nie powiodło się: ' + komunikatOC(e));
+    }
+    const v = liczBryly(s) ? objetosc(s) : 0;
+    if (v >= GEO.MIN_OBJETOSC_MM3) wynik.push({ ksztalt: s, znaki, objetosc: v });
+  }
+  if (wynik.length < 2) throw new Error('Płaszczyzna nie przecina tej bryły — przesuń ją przez bryłę albo powiększ (gałka)');
+  return wynik;
+}
+
 function rysunekObrysu(def) {
-  const pl = GEO.PLASZCZYZNY[def.plaszczyzna];
-  if (!pl) throw new Error('Nieznana płaszczyzna szkicu: ' + def.plaszczyzna);
+  const pl = ukladPlaszczyzny(def.plaszczyzna);
   const seg = def.obrys || [];
   if (seg.length < 2 && !(seg.length === 1 && seg[0].typ === 'luk')) throw new Error('Obrys musi mieć co najmniej 2 odcinki');
   const o = def.odsuniecie || 0;
-  const plane = new R.Plane(pl.n.map((v) => v * o), pl.u, pl.n);
+  const plane = new R.Plane(pl.n.map((v, i) => pl.o0[i] + v * o), pl.u, pl.n);
   let pen = R.draw(seg[0].a);
   seg.forEach((s, i) => {
     const ostatni = i === seg.length - 1;
@@ -329,24 +403,9 @@ function zbudujObrot(def) {
 }
 
 function zbudujWyciagniecie(def) {
-  const pl = GEO.PLASZCZYZNY[def.plaszczyzna];
-  if (!pl) throw new Error('Nieznana płaszczyzna szkicu: ' + def.plaszczyzna);
   const h = Number(def.h);
   if (!Number.isFinite(h) || h === 0) throw new Error('Wysokość wyciągnięcia musi być różna od zera');
-  const seg = def.obrys || [];
-  if (seg.length < 2 && !(seg.length === 1 && seg[0].typ === 'luk')) throw new Error('Obrys musi mieć co najmniej 2 odcinki');
-  const o = def.odsuniecie || 0;
-  const plane = new R.Plane(pl.n.map((v) => v * o), pl.u, pl.n);
-  let pen = R.draw(seg[0].a);
-  seg.forEach((s, i) => {
-    const ostatni = i === seg.length - 1;
-    if (s.typ === 'linia') { if (!ostatni) pen = pen.lineTo(s.b); }      // ostatnią linię domyka close()
-    else if (s.typ === 'luk') pen = pen.threePointsArcTo(s.b, s.m);
-    else throw new Error('Nieznany odcinek obrysu: ' + s.typ);
-  });
-  const rysunek = pen.close();
-  const bryla = rysunek.sketchOnPlane(plane).extrude(h);
-  return bryla;
+  return rysunekObrysu(def).extrude(h);      // ostatnią linię obrysu domyka close() w rysunekObrysu
 }
 
 // ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ export const TLA = [
   { id: 'niebo',   nazwa: 'Niebo',          typ: 'gen' },
   { id: 'zachod',  nazwa: 'Zachód słońca',  typ: 'gen' },
   { id: 'studio',  nazwa: 'Studio',         typ: 'gen' },
+  { id: 'warsztat', nazwa: 'Warsztat hi‑tech', typ: 'gen' },
   { id: 'laka',    nazwa: 'Łąka o świcie',  typ: 'plik', plik: 'laka_wschod.jpg' },
   { id: 'planeta', nazwa: 'Planeta',        typ: 'plik', plik: 'kosmos_planeta.jpg' },
 ];
@@ -49,7 +50,7 @@ export function generujTlo(id, W = 4096) {
   return c;
 }
 
-const RYSUNKI_ZIARNO = { gory: 7, kosmos: 11, niebo: 5, zachod: 3, studio: 1 };
+const RYSUNKI_ZIARNO = { gory: 7, kosmos: 11, niebo: 5, zachod: 3, studio: 1, warsztat: 13 };
 
 function losowe(ziarno) {                       // powtarzalne liczby losowe (mulberry32)
   let a = ziarno >>> 0;
@@ -239,6 +240,65 @@ const RYSUNKI = {
       ctx.fillStyle = rgba('#ffc27a', 0.1 + 0.2 * R());
       ctx.fillRect(sx - szer / 2 + (R() - 0.5) * H * 0.03, y, szer, 2 * k);
     }
+  },
+
+  // Warsztat hi‑tech: ciemna hala, świecąca siatka na podłodze, pasy LED, stoły ze świecącymi ekranami, holograficzne kręgi
+  warsztat(ctx, W, H, R, k) {
+    const OKO = 1.6, SUFIT = 3.2, PROMIEN = 6;           // m: wysokość oczu, sufit nad podłogą, promień hali
+    const yKat = (kat) => H / 2 - kat / Math.PI * H;      // kąt nad horyzontem → wiersz panoramy
+    const yWys = (z, d = PROMIEN) => yKat(Math.atan2(z - OKO, d));   // wysokość z na ścianie (odległość d)
+    const yPod = (d) => yKat(Math.atan2(-OKO, d)), ySuf = (d) => yKat(Math.atan2(SUFIT - OKO, d));
+    pionowo(ctx, W, 0, H, [[0, '#05070b'], [0.3, '#0b1119'], [0.5, '#0e1620'], [0.62, '#0a0f15'], [1, '#05070a']]);
+    // sufit: pierścienie lamp (poziome pasy) i belki
+    for (const d of [1.2, 2.2, 3.4, 4.8]) {
+      const y = ySuf(d);
+      ctx.fillStyle = rgba('#cfefff', 0.55); ctx.fillRect(0, y - 2 * k, W, 4 * k);
+      for (const dx of [0, -W, W]) plama(ctx, W, W / 2 + dx, y, W * 0.6, H * 0.012, '#7fd8ff', 0.18);
+    }
+    for (let i = 0; i < 24; i++) { const x = i / 24 * W; ctx.fillStyle = rgba('#000000', 0.45); ctx.fillRect(x - 3 * k, 0, 6 * k, ySuf(PROMIEN)); }
+    // ściana: panele, pionowe listwy LED, poziomy pas świetlny
+    const yG = ySuf(PROMIEN), yD = yPod(PROMIEN);
+    pionowo(ctx, W, yG, yD, [[0, '#121a24'], [0.55, '#0f161f'], [1, '#090d12']]);
+    for (let i = 0; i < 36; i++) {
+      const x = i / 36 * W;
+      ctx.fillStyle = rgba('#000000', 0.5); ctx.fillRect(x, yG, 3 * k, yD - yG);
+      if (i % 3 === 0) { ctx.fillStyle = rgba('#2fd0ff', 0.75); ctx.fillRect(x + 10 * k, yWys(0.4), 3 * k, yWys(2.6) - yWys(0.4)); plama(ctx, W, x + 11 * k, (yWys(0.4) + yWys(2.6)) / 2, 22 * k, (yWys(0.4) - yWys(2.6)) * 0.6, '#2fd0ff', 0.12); }
+    }
+    const yPas = yWys(2.2);
+    ctx.fillStyle = rgba('#7fe3ff', 0.9); ctx.fillRect(0, yPas - 2 * k, W, 4 * k);
+    for (const dx of [0, -W, W]) plama(ctx, W, W / 2 + dx, yPas, W * 0.7, H * 0.02, '#2fd0ff', 0.2);
+    ctx.fillStyle = rgba('#ff3b30', 0.7); ctx.fillRect(0, yWys(0.12) - 1.5 * k, W, 3 * k);   // czerwona listwa przy podłodze
+    // stoły warsztatowe ze świecącymi ekranami (holograficzne panele)
+    for (let i = 0; i < 7; i++) {
+      const u = (i + 0.3) / 7 + (R() - 0.5) * 0.04, d = 3.6 + R() * 1.4, x = u * W;
+      const szer = W * (0.035 + 0.02 * R()), yBlat = yWys(0.95, d), yNoga = yPod(d);
+      ctx.fillStyle = '#06080b'; ctx.fillRect(x - szer / 2, yBlat, szer, yNoga - yBlat);
+      ctx.fillStyle = rgba('#3a4a5c', 0.9); ctx.fillRect(x - szer / 2, yBlat - 2 * k, szer, 4 * k);
+      const yE1 = yWys(1.35, d), yE2 = yWys(1.95, d), ex = szer * 0.8;
+      ctx.fillStyle = rgba('#2fd0ff', 0.18); ctx.fillRect(x - ex / 2, yE2, ex, yE1 - yE2);
+      ctx.strokeStyle = rgba('#7fe3ff', 0.8); ctx.lineWidth = 2 * k; ctx.strokeRect(x - ex / 2, yE2, ex, yE1 - yE2);
+      for (let l = 0; l < 5; l++) { ctx.fillStyle = rgba('#bff3ff', 0.5); ctx.fillRect(x - ex * 0.4, yE2 + (yE1 - yE2) * (0.2 + l * 0.14), ex * (0.3 + 0.5 * R()), 2 * k); }
+      plama(ctx, W, x, (yE1 + yE2) / 2, ex, (yE1 - yE2), '#2fd0ff', 0.12);
+    }
+    // holograficzne kręgi na ścianie (pomarańczowe i niebieskie)
+    for (let i = 0; i < 5; i++) {
+      const x = R() * W, y = yWys(1.6 + R() * 1.0), r = H * (0.025 + 0.03 * R()), kol = i % 2 ? '#ff9f0a' : '#2fd0ff';
+      for (const dx of [0, -W, W]) {
+        ctx.strokeStyle = rgba(kol, 0.6); ctx.lineWidth = 2 * k;
+        ctx.beginPath(); ctx.ellipse(x + dx, y, r * 1.6, r, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.ellipse(x + dx, y, r * 1.1, r * 0.7, 0, 0.3, Math.PI * 1.4); ctx.stroke();
+        plama(ctx, W, x + dx, y, r * 2, r * 1.4, kol, 0.1);
+      }
+    }
+    // podłoga: ciemna, błyszcząca, świecąca siatka (okręgi = poziome linie, promienie = pionowe linie)
+    pionowo(ctx, W, yD, H, [[0, '#0b1016'], [0.5, '#080b10'], [1, '#05070a']]);
+    for (let d = 0.6; d < PROMIEN; d += 0.6) { const y = yPod(d); ctx.fillStyle = rgba('#2fd0ff', 0.12 + 0.35 * Math.min(1, 1.2 / d)); ctx.fillRect(0, y - 1 * k, W, 2 * k); }
+    for (let i = 0; i < 48; i++) { const x = i / 48 * W; ctx.fillStyle = rgba('#2fd0ff', 0.13); ctx.fillRect(x - 1 * k, yD, 2 * k, H - yD); }
+    // okrągła platforma pod Tobą
+    const yR1 = yPod(1.1), yR2 = yPod(1.3);
+    ctx.fillStyle = rgba('#7fe3ff', 0.85); ctx.fillRect(0, yR1 - 2 * k, W, 4 * k); ctx.fillRect(0, yR2 - 1 * k, W, 2 * k);
+    pionowo(ctx, W, yR1, H, [[0, 'rgba(47,208,255,0.10)'], [1, 'rgba(47,208,255,0.02)']]);
+    for (const dx of [0, -W, W]) plama(ctx, W, W / 2 + dx, yD, W * 0.7, H * 0.03, '#2fd0ff', 0.12);   // odbicie pasa w podłodze
   },
 
   // Neutralne studio fotograficzne: jasne softboxy u góry, gładka podłoga

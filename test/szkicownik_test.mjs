@@ -356,6 +356,51 @@ try {
     await projekt.usun([gruba.id, g.id, d.id, wst.id, daleko.id, plyta.id]);
   }
 
+  // 8g. Cięcie kwadratowymi płaszczyznami (z rąk): 1 płaszczyzna → 2 kawałki, 2 skrzyżowane → 4; płaszczyzna obok → błąd
+  {
+    const kost = await projekt.dodaj({ typ: 'prostopadloscian', dx: 100, dy: 100, dz: 100 }, { nazwa: 'Klocek', poz: [3000, 0, 0] });
+    const pionowa = { o: [3020, 0, 0], u: [0, 1, 0], v: [0, 0, 1], n: [1, 0, 0], bok: 300 };          // płaszczyzna x = 3020
+    const kaw = await projekt.tnijPlaszczyznami(kost.id, [pionowa]);
+    sprawdz('cięcie jedną płaszczyzną: 2 kawałki 30 % / 70 %', kaw.length === 2 && Math.abs(kaw[0].objetosc - 3e5) < 1 && Math.abs(kaw[1].objetosc - 7e5) < 1 && !projekt.bryla(kost.id),
+            kaw.map((k) => k.objetosc.toFixed(0)).join(' + '));
+    const kost2 = await projekt.dodaj({ typ: 'prostopadloscian', dx: 100, dy: 100, dz: 100 }, { nazwa: 'Klocek2', poz: [3000, 0, 0] });
+    const pozioma = { o: [3000, 0, 10], u: [1, 0, 0], v: [0, 1, 0], n: [0, 0, 1], bok: 300 };        // z = 10
+    const kaw4 = await projekt.tnijPlaszczyznami(kost2.id, [pionowa, pozioma]);
+    const v = kaw4.map((k) => Math.round(k.objetosc));
+    sprawdz('dwie skrzyżowane płaszczyzny: 4 kawałki (krawędź na przecięciu), razem cała bryła',
+            kaw4.length === 4 && Math.abs(v.reduce((a, b) => a + b, 0) - 1e6) < 2 && v.includes(120000) && v.includes(280000), v.join(' + '));
+    const kost3 = await projekt.dodaj({ typ: 'prostopadloscian', dx: 100, dy: 100, dz: 100 }, { nazwa: 'Klocek3', poz: [3000, 0, 0] });
+    let blad = null;
+    try { await projekt.tnijPlaszczyznami(kost3.id, [{ ...pionowa, o: [3500, 0, 0] }]); } catch (e) { blad = e; }
+    sprawdz('płaszczyzna obok bryły → komunikat, bryła bez zmian', blad && /nie przecina/.test(blad.message) && projekt.bryla(kost3.id), blad && blad.message);
+    const male = { o: [3020, 0, 0], u: [0, 1, 0], v: [0, 0, 1], n: [1, 0, 0], bok: 40 };             // kwadrat 40 mm w środku ściany
+    const kawM = await projekt.tnijPlaszczyznami(kost3.id, [male]);
+    sprawdz('mała płaszczyzna tnie tylko w obrębie kwadratu (40 × 40 × 30 mm)', kawM.length === 2 && kawM.some((k) => Math.abs(k.objetosc - 40 * 40 * 30) < 1),
+            kawM.map((k) => k.objetosc.toFixed(0)).join(' + '));
+    const sw = await silnik.wykonaj('zbuduj', { id: 'tmp_ct', def: kaw4[1].def, wysrodkuj: true });
+    sprawdz('kawałek po cięciu odtwarzany z definicji', Math.abs(sw.objetosc - kaw4[1].objetosc) < 1, sw.objetosc.toFixed(0));
+    await silnik.wykonaj('usun', { ids: ['tmp_ct'] });
+    await projekt.usun([...kaw, ...kaw4, ...kawM].map((k) => k.id));
+  }
+
+  // 8h. Szkic na własnej (postawionej) płaszczyźnie: ukośna ściana → wyciągnięcie i obrót w dobrym miejscu
+  {
+    const k = Math.SQRT1_2;
+    const pl = { o: [500, 200, 100], u: [k, -k, 0], v: [0, 0, 1], n: [-k, -k, 0] };      // u × v = n, płaszczyzna pod 45°
+    sprawdz('własna płaszczyzna: u × v = n', Math.abs(pl.u[1] * pl.v[2] - pl.u[2] * pl.v[1] - pl.n[0]) < 1e-9);
+    const prost = [[0, 0], [40, 0], [40, 20], [0, 20]].map((p, i, t) => ({ typ: 'linia', a: p, b: t[(i + 1) % 4] }));
+    const w = await projekt.dodaj({ typ: 'wyciagniecie', plaszczyzna: pl, odsuniecie: 0, obrys: prost, h: 10 }, { nazwa: 'NaSkos' });
+    const mn = w.poz.map((v, i) => v + w.ramka.min[i]), mx = w.poz.map((v, i) => v + w.ramka.max[i]);
+    sprawdz('wyciągnięcie na ukośnej płaszczyźnie: objętość 8000, położenie przy punkcie płaszczyzny',
+            Math.abs(w.objetosc - 8000) < 0.01 && Math.abs(mn[2] - 100) < 1e-6 && Math.abs(mx[2] - 120) < 1e-6 && mx[0] <= 500 + 40 * k + 1e-6 && mn[0] >= 500 - 10 * k - 1e-6,
+            `min ${mn.map((v) => v.toFixed(1))} max ${mx.map((v) => v.toFixed(1))}`);
+    const ob = await projekt.dodaj({ typ: 'obrot', plaszczyzna: pl, odsuniecie: 0, obrys: prost, os: { a: [0, 0], b: [40, 0] }, kat: 360 }, { nazwa: 'ObrotSkos' });
+    sprawdz('obrót na ukośnej płaszczyźnie (walec Ø40 × 40)', Math.abs(ob.objetosc - Math.PI * 400 * 40) < 0.1, ob.objetosc.toFixed(2));
+    const pw = await projekt.dodaj({ typ: 'powierzchnia', rodzaj: 'plaska', plaszczyzna: pl, odsuniecie: 0, obrys: prost }, { nazwa: 'PowSkos' });
+    sprawdz('powierzchnia płaska na ukośnej płaszczyźnie (800 mm²)', Math.abs(pw.pole - 800) < 0.01);
+    await projekt.usun([w.id, ob.id, pw.id]);
+  }
+
   // 9. Strażnik czasu: ciężki boolean przerwany, wątek odtworzony, bryły nietknięte
   const N = TEST.CIEZKI_BOOLEAN_RAMION, pkt = [];
   for (let i = 0; i < N; i++) { const a = 2 * Math.PI * i / N, r = i % 2 ? 90 : 100; pkt.push([r * Math.cos(a), r * Math.sin(a)]); }

@@ -39,8 +39,9 @@ Przeglądarka modeli CAD (STEP / IGES / STL, np. eksport z SolidWorksa) w przegl
 | Prawa gałka ↑↓ | grubość pędzla / gumki, przy Przekroju przesuw płaszczyzny, w innych narzędziach skala modelu |
 | Lewa gałka ↑↓ | wielkość sfery chwytu (tryb Grupa) |
 
-Panel w goglach wisi kilka centymetrów nad lewym kontrolerem (kontroler go nie zasłania); przyciski mają ikony i są pogrupowane w ramki. Cztery zakładki:
-- **Narzędzia** – narzędzie (spust), chwytanie (grip) + „Grupuj zaznaczone / Rozgrupuj / Odznacz”, kolor, rozmiar, przekrój (Włącz / X / Y / Z / Odwróć / Tnij wszystko), zrzut, skala, resety.
+Panel w goglach wisi kilka centymetrów nad lewym kontrolerem (kontroler go nie zasłania); wygląda jak przyrząd: ciemna płyta ze świecącą krawędzią,
+przyciski z ikonami pogrupowane w ramki, podświetlenie przy najechaniu. **Świecąca kropka pokazuje, gdzie celujesz**, a promień zmienia kolor nad panelem. Cztery zakładki:
+- **Narzędzia** – narzędzie (spust; jest tu też przycisk **Szkicownik**, który przełącza w tryb Szkicownika brył), chwytanie (grip) + „Grupuj zaznaczone / Rozgrupuj / Odznacz”, kolor, rozmiar, przekrój (Włącz / X / Y / Z / Odwróć / Tnij wszystko), zrzut, skala, resety.
 - **Widok** – **tło dookoła** (kafelki z podglądem: Bez tła, Szczyt góry, Kosmos, Niebo, Zachód słońca, Studio, Łąka o świcie, Planeta, „Z internetu ▸”, „Własne zdjęcie (Drive)”, „Obróć tło 45°”), **rozstrzelenie modelu** (− / + / Złóż), usuwanie rysunków / miar / komentarzy.
 - **Drzewo** – drzewo złożenia: kwadrat = pokaż/ukryj, kółko = półprzezroczysta, nazwa = wybierz część (świeci na pomarańczowo), „Pokaż wszystko”, „Tylko wybrana”, „Ukryj wybraną”.
 - **Menu** – plik z Google Drive albo z „Ostatnich plików”, „Wczytaj ponownie”, oś góry Y/Z, „Na stół / Skala 1:1”, dokładność siatki, przełączenie VR ↔ AR, wyjście z gogli, stan chmury i wysyłanie zaległych zrzutów.
@@ -74,7 +75,11 @@ przesuwasz, obracasz dwiema rękami, prawy spust = kopia, A ukrywa trzymany rysu
 **Rozstrzelenie (explode):** zakładka Widok → „+” odsuwa części od środka złożenia (co 10 %, do 200 %), „Złóż” wraca. Zapis STEP i Szkicownik
 zawsze używają złożonego modelu (rozstrzelenie to tylko widok).
 
-**Tła:** zakładka Widok. Wbudowane tła rysuje program (działają bez internetu), „Łąka o świcie” i „Planeta” są zdjęciami w repozytorium,
+**Tryb hologramu:** zakładka Widok → „Hologram” (PC: panel Widok → „Tryb hologramu”). Części stają się półprzezroczyste i świecą
+na krawędziach, przesuwają się po nich linie skanowania, a pod modelem stoi projektor ze stożkiem światła. Kolory, przekrój, chwytanie działają dalej.
+Najlepiej wygląda z tłem „Warsztat hi‑tech”.
+
+**Tła:** zakładka Widok (jest też „Warsztat hi‑tech” — ciemna hala ze świecącą siatką na podłodze, pasami LED i stołami z ekranami). Wbudowane tła rysuje program (działają bez internetu), „Łąka o świcie” i „Planeta” są zdjęciami w repozytorium,
 „Z internetu ▸” pobiera darmowe panoramy z Poly Haven (licencja CC0, kilka MB — gogle muszą mieć internet), „Własne zdjęcie (Drive)” —
 dowolne zdjęcie 360° (panorama 2:1, JPG / PNG) z Twojego Google Drive. Wybór jest zapamiętany. W trybie AR tła nie ma (widzisz pokój).
 Na PC: panel „Widok” — lista teł, „Własne zdjęcie 360°” z dysku, suwak rozstrzelenia.
@@ -110,6 +115,11 @@ Przeglądarka Quest nie ma wbudowanego rozpoznawania mowy, dlatego dyktowanie u�
 1. https://aistudio.google.com → „Get API key” → utwórz klucz.
 2. Panel → „Ustawienia” → „Klucz Gemini API” → wklej → „Zapisz” → „Sprawdź mikrofon” (przeglądarka zapyta o zgodę — zezwól).
 Klucz zostaje tylko w tej przeglądarce (ustawienia są osobne na PC i na Quest), nie trafia do repozytorium. Nagranie (max 30 s) jest wysyłane do Gemini, wraca sam tekst. Model ustawiasz w „Ustawieniach” (domyślnie `gemini-flash-latest`). Bez klucza działa rozpoznawanie mowy przeglądarki, jeśli przeglądarka je ma (Chrome na PC tak, Quest raczej nie).
+
+## Pomysły na dalsze kroki
+
+Zapisane z oceną, co jest możliwe i jakie są ryzyka: `docs/pomysly.md` (zdjęcia i szkice z Drive w przestrzeni, manekin ze stawami
+i wcielanie się w niego, pakiet „wersja ukończona” dla AI z animacją i modelem do kolejnej iteracji).
 
 ## Stan
 
@@ -169,6 +179,17 @@ Odcinek, który przecinałby obrys, świeci na czerwono i nie zostanie dodany. B
 Potem: **Wyciągnij** — odsuń rękę (mysz) od płaszczyzny, podgląd pokazuje bryłę, spust = gotowe (albo „Wpisz wysokość”, minus = w drugą stronę);
 **Obrót** — wskaż prosty odcinek obrysu jako oś (żółty), spust = bryła obrotowa (360°, „Zmień kąt”: 270 / 180 / 90°).
 
+**Cięcie płaszczyznami z rąk** (zakładka Bryły → „Tnij”): spust na bryle = zaznacz, potem w prawej ręce masz kwadratową płaszczyznę
+(jak ostrze — leży wzdłuż kierunku wskazywania kontrolera); gałka zmienia jej wielkość. Lewy spust włącza drugą płaszczyznę w lewej ręce —
+tam, gdzie płaszczyzny się przetną, świeci biała linia (to będzie krawędź). Spust = cięcie: bryła dzieli się na kawałki (1 płaszczyzna → 2,
+dwie → do 4), każdy jest osobną bryłą (chwyć, odsuń, A usuwa). Płaszczyzna tnie tylko w obrębie swojego kwadratu; ustawiona prawie
+prostopadle do osi X / Y / Z przyciąga się dokładnie. Płaszczyzna obok bryły → komunikat. Za trudne cięcie jest przerywane po **12 s**
+(do zmiany: Plik → „Limit czasu cięcia” 5–30 s). PC: klik w zaznaczoną bryłę = cięcie pionowe przez ten punkt.
+
+**Szkic na postawionej płaszczyźnie:** zakładka Szkic → „Postaw płaszczyznę” → spust na ścianie bryły (płaszczyzna leży dokładnie na tej ścianie)
+albo w powietrzu (płaszczyzna jak tablet: góra kontrolera = kierunek „z płaszczyzny”, prawie prosto = dokładnie wzdłuż osi). Potem rysujesz
+obrys jak zwykle i robisz Wyciągnij / Obrót / Powierzchnię — bryła powstaje na tej płaszczyźnie. PC: klik na ścianie bryły.
+
 **Powierzchnie** (zakładka Powierzchnie):
 - **Płaska ze szkicu** — zamknięty obrys z zakładki Szkic zamienia się w płaską powierzchnię (bez grubości).
 - **Wstążka (2 ręce)** — trzymaj OBA spusty i prowadź ręce; powierzchnia rozpina się między czubkami kontrolerów. Puść = gotowe.
@@ -200,10 +221,12 @@ Test silnika (w folderze projektu, Node.js): `node test/szkicownik_test.mjs` —
 - `index.html` – cały program.
 - `test/test_zlozenie.step` – małe złożenie testowe (własne, wygenerowane skryptem).
 - `test/make_test_step.py` – generator złożenia testowego (CadQuery).
+- `panele3d.js` – wygląd paneli w 3D (ramka, świecąca krawędź, kropka celowania).
+- `docs/pomysly.md` – pomysły Roberta na dalsze kroki z oceną wykonalności.
 - `tla.js`, `tla/` – tła 360° (rysowane przez program + 2 zdjęcia, licencje w `tla/LICENCJE.md`).
 - `szkicownik/` – Szkicownik brył (silnik geometrii, biblioteki w `szkicownik/lib/`).
 - `test/szkicownik_test.mjs` – testy geometrii Szkicownika w Node.
-- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (163 sprawdzenia, w tym Szkicownik na PC i w emulatorze gogli; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
+- `test/run_headless.py` – automatyczny test w Chrome bez okna, z emulatorem gogli (171 sprawdzeń, w tym Szkicownik na PC i w emulatorze gogli; Google Drive i Gemini są w teście symulowane, bez logowania). Przed pierwszym uruchomieniem:
   `pip install playwright` oraz w folderze projektu
   `npm install --no-save three@0.187.0 occt-import-js@0.0.23 three-mesh-bvh@0.9.16 iwer@2.6.0`.
 

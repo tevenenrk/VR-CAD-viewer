@@ -51,7 +51,7 @@ src = src.replace("https://cdn.jsdelivr.net/npm/three@0.187.0/", f"http://localh
 src = re.sub(r"https://cdn\.jsdelivr\.net/npm/occt-import-js@[\d.]+/", f"http://localhost:{PORT}/node_modules/occt-import-js/", src)
 src = re.sub(r"https://cdn\.jsdelivr\.net/npm/three-mesh-bvh@[\d.]+/", f"http://localhost:{PORT}/node_modules/three-mesh-bvh/", src)
 src = src.replace("import('./szkicownik/", "import('../szkicownik/")   # kopia strony leży w test/
-src = src.replace("from './ikony.js'", "from '../ikony.js'").replace("from './tla.js'", "from '../tla.js'")
+src = src.replace("from './ikony.js'", "from '../ikony.js'").replace("from './tla.js'", "from '../tla.js'").replace("from './panele3d.js'", "from '../panele3d.js'")
 (OUT / "index_local.html").write_text(src, encoding="utf-8")
 
 IWER_JS = (ROOT / "node_modules" / "iwer" / "build" / "iwer.min.js").read_text(encoding="utf-8")
@@ -869,6 +869,29 @@ def test_xr(browser):
     check("tło: Kosmos (rysowane), Planeta (zdjęcie), miniatury w panelu", r["h1"] == "tlo:kosmos" and r["kosmos"] and r["planeta"] and r["mini"] >= 7, str(r))
     check("tło z internetu (Poly Haven, HDR) + obrót tła, wybór zapamiętany", r["net"] and r["obrot"] == 45 and r["pamiec"] == "net:venice_sunset" and r["szary"], str(r))
 
+
+    # kropka celowania na panelu, tło warsztat, tryb hologramu (projektor), Szkicownik w panelu narzędzi
+    r = E("""await T.palClick('page:widok'); await T.frames(2);
+             const w = async (warunek) => { for (let k = 0; k < 200 && !warunek(); k++) await new Promise(r => setTimeout(r, 50)); await T.frames(2); };
+             const p = T.palPoint('tlo:warsztat');
+             T.pose('right', p.clone().add(new V.THREE.Vector3(0, 0.1, 0.25)).toArray(), p.toArray()); await T.frames(4);
+             const u = T.ctrl('right').userData;
+             const kropka = u.kropka.visible && u.kropka.position.distanceTo(p) < 0.03, promien = u.ray.material.color.getHex() !== 0xffffff;
+             await T.click('right', 'trigger'); await w(() => !V.tlo.laduje);
+             const warsztat = V.tlo.id === 'warsztat' && V.scene.background.isTexture;
+             await T.palClick('holo'); await T.frames(12);
+             const m = T.part('Slup').material;
+             const holoWl = V.holo.wl && m.transparent && m.blending === V.THREE.AdditiveBlending && V.holo.projektor && V.holo.projektor.visible;
+             const pod = V.holo.projektor.position.y < T.centerOf('Plyta_bazowa').y;
+             await T.palClick('holo'); await T.frames(3);
+             const wyl = !V.holo.wl && !T.part('Slup').material.transparent && !V.holo.projektor.visible;
+             await T.palClick('tlo:szary'); await w(() => !V.tlo.laduje);
+             await T.palClick('page:narzedzia'); await T.frames(3);
+             const szk = !!V.pal.buttons.find(b => b.id === 'tryb:szkicownik' && b.y < 500);
+             return { kropka, promien, warsztat, holoWl, pod, wyl, szk };""")
+    check("panel: kropka celowania w miejscu trafienia, promień zmienia kolor nad panelem", r["kropka"] and r["promien"], str(r))
+    check("tło „Warsztat hi‑tech”; tryb hologramu: części świecą, projektor pod modelem, wyłączenie przywraca", r["warsztat"] and r["holoWl"] and r["pod"] and r["wyl"], str(r))
+    check("Szkicownik jako przycisk w karcie narzędzi", r["szk"], str(r))
     # trzymasz część: prawy spust = kopia w tym miejscu (dalej trzymasz oryginał), A = ukryj; B cofa
     shots0 = page.inner_text("#shotCount")
     r = E("""const p0 = T.centerOf('Slup'), n0 = V.parts.length;
@@ -1306,6 +1329,35 @@ def test_szkicownik_pc(browser):
     klik("bk:prostokat")
     klik("narz:wybierz")
     n0 = E("return S.projekt.bryly.length;")
+    # szkic na ścianie bryły: „Postaw płaszczyznę” + klik w górną ścianę → płaszczyzna na niej, prostokąt, wyciągnięcie stoi na ścianie
+    klik("tab:szkic")
+    klik("pl:wlasna")
+    r0 = E("""const u = S.osGoryIndeks(), c = S.naSiatke(S.swiatDoCad(S.api.controls.target)); c[u] += 200;
+              const b = await S.projekt.dodaj({ typ: 'prostopadloscian', dx: 80, dy: 80, dz: 20 }, { nazwa: 'Podstawka', poz: c }); await SZ.frames(3);
+              const min = b.poz.map((v, i) => v + b.ramka.min[i]), max = b.poz.map((v, i) => v + b.ramka.max[i]);
+              const p = min.map((v, i) => (v + max[i]) / 2); p[u] = max[u];
+              return { top: max[u], u, xy: SZ.ekran(S.cadDoSwiata(p)), staw: S.stawianiePl };""")
+    page.mouse.click(r0["xy"][0], r0["xy"][1])
+    E("await SZ.frames(2);")
+    r1 = E("const pl = S.szkic.s.plaszczyzna; return { wl: typeof pl === 'object', n: pl.n, o: pl.o, ods: S.szkic.s.odsuniecie, staw: S.stawianiePl };")
+    st = E("await SZ.frames(2); const s = S.szkic.s, pl = s.plaszczyzna; return SZ.ekran(S.cadDoSwiata(S.zPlaszczyzny([0, 0], 0)));")
+    page.mouse.click(st[0], st[1])
+    E("await SZ.frames(2);")
+    szkic_klik(30, 0); szkic_klik(30, 30); szkic_klik(0, 30); szkic_klik(0, 0)
+    klik("sz:wysokosc")
+    for k in ["1", "0", "Enter"]:
+        page.keyboard.press(k)
+    E("await SZ.czekaj();")
+    r2 = E("""const b = S.projekt.bryly[S.projekt.bryly.length - 1], u = S.osGoryIndeks();
+              return { typ: b.def.typ, wl: typeof b.def.plaszczyzna === 'object', vol: b.objetosc, dol: b.poz[u] + b.ramka.min[u] };""")
+    check("szkic na ścianie bryły: płaszczyzna postawiona kliknięciem w górną ścianę (normalna = oś góry)",
+          r0["staw"] and r1["wl"] and r1["n"][r0["u"]] == 1 and abs(r1["o"][r0["u"]] - r0["top"]) < 1e-3 and r1["ods"] == 0 and not r1["staw"], f"{r0} {r1}")
+    check("szkic na ścianie bryły: wyciągnięcie 30 × 30 × 10 stoi na tej ścianie", r2["typ"] == "wyciagniecie" and r2["wl"] and abs(r2["vol"] - 9000) < 0.1 and abs(r2["dol"] - r0["top"]) < 1e-3, str(r2))
+    klik("pl:XY")
+    page.keyboard.press("Escape")
+    E("await S.projekt.usun([S.projekt.bryly.find(x => x.nazwa === 'Podstawka').id]); await SZ.frames(2);")
+    klik("tab:bryly")
+    n0 = E("return S.projekt.bryly.length;")
     klik("tab:szkic")
     klik("sz:linia")
     st = E("await SZ.frames(2); return SZ.ekran(S.api.controls.target.clone());")
@@ -1630,6 +1682,42 @@ def test_szkicownik_vr(browser):
           r["hv"] == "narz:belka" and r["a"] > 20 and r["opis"] and r["n"] == 1 and r["nazwa"].startswith("Belka") and d["typ"] == "prostopadloscian"
           and d["dx"] == 30 and d["dz"] == 20 and d["dy"] % 10 == 0 and d["dy"] > 0 and abs(r["vol"] - 600 * d["dy"]) < 0.1, str(r))
     check("szkicownik VR: B cofa belkę", r["poB"] == 0, str(r))
+
+    # cięcie płaszczyznami z rąk: zaznacz bryłę, prawa ręka = płaszczyzna, spust = 2 kawałki; lewy spust = druga płaszczyzna → krawędź, 4 kawałki
+    r = E("""const n0 = S.projekt.bryly.length;
+             const sw = new V.THREE.Vector3(); S.root.getWorldScale(sw);
+             const W = new V.THREE.Vector3(0.2, 1.3, -0.6), bokMM = Math.round(0.1 / sw.x);
+             const nowa = async (nazwa) => { const b = await S.projekt.dodaj({ typ: 'prostopadloscian', dx: bokMM, dy: bokMM, dz: bokMM }, { nazwa, poz: S.swiatDoCad(W) }); await SZ.frames(2); return b; };
+             const b1 = await nowa('DoCiecia');
+             const hv = await SZ.klik('narz:ciecie');
+             S.wybierz(b1.id);
+             T.pose('right', [W.x + 0.02, W.y, W.z + 0.165], [W.x + 0.02, W.y, W.z - 1]); await T.frames(4);
+             const kw = S.ciecie.widok && S.ciecie.widok.kw[0].visible;
+             await T.click('right', 'trigger'); await SZ.czekaj();
+             const kaw = S.projekt.bryly.filter(b => b.def.typ === 'ciecie').map(b => Math.round(b.objetosc / b1.objetosc * 100));
+             // dwie płaszczyzny: lewa ręka wskazuje w bok (płaszczyzna prostopadła do drugiej)
+             const b2 = await nowa('DoCiecia2');
+             S.wybierz(b2.id);
+             T.pose('left', [W.x + 0.165, W.y, W.z + 0.01], [W.x - 1, W.y, W.z + 0.01]); await T.frames(3);
+             await T.click('left', 'trigger'); await T.frames(4);
+             const dwie = S.ciecie.dwie, krawedz = S.ciecie.krawedz;
+             const przed = S.projekt.bryly.length;
+             await T.click('right', 'trigger'); await SZ.czekaj();
+             const kaw4 = S.projekt.bryly.length - przed + 1;
+             // płaszczyzna obok bryły → komunikat, nic się nie zmienia
+             const b3 = await nowa('DoCiecia3');
+             S.wybierz(b3.id); S.ciecie.dwie = false;
+             T.pose('right', [W.x + 0.5, W.y, W.z + 0.165], [W.x + 0.5, W.y, W.z - 1]); await T.frames(4);
+             await T.click('right', 'trigger'); await SZ.czekaj();
+             const msg = S.msg, b3jest = !!S.bryla(b3.id);
+             const limit = S.silnik.limity.CIECIE_TIMEOUT_MS;
+             await S.projekt.usun(S.projekt.bryly.filter(b => b.nazwa.startsWith('DoCiecia')).map(b => b.id)); await SZ.frames(2);
+             await SZ.klik('narz:wybierz'); T.pose('left', [-0.25, 1.1, -0.25]); await T.frames(2);
+             return { hv, kw, kaw, dwie, krawedz, kaw4, msg, b3jest, limit };""")
+    check("cięcie z rąk: kwadrat w ręce, spust tnie zaznaczoną bryłę na 2 kawałki (70 % / 30 %)",
+          r["hv"] == "narz:ciecie" and r["kw"] and sorted(r["kaw"]) == [30, 70], str(r))
+    check("cięcie z rąk: lewy spust = druga płaszczyzna, widać krawędź przecięcia, 4 kawałki", r["dwie"] and r["krawedz"] and r["kaw4"] == 4, str(r))
+    check("cięcie z rąk: płaszczyzna obok bryły → komunikat; limit czasu 12 s", "nie przecina" in r["msg"] and r["b3jest"] and r["limit"] == 12000, str(r))
 
     # spust w pustym miejscu = odznacz
     E("T.pose('right', [0.6, 1.6, 0.3], [1.5, 2.5, 0.5]); await T.frames(3); await T.click('right', 'trigger');")

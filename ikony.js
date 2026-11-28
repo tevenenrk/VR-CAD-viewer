@@ -27,6 +27,48 @@ export function rysujIkone(ctx, nazwa, cx, cy, s, kolor) {
 
 export const maIkone = (nazwa) => !!RYSUNKI[nazwa];
 
+// Tło panelu (wspólne): ciemne szkło z delikatną siatką, świecącą linią u góry i narożnikami — wygląd przyrządu
+export function tloPanelu(ctx, W, H) {
+  const rr = (x, y, w, h, r) => { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); };
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, 'rgba(20,28,38,0.97)'); g.addColorStop(0.5, 'rgba(14,19,26,0.97)'); g.addColorStop(1, 'rgba(10,13,18,0.98)');
+  ctx.fillStyle = g; rr(4, 4, W - 8, H - 8, 30); ctx.fill();
+  ctx.save(); rr(4, 4, W - 8, H - 8, 30); ctx.clip();
+  ctx.strokeStyle = 'rgba(47,208,255,0.06)'; ctx.lineWidth = 1;
+  for (let x = 24; x < W; x += 32) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 24; y < H; y += 32) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  const gl = ctx.createLinearGradient(0, 0, W, 0);
+  gl.addColorStop(0, 'rgba(47,208,255,0)'); gl.addColorStop(0.5, 'rgba(47,208,255,0.9)'); gl.addColorStop(1, 'rgba(47,208,255,0)');
+  ctx.fillStyle = gl; ctx.fillRect(40, 6, W - 80, 3);
+  ctx.restore();
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(47,208,255,0.35)'; rr(4, 4, W - 8, H - 8, 30); ctx.stroke();
+  ctx.strokeStyle = '#ff8a1f'; ctx.lineWidth = 6;
+  const d = 46;
+  for (const [x, y, sx, sy] of [[10, 10, 1, 1], [W - 10, 10, -1, 1], [10, H - 10, 1, -1], [W - 10, H - 10, -1, -1]]) {
+    ctx.beginPath(); ctx.moveTo(x, y + sy * d); ctx.lineTo(x, y); ctx.lineTo(x + sx * d, y); ctx.stroke();
+  }
+}
+
+// Wypełnienie przycisku: lekki gradient (wypukłość) + poświata przy najechaniu / aktywnym
+export function tloPrzycisku(ctx, b, { aktywny, nad, zakladka, wylaczony }) {
+  const g = ctx.createLinearGradient(0, b.y, 0, b.y + b.h);
+  if (aktywny) { g.addColorStop(0, '#ffa54a'); g.addColorStop(1, '#e8730f'); }
+  else if (nad) { g.addColorStop(0, '#3a4654'); g.addColorStop(1, '#283039'); }
+  else if (zakladka) { g.addColorStop(0, '#1d242c'); g.addColorStop(1, '#181d23'); }
+  else { g.addColorStop(0, wylaczony ? '#22272e' : '#2e3742'); g.addColorStop(1, wylaczony ? '#1c2026' : '#222930'); }
+  ctx.save();
+  if (nad || aktywny) { ctx.shadowColor = aktywny ? 'rgba(255,138,31,0.8)' : 'rgba(47,208,255,0.9)'; ctx.shadowBlur = 18; }
+  ctx.fillStyle = g; ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 18); ctx.fill();
+  ctx.restore();
+  ctx.lineWidth = nad ? 5 : 2;
+  ctx.strokeStyle = nad ? '#2fd0ff' : (aktywny ? '#ffc285' : 'rgba(120,140,160,0.35)');
+  ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 18); ctx.stroke();
+  if (!aktywny && !wylaczony) {                  // blik u góry
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(b.x + 14, b.y + 3); ctx.lineTo(b.x + b.w - 14, b.y + 3); ctx.stroke();
+  }
+}
+
 const linia = (c, ...p) => { c.beginPath(); c.moveTo(p[0], p[1]); for (let i = 2; i < p.length; i += 2) c.lineTo(p[i], p[i + 1]); c.stroke(); };
 const zamk = (c, ...p) => { c.beginPath(); c.moveTo(p[0], p[1]); for (let i = 2; i < p.length; i += 2) c.lineTo(p[i], p[i + 1]); c.closePath(); };
 const kolo = (c, x, y, r, pelne = false) => { c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); pelne ? c.fill() : c.stroke(); };
@@ -92,6 +134,10 @@ const RYSUNKI = {
   plXZ: (c) => { zamk(c, 10, 66, 34, 34, 90, 34, 66, 66); c.stroke(); },
   plYZ: (c) => { zamk(c, 34, 10, 66, 30, 66, 90, 34, 70); c.stroke(); },
   linia: (c) => { linia(c, 16, 80, 84, 20); kolo(c, 16, 80, 8, true); kolo(c, 84, 20, 8, true); },
+  hologram: (c) => { c.beginPath(); c.ellipse(50, 84, 30, 8, 0, 0, Math.PI * 2); c.stroke(); linia(c, 22, 82, 34, 40); linia(c, 78, 82, 66, 40);
+                     c.save(); c.setLineDash([6, 6]); c.beginPath(); c.moveTo(34, 40); c.lineTo(50, 16); c.lineTo(66, 40); c.closePath(); c.stroke(); c.restore();
+                     linia(c, 34, 40, 66, 40); },
+  plWlasna: (c) => { zamk(c, 10, 70, 38, 46, 90, 46, 62, 70); c.stroke(); strzalka(c, 50, 58, 50, 14, 14); kolo(c, 50, 58, 5, true); },
   belka: (c) => { c.beginPath(); c.rect(12, 62, 24, 24); c.stroke(); linia(c, 12, 62, 64, 14, 88, 14, 36, 62); linia(c, 36, 86, 88, 38, 88, 14); },
   prostokat: (c) => { c.beginPath(); c.roundRect(22, 30, 56, 40, 3); c.stroke(); linia(c, 22, 84, 78, 84); linia(c, 90, 30, 90, 70); },
   okrag: (c) => { kolo(c, 50, 50, 30); linia(c, 50, 50, 72, 30); },

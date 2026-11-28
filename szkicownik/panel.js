@@ -3,7 +3,8 @@
 // Ten sam wygląd co panel viewera, ale osobny kod — viewer pozostaje nietknięty.
 // ============================================================================
 
-import { rysujIkone } from '../ikony.js';
+import { rysujIkone, tloPanelu, tloPrzycisku } from '../ikony.js';
+import { dodajRamke } from '../panele3d.js';
 
 // ---------------------------------------------------------------------------
 // KONFIGURACJA
@@ -61,6 +62,7 @@ export class Panel3D {
       new THREE.MeshBasicMaterial({ map: this.tex, transparent: true, toneMapped: false }));
     this.mesh.name = 'Panel szkicownika';
     this.mesh.renderOrder = 10;
+    this.ramka = dodajRamke(THREE, this.mesh, w, w * PANEL.H / PANEL.W);
     this.przyciski = [];
     this.sig = '';
   }
@@ -78,15 +80,16 @@ export class Panel3D {
     const ctx = this.ctx, W = PANEL.W, H = PANEL.H, P = PANEL.PAD, K = PANEL.KOLORY;
     const rr = (x, y, w, h, r) => { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); };
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = K.tlo; rr(4, 4, W - 8, H - 8, 36); ctx.fill();
-    ctx.lineWidth = 4; ctx.strokeStyle = K.ramka; ctx.stroke();
+    tloPanelu(ctx, W, H);
     ctx.textBaseline = 'middle';
     for (const b of this.przyciski) {
       const text = b.text == null ? '' : String(b.text);
       const hov = hover === b.id && !b.disabled && b.id;
       if (b.kind === 'card') {                   // ramka grupy przycisków z tytułem
-        ctx.fillStyle = '#1e2228'; rr(b.x, b.y, b.w, b.h, 26); ctx.fill();
-        ctx.lineWidth = 3; ctx.strokeStyle = '#30353d'; ctx.stroke();
+        const gk = ctx.createLinearGradient(0, b.y, 0, b.y + b.h); gk.addColorStop(0, 'rgba(30,40,52,0.85)'); gk.addColorStop(1, 'rgba(18,23,30,0.85)');
+        ctx.fillStyle = gk; rr(b.x, b.y, b.w, b.h, 22); ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(47,208,255,0.22)'; ctx.stroke();
+        ctx.fillStyle = '#2fd0ff'; ctx.fillRect(b.x + 10, b.y + 10, 4, 24);
         ctx.textAlign = 'left'; ctx.fillStyle = b.color || K.szary; fitFont(ctx, text, b.w - 44, 28, 600);
         ctx.fillText(text, b.x + 22, b.y + 22);
         continue;
@@ -130,9 +133,7 @@ export class Panel3D {
         if (b.sub) { ctx.textAlign = 'right'; ctx.fillStyle = K.szary; ctx.font = '500 26px system-ui, sans-serif'; ctx.fillText(b.sub, b.x + b.w - 16, b.y + b.h / 2 + 1); }
         continue;
       }
-      ctx.fillStyle = b.active ? K.akcent : (hov ? K.nad : (b.tab ? K.zakladka : K.przycisk));
-      rr(b.x, b.y, b.w, b.h, 20); ctx.fill();
-      ctx.lineWidth = hov ? 6 : 3; ctx.strokeStyle = hov ? '#ffffff' : K.ramka; ctx.stroke();
+      tloPrzycisku(ctx, b, { aktywny: !!b.active, nad: !!hov, zakladka: !!b.tab, wylaczony: !!b.disabled });
       ctx.fillStyle = b.disabled ? K.wylaczony : (b.active ? '#111111' : K.tekst); ctx.textAlign = 'center';
       const kol = ctx.fillStyle;
       if (b.icon && !text) {                     // sama ikona

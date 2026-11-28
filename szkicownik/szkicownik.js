@@ -11,6 +11,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { SilnikGeometrii } from './klient.js';
 import { Projekt, PROJEKT } from './projekt.js';
 import { Panel3D, Uklad, PANEL } from './panel.js';
+import { ustawRysowanieRamki, ustawKropke, WYGLAD } from '../panele3d.js';
 import { Szkic, SZKIC, przyciagnij as przyciagnijPunkt, kolizja as kolizjaOdcinka, punktyOdcinka, odlOdOdcinka, poJednejStronie, lukStyczny } from './szkic2d.js';
 
 // ---------------------------------------------------------------------------
@@ -50,6 +51,8 @@ export const SZK = {
   SZKIC_KOLOR_OSI: 0xffd60a,      // odcinek wskazany jako oś obrotu
   SZKIC_POLE_SIATKI: 40,          // siatka płaszczyzny szkicu: tyle kratek (krok = snap)
   SZKIC_BLAD_S: 2.5,              // jak długo błędny odcinek świeci na czerwono
+  PL_WLASNA_SNAP_DEG: 8,          // postawiona płaszczyzna prawie prostopadła do osi → dokładnie
+  PL_WLASNA_BOK_M: 0.3,           // podgląd stawianej płaszczyzny (m w świecie)
   KATY_OBROTU: [360, 270, 180, 90],  // obrót obrysu wokół osi (do wyboru w panelu)
   PROMIEN_ZAOKR_MM: 10,           // zaokrąglenie narożnika szkicu (domyślny promień)
   PROMIENIE_MM: [2, 5, 10, 20, 50],
@@ -63,8 +66,22 @@ export const SZK = {
   BELKA_A_MM: 20, BELKA_B_MM: 20, BELKA_D_MM: 20, BELKA_MIN_MM: 1, BELKA_MAX_MM: 2000,
   BELKA_PREDKOSC: 1.2,            // zmiana wymiaru gałką (na sekundę, mnożnik)
   BELKA_SNAP_DEG: 6,              // kierunek bliski osi X / Y / Z → dokładnie wzdłuż osi
+  // cięcie płaszczyznami trzymanymi w rękach (kwadraty jak ostrza: zawierają kierunek wskazywania kontrolera)
+  CIECIE_BOK_M: 0.25,             // bok kwadratu w goglach (m w świecie), gałka zmienia
+  CIECIE_BOK_MIN_M: 0.03, CIECIE_BOK_MAX_M: 2,
+  CIECIE_PREDKOSC: 1.2,           // zmiana boku gałką (mnożnik na sekundę)
+  CIECIE_ODSUNIECIE_M: 0.04,      // kwadrat zaczyna się tyle przed kontrolerem
+  CIECIE_SNAP_DEG: 5,             // płaszczyzna prawie prostopadła do osi X / Y / Z → dokładnie
+  CIECIE_KOLOR: 0xff9f0a, CIECIE_KOLOR_LEWA: 0x0a84ff, CIECIE_KOLOR_KRAWEDZI: 0xffffff,
+  LIMITY_CIECIA_S: [5, 10, 12, 15, 20, 30],   // limit czasu cięcia do wyboru (Plik → Limit czasu)
+  USTAWIENIA_KLUCZ: 'cad-vr-szkicownik',      // ustawienia Szkicownika w przeglądarce (localStorage)
 };
 const PRYMITYWY = ['prostopadloscian', 'walec', 'kula', 'belka'];
+// płaszczyzna szkicu: nazwa z PLASZCZYZNY albo własna { o, u, v, n } (postawiona ręką albo na ścianie bryły)
+const ukladPl = (pl) => (pl && typeof pl === 'object' ? { o0: pl.o, u: pl.u, v: pl.v, n: pl.n } : { o0: [0, 0, 0], ...PLASZCZYZNY[pl] });
+const jestWlasna = (pl) => !!pl && typeof pl === 'object';
+const czytajUstawienia = () => { try { return JSON.parse(localStorage.getItem(SZK.USTAWIENIA_KLUCZ)) || {}; } catch { return {}; } };
+const zapiszUstawienia = (u) => { try { localStorage.setItem(SZK.USTAWIENIA_KLUCZ, JSON.stringify(u)); } catch { /* tryb prywatny */ } };
 const PLASZCZYZNY = {             // jak GEO.PLASZCZYZNY w geometria.js (u × v = n)
   XY: { u: [1, 0, 0], v: [0, 1, 0], n: [0, 0, 1] },
   XZ: { u: [1, 0, 0], v: [0, 0, -1], n: [0, 1, 0] },
@@ -147,6 +164,8 @@ export class Szkicownik {
     this.katObrotu = 360;
     this.promienZaokr = SZK.PROMIEN_ZAOKR_MM;
     this.belka = { ksztalt: 'prostokat', a: SZK.BELKA_A_MM, b: SZK.BELKA_B_MM, d: SZK.BELKA_D_MM };
+    this.ustawienia = Object.assign({ limitCiecia: 12 }, czytajUstawienia());
+    this.ciecie = { bok: [SZK.CIECIE_BOK_M, SZK.CIECIE_BOK_M], dwie: false, widok: null };   // [prawa, lewa]
     this.gruboscPow = SZK.GRUBOSC_MM;
     this.krzywe = null;            // powierzchnia między krzywymi: { a: [punkty] | null, biezaca: [punkty] | null, zrodlo }
     this.wstazka = null;           // wstążka z dwóch rąk: { lewa: [], prawa: [] }
@@ -225,9 +244,12 @@ export class Szkicownik {
     this.znaczniki.forEach((z) => { z.visible = false; });
     if (this.szkicWidok) this.szkicWidok.grupa.visible = false;
     if (this.krzyweWidok) this.krzyweWidok.grupa.visible = false;
+    if (this.ciecie.widok) this.ciecie.widok.grupa.visible = false;
+    if (this.plPodglad) this.plPodglad.visible = false;
+    this.stawianiePl = false;
     this.krzywe = null; this.wstazka = null;
     this.przerwijTworzenie();
-    for (const c of this.api.controllers) if (c.userData.szk) c.userData.szk.chwyt = null;
+    for (const c of this.api.controllers) { if (c.userData.szk) c.userData.szk.chwyt = null; if (c.userData.kropka) c.userData.kropka.visible = false; }
     this.dwieRece = null;
     // bryły trafiają do podglądu jako zwykłe części (chwytanie, skala, kopie, zapis STEP); tu je chowamy
     try { this.doViewera(); } catch (e) { console.error(e); this.api.say('Błąd przenoszenia brył do podglądu: ' + e.message); }
@@ -297,7 +319,8 @@ export class Szkicownik {
 
   async uruchomSilnik() {
     if (!this.silnik) {
-      this.silnik = new SilnikGeometrii({ przyRestarcie: (m) => this.powiedz(m + ' — odtwarzam bryły…') });
+      this.silnik = new SilnikGeometrii({ przyRestarcie: (m) => this.powiedz(m + ' — odtwarzam bryły…'),
+                                          limity: { CIECIE_TIMEOUT_MS: this.ustawienia.limitCiecia * 1000 } });
       this.projekt = new Projekt(this.silnik, { przyZmianie: (z, d) => this.naZmiane(z, d) });
     }
     if (this.stanSilnika === 'gotowy') return;
@@ -391,12 +414,13 @@ export class Szkicownik {
         m.scale.setScalar(1);
         m.material.depthTest = true;
         m.renderOrder = 10;
+        ustawRysowanieRamki(this.panel.ramka, false, 10);
       }
       if (this.ukryjPanelKlatek > 0) this.ukryjPanelKlatek--;
       m.visible = this.panelWidoczny && !!reka && this.ukryjPanelKlatek === 0;
     } else {
       const cam = a.camera;
-      if (m.parent !== cam) { cam.add(m); m.material.depthTest = false; m.rotation.set(0, 0, 0); m.renderOrder = 1000; }
+      if (m.parent !== cam) { cam.add(m); m.material.depthTest = false; m.rotation.set(0, 0, 0); m.renderOrder = 1000; ustawRysowanieRamki(this.panel.ramka, true, 1000); }
       const d = Math.max(PANEL.PC_ODLEGLOSC_M, cam.near * 3);
       const wysWidoku = 2 * d * Math.tan(cam.fov * DEG / 2);
       const wysPanelu = PANEL.SZEROKOSC_M * PANEL.H / PANEL.W;
@@ -529,7 +553,8 @@ export class Szkicownik {
     raycaster.far = SZK.ZASIEG_PROMIENIA_M;
     const h = raycaster.intersectObjects(lista, false)[0];
     raycaster.far = Infinity;
-    return h ? { id: h.object.userData.szkId, point: h.point, distance: h.distance } : null;
+    return h ? { id: h.object.userData.szkId, point: h.point, distance: h.distance,
+                 normal: h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize() : null } : null;
   }
 
   // ==========================================================================
@@ -580,7 +605,11 @@ export class Szkicownik {
     if (opis) this.powiedz(opis);
     const wpis = historia ? this.zapiszHistorie(historia) : null;
     try { return await fn(); }
-    catch (e) { if (wpis) this.historia = this.historia.filter((h) => h !== wpis); this.powiedz(e.message); return null; }
+    catch (e) {
+      if (wpis) this.historia = this.historia.filter((h) => h !== wpis);
+      this.powiedz(e.kod === 'TIMEOUT' ? `Operacja zbyt trudna — przerwana po ${this.ustawienia.limitCiecia} s, bryły bez zmian (limit: Plik → Limit czasu)` : e.message);
+      return null;
+    }
     finally { this.zajety = false; }
   }
 
@@ -630,9 +659,11 @@ export class Szkicownik {
     this.przypnijUchwyty();
     const vr = this.api.renderer.xr.isPresenting;
     this.krzywe = null; this.wstazka = null;
-    if (n === 'szkic') { this.zacznijSzkic(); this.powiedz(`Szkic na płaszczyźnie ${this.plaszczyznaSzkicu()}: ` + (vr ? 'spust = punkt' : 'klik = punkt')); return; }
+    if (n !== 'szkic') this.stawianiePl = false;
+    if (n === 'szkic') { this.zacznijSzkic(); const pl = this.plaszczyznaSzkicu(); this.powiedz(`Szkic na płaszczyźnie ${jestWlasna(pl) ? 'postawionej' : pl}: ` + (vr ? 'spust = punkt' : 'klik = punkt')); return; }
     if (n === 'krzywe') { this.krzywe = { a: null, biezaca: null, zrodlo: null }; this.powiedz(vr ? 'Krzywa 1: trzymaj spust i prowadź rękę, puść = koniec' : 'Krzywa 1: klikaj punkty, Enter = koniec krzywej'); return; }
     if (n === 'wstazka') { this.powiedz(vr ? 'Wstążka: trzymaj OBA spusty i prowadź ręce — powierzchnia rozpina się między nimi' : 'Wstążka działa w goglach (dwie ręce)'); return; }
+    if (n === 'ciecie') { this.powiedz(this.zazn.length ? 'Cięcie: ustaw płaszczyznę (gałka = wielkość), spust = tnij' : 'Cięcie: najpierw spust na bryle (zaznacz), potem spust = tnij'); return; }
     if (n === 'belka') { this.powiedz(`${this.belkaTekst()}: ` + (vr ? 'spust w A, przeciągnij do B, puść · gałki = wymiary' : 'przeciągnij myszą od A do B')); return; }
     this.powiedz(n === 'wybierz' ? 'Narzędzie: wybierz / chwyć'
       : `${PROJEKT.NAZWY[n]}: ` + (vr ? 'spust w punkcie początkowym, przeciągnij, puść' : 'przeciągnij myszą (Esc = wybierz)'));
@@ -1054,7 +1085,11 @@ export class Szkicownik {
         else this.resetWidoku();
       }
       const gp = src.gamepad;
-      if (this.narzedzie === 'belka' && gp && gp.axes.length >= 4 && Math.abs(gp.axes[3]) > SZK.STICK_DEADZONE) {   // belka: prawa = a / Ø, lewa = b
+      if (this.narzedzie === 'ciecie' && gp && gp.axes.length >= 4 && Math.abs(gp.axes[3]) > SZK.STICK_DEADZONE) {   // wielkość płaszczyzny tej ręki
+        const k = glowna ? 0 : 1;
+        this.ciecie.bok[k] = Math.min(SZK.CIECIE_BOK_MAX_M, Math.max(SZK.CIECIE_BOK_MIN_M, this.ciecie.bok[k] * Math.exp(-gp.axes[3] * SZK.CIECIE_PREDKOSC * dt)));
+      }
+      else if (this.narzedzie === 'belka' && gp && gp.axes.length >= 4 && Math.abs(gp.axes[3]) > SZK.STICK_DEADZONE) {   // belka: prawa = a / Ø, lewa = b
         const f = Math.exp(-gp.axes[3] * SZK.BELKA_PREDKOSC * dt);
         if (glowna) this.zmienBelke(this.belka.ksztalt === 'okrag' ? 'd' : 'a', f);
         else if (this.belka.ksztalt === 'prostokat') this.zmienBelke('b', f);
@@ -1068,18 +1103,19 @@ export class Szkicownik {
 
       // promień: panel, potem bryły
       s.hover = null; s.traf = null;
-      let dl = SZK.ZASIEG_PROMIENIA_M;
+      let dl = SZK.ZASIEG_PROMIENIA_M, punktPanelu = null;
       this.rc.setFromXRController(c);
       if (this.panel.mesh.visible && this.panel.mesh.parent !== c) {
         this.rc.firstHitOnly = false;
         const h = this.rc.intersectObject(this.panel.mesh, false)[0];
-        if (h) { s.hover = this.panel.idPodUV(h.uv); dl = h.distance; }
+        if (h) { s.hover = this.panel.idPodUV(h.uv); dl = h.distance; punktPanelu = h.point; }
       }
       if (!s.hover) {
         s.traf = this.trafBryle(this.rc);
         if (s.traf) dl = s.traf.distance;
       }
-      if (u.ray) u.ray.scale.z = dl;
+      if (u.ray) { u.ray.scale.z = dl; u.ray.material.color.setHex(punktPanelu ? WYGLAD.PROMIEN_NAD_PANELEM : 0xffffff); }
+      if (u.kropka) ustawKropke(u.kropka, punktPanelu, this.panel.mesh, THREE);   // kropka tam, gdzie celujesz w panel
 
       // grip: chwyć bryłę (pod promieniem) albo całość
       if (u.squeezing && !s.gripPrev) this.zacznijChwyt(c);
@@ -1094,9 +1130,15 @@ export class Szkicownik {
           if (!this.aktywny) return;             // „Wróć do podglądu” — dalej steruje viewer
         }
         else if (glowna && this.trzymane()) { this.kopiujTrzymane(); a.pulse(c, 0.6, 40); }
+        else if (this.trybSzkicu() && this.stawianiePl) { if (!this.numpad && glowna) { this.postawPlaszczyzne(s.traf ? { traf: s.traf } : { kontroler: c }); a.pulse(c, 0.5, 30); } }
         else if (this.trybSzkicu()) { if (!this.numpad && glowna) { this.szkicKlik(); a.pulse(c, 0.25, 15); } }
         else if (this.narzedzie === 'krzywe') { if (glowna && !this.numpad && this.gotowy()) this.zacznijKrzywa(c); }
         else if (this.narzedzie === 'wstazka') { if (!this.numpad && this.gotowy()) this.sprobujWstazke(); }
+        else if (this.narzedzie === 'ciecie' && !this.numpad) {
+          if (!glowna) { this.ciecie.dwie = !this.ciecie.dwie; this.powiedz(this.ciecie.dwie ? 'Dwie płaszczyzny: tam, gdzie się przetną, powstanie krawędź' : 'Jedna płaszczyzna'); }
+          else if (!this.zazn.length && s.traf) { this.wybierz(s.traf.id); a.pulse(c, 0.3, 20); }
+          else { this.tnijPlaszczyznamiZRak(); a.pulse(c, 0.6, 40); }
+        }
         else if (PRYMITYWY.includes(this.narzedzie) && !this.tworzenie && !this.numpad) {
           if (this.gotowy()) this.zacznijTworzenie(this.naSiatke(this.swiatDoCad(this.czubek(c))), c);
         }
@@ -1129,6 +1171,7 @@ export class Szkicownik {
       this.ustawZnacznik(this.znaczniki[i * 2 + 1], pT, SZK.KOLOR_PODGLADU);
     }
     this.rysowaniePowXR();
+    this.odswiezPlaszczyznyCiecia();
     this.hoverPanelu = a.controllers.map((c) => c.userData.szk && c.userData.szk.hover).find(Boolean) || null;
     this.nad = a.controllers.map((c) => c.userData.szk && c.userData.szk.traf && c.userData.szk.traf.id).find(Boolean) || null;
     this.aktualizujChwyty();
@@ -1250,7 +1293,7 @@ export class Szkicownik {
     };
     // szkic: promień myszy → płaszczyzna szkicu (pusty szkic: płaszczyzna przez wskazaną bryłę albo środek obrotu kamery)
     const szkicMysz = () => {
-      const S = this.szkic, P = PLASZCZYZNY[S.s.plaszczyzna];
+      const S = this.szkic, P = ukladPl(S.s.plaszczyzna);
       const o0 = this.swiatDoCad(this.rc.ray.origin), q = this.swiatDoCad(this.rc.ray.origin.clone().add(this.rc.ray.direction));
       const d = q.map((v, i) => v - o0[i]), dot = (x, y) => x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
       if (S.faza === 'wyciagnij') {             // wysokość = punkt na prostej prostopadłej do szkicu najbliższy promieniowi
@@ -1263,14 +1306,15 @@ export class Szkicownik {
       let o = S.s.odsuniecie;
       if (o == null) {
         const t = this.trafBryle(this.rc);
-        o = t ? Math.round(dot(this.swiatDoCad(t.point), P.n) * 1000) / 1000 : this.naKrokSkalar(dot(this.swiatDoCad(a.controls.target), P.n));
+        o = t ? Math.round(this.doPlaszczyzny(this.swiatDoCad(t.point)).o * 1000) / 1000 : this.naKrokSkalar(this.doPlaszczyzny(this.swiatDoCad(a.controls.target)).o);
       }
       const dn = dot(d, P.n);
       if (Math.abs(dn) < 1e-9) return;
-      const t = (o - dot(o0, P.n)) / dn;
+      const Q = this.zPlaszczyzny([0, 0], o);
+      const t = dot(Q.map((v, i) => v - o0[i]), P.n) / dn;
       if (t < 0) return;
       const p = o0.map((v, i) => v + d[i] * t);
-      this.szkicKursor([dot(p, P.u), dot(p, P.v)], o);
+      this.szkicKursor(this.doPlaszczyzny(p).uv, o);
       if (S.kursor && S.faza !== 'os') this.ustawZnacznik(this.znaczniki[1], this.cadDoSwiata(this.zPlaszczyzny(S.kursor, o)), SZK.KOLOR_PODGLADU);
       else this.ustawZnacznik(this.znaczniki[1], null);
     };
@@ -1324,6 +1368,13 @@ export class Szkicownik {
         if (!m || m.panel || this.pc.przeciaganie || e.button !== 0) return;
         if (Math.hypot(e.clientX - m.x, e.clientY - m.y) > 5) return;
         if (this.pc.tc.axis) return;                // klik w uchwyt
+        if (this.trybSzkicu() && this.stawianiePl) {     // PC: płaszczyzna na klikniętej ścianie albo prostopadła do kierunku patrzenia
+          promien(e);
+          const t = this.trafBryle(this.rc);
+          if (t) this.postawPlaszczyzne({ traf: t });
+          else this.postawPlaszczyzne({ punktSwiat: a.controls.target.clone(), normalnaSwiat: a.camera.position.clone().sub(a.controls.target).normalize() });
+          return;
+        }
         if (this.trybSzkicu()) { if (!this.numpad) { promien(e); szkicMysz(); this.szkicKlik(); } return; }
         if (this.narzedzie === 'krzywe') {          // PC: punkty krzywej na płaszczyźnie poziomej (Enter = koniec krzywej)
           promien(e);
@@ -1332,6 +1383,16 @@ export class Szkicownik {
           return;
         }
         if (this.narzedzie === 'wstazka') { this.powiedz('Wstążka działa w goglach (dwie ręce). Na PC: „Między 2 krzywymi”'); return; }
+        if (this.narzedzie === 'ciecie') {          // PC: klik w zaznaczoną bryłę = cięcie płaszczyzną pionową przez ten punkt
+          promien(e);
+          const t = this.trafBryle(this.rc);
+          if (!t) return;
+          if (!this.zazn.includes(t.id)) { this.wybierz(t.id); return; }
+          const cam = a.camera, prawo = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
+          const pw = { srodek: t.point.clone(), u: new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion), v: new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion), n: prawo, bok: 10 };
+          this.tnijPlaszczyznamiZRak([this.plaszczyznaDoCad(pw)]);
+          return;
+        }
         if (this.narzedzie !== 'wybierz') return;
         promien(e);
         const t = this.trafBryle(this.rc);
@@ -1498,32 +1559,79 @@ export class Szkicownik {
   naKrokSkalar(v) { const g = this.krok(); return Math.round(v / g) * g; }
 
   zacznijSzkic() {
-    if (!this.szkic) this.szkic = { s: new Szkic(this.plaszczyznaSzkicu()), faza: 'rysuj', kursor: null, oPodglad: 0, h: 0, osIdx: -1, blad: null };
+    if (!this.szkic) {
+      this.szkic = { s: new Szkic(this.plaszczyznaSzkicu()), faza: 'rysuj', kursor: null, oPodglad: 0, h: 0, osIdx: -1, blad: null };
+      if (jestWlasna(this.szkic.s.plaszczyzna)) this.szkic.s.odsuniecie = 0;
+    }
     return this.szkic;
   }
 
   ustawPlaszczyzne(pl) {
+    if (pl === 'wlasna') {
+      if (this.szkic && this.szkic.s.start) { this.powiedz('Szkic ma już punkty — najpierw „Anuluj”'); return; }
+      this.stawianiePl = !this.stawianiePl;
+      this.powiedz(this.stawianiePl ? (this.api.renderer.xr.isPresenting ? 'Spust na ścianie bryły = płaszczyzna na niej · w powietrzu = wg ułożenia kontrolera (góra kontrolera)'
+                                                                          : 'Klik na ścianie bryły = płaszczyzna na niej · klik obok = płaszczyzna zwrócona do Ciebie') : 'Anulowano stawianie płaszczyzny');
+      return;
+    }
+    this.stawianiePl = false;
     const S = this.zacznijSzkic();
     if (S.s.start && S.s.plaszczyzna !== pl) { this.powiedz('Szkic ma już punkty — najpierw „Anuluj szkic”'); return; }
     this.plSzkicu = pl;
     S.s.plaszczyzna = pl;
     this.powiedz(`Płaszczyzna szkicu: ${pl}` + (pl === this.plaszczyznaPozioma() ? ' (pozioma)' : ' (pionowa)'));
+    if (!S.s.start) S.s.odsuniecie = null;
   }
 
   anulujSzkic() {
     this.szkic = null;
+    this.stawianiePl = false;
     if (this.narzedzie === 'szkic') this.zacznijSzkic();
     this.powiedz('Szkic anulowany');
   }
 
   // punkt CAD [x, y, z] → { uv, o } w układzie płaszczyzny
   doPlaszczyzny(p, pl = this.plaszczyznaSzkicu()) {
-    const P = PLASZCZYZNY[pl], dot = (a) => a[0] * p[0] + a[1] * p[1] + a[2] * p[2];
+    const P = ukladPl(pl), d = p.map((x, i) => x - P.o0[i]), dot = (a) => a[0] * d[0] + a[1] * d[1] + a[2] * d[2];
     return { uv: [dot(P.u), dot(P.v)], o: dot(P.n) };
   }
   zPlaszczyzny(uv, o, pl = this.plaszczyznaSzkicu()) {
-    const P = PLASZCZYZNY[pl];
-    return [0, 1, 2].map((i) => P.n[i] * o + P.u[i] * uv[0] + P.v[i] * uv[1]);
+    const P = ukladPl(pl);
+    return [0, 1, 2].map((i) => P.o0[i] + P.n[i] * o + P.u[i] * uv[0] + P.v[i] * uv[1]);
+  }
+
+  // Własna płaszczyzna z punktu i normalnej (mm CAD); normalna blisko osi → dokładnie wzdłuż osi
+  plaszczyznaZNormalnej(punkt, normalna) {
+    let n = new THREE.Vector3(...normalna).normalize();
+    for (const os of [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)]) {
+      const cos = n.dot(os);
+      if (Math.abs(cos) > Math.cos(SZK.PL_WLASNA_SNAP_DEG * DEG)) { n = os.clone().multiplyScalar(Math.sign(cos)); break; }
+    }
+    const gora = new THREE.Vector3(0, 0, 0); gora.setComponent(this.osGoryIndeks(), 1);
+    let u = new THREE.Vector3().crossVectors(gora, n);                  // bok „w prawo” leży poziomo
+    if (u.lengthSq() < 1e-8) u = new THREE.Vector3(1, 0, 0);
+    u.normalize();
+    const v = new THREE.Vector3().crossVectors(n, u).normalize();       // u × v = n
+    const r6 = (x) => Math.round(x * 1e6) / 1e6;
+    return { o: punkt.map((x) => Math.round(x * 1000) / 1000), u: u.toArray().map(r6), v: v.toArray().map(r6), n: n.toArray().map(r6) };
+  }
+
+  // Postaw płaszczyznę: na ścianie wskazanej bryły (traf z normalną) albo w powietrzu wg ułożenia kontrolera (góra kontrolera = normalna)
+  postawPlaszczyzne({ traf = null, kontroler = null, punktSwiat = null, normalnaSwiat = null } = {}) {
+    let pW, nW;
+    if (traf && traf.normal) { pW = traf.point.clone(); nW = traf.normal.clone(); }
+    else if (kontroler) { pW = this.czubek(kontroler); nW = new THREE.Vector3(0, 1, 0).applyQuaternion(kontroler.getWorldQuaternion(new THREE.Quaternion())); }
+    else { pW = punktSwiat; nW = normalnaSwiat; }
+    this.root.updateMatrixWorld(true);
+    const nCad = nW.clone().transformDirection(this.root.matrixWorld.clone().invert());
+    const pl = this.plaszczyznaZNormalnej(this.swiatDoCad(pW), nCad.toArray());
+    this.szkic = null;
+    this.plSzkicu = pl;
+    const S = this.zacznijSzkic();
+    S.s.odsuniecie = 0;                        // własna płaszczyzna stoi tam, gdzie ją postawiono
+    this.stawianiePl = false;
+    this.powiedz(traf ? 'Płaszczyzna na ścianie bryły — rysuj obrys' : 'Płaszczyzna postawiona — rysuj obrys (spust = punkt)');
+    return pl;
   }
 
   // kursor szkicu z punktu na płaszczyźnie (uv surowe, o = położenie płaszczyzny, gdy szkic jest jeszcze pusty)
@@ -1718,7 +1826,33 @@ export class Szkicownik {
     return this.szkicWidok;
   }
 
+  // podgląd stawianej płaszczyzny (gogle): kwadrat na ścianie pod promieniem albo przy czubku kontrolera
+  odswiezStawianie() {
+    const a = this.api;
+    if (!this.plPodglad) {
+      const g = new THREE.Group();
+      g.add(new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0x2fd0ff, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false })));
+      g.add(new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(1, 1)), new THREE.LineBasicMaterial({ color: 0x2fd0ff })));
+      g.matrixAutoUpdate = false;
+      this.plPodglad = g;
+    }
+    const g = this.plPodglad;
+    if (g.parent !== a.scene) a.scene.add(g);
+    const c = a.controllers.find((x) => x.userData.inputSource && a.isMain(x));
+    g.visible = !!(this.aktywny && this.stawianiePl && this.trybSzkicu() && a.renderer.xr.isPresenting && c);
+    if (!g.visible) return;
+    const traf = c.userData.szk && c.userData.szk.traf;
+    const p = traf && traf.normal ? traf.point : this.czubek(c);
+    const n = traf && traf.normal ? traf.normal.clone() : new THREE.Vector3(0, 1, 0).applyQuaternion(c.getWorldQuaternion(new THREE.Quaternion()));
+    const u = new THREE.Vector3(0, 1, 0).cross(n); if (u.lengthSq() < 1e-6) u.set(1, 0, 0); u.normalize();
+    const v = new THREE.Vector3().crossVectors(n, u);
+    const b = SZK.PL_WLASNA_BOK_M;
+    g.matrix.makeBasis(u, v, n).scale(new THREE.Vector3(b, b, 1)).setPosition(p.clone().addScaledVector(n, 0.001));
+    g.matrixWorldNeedsUpdate = true;
+  }
+
   odswiezSzkic(dt) {
+    this.odswiezStawianie();
     const V = this.widokSzkicu(), S = this.szkic;
     if (V.grupa.parent !== this.root) this.root.add(V.grupa);
     const widac = this.trybSzkicu();
@@ -1781,11 +1915,12 @@ export class Szkicownik {
     for (let i = pi; i < V.punkty.length; i++) V.punkty[i].visible = false;
 
     // siatka płaszczyzny (linie co krok snapu, środek na siatce)
-    const P = PLASZCZYZNY[pl], g = this.krok(), N = SZK.SZKIC_POLE_SIATKI;
+    const P = ukladPl(pl), g = this.krok(), N = SZK.SZKIC_POLE_SIATKI;
     const sr = (s.start || S.kursor || [0, 0]).map((v) => Math.round(v / g) * g);
     const U = new THREE.Vector3(...P.u), Vv = new THREE.Vector3(...P.v), Nn = new THREE.Vector3(...P.n);
     V.siatka.matrix.makeBasis(U, Nn, Vv).scale(new THREE.Vector3(N * g, 1, N * g)).setPosition(p3(sr));
     V.siatka.visible = S.faza === 'rysuj';
+    if (V.siatka.material.color) V.siatka.material.opacity = jestWlasna(pl) ? 0.55 : 0.35;
     // podgląd wyciągnięcia
     const pokazBryle = S.faza === 'wyciagnij' && s.zamkniety && Math.abs(S.h) > 1e-6;
     V.bryla.visible = pokazBryle;
@@ -1800,6 +1935,135 @@ export class Szkicownik {
       }
       V.bryla.matrix.makeBasis(U, Vv, Nn).scale(new THREE.Vector3(1, 1, S.h)).setPosition(Nn.clone().multiplyScalar(o));
     }
+  }
+
+  // ==========================================================================
+  // CIĘCIE PŁASZCZYZNAMI Z RĄK: kwadrat w ręce jak ostrze (zawiera kierunek wskazywania i „górę” kontrolera),
+  // prawa ręka zawsze, lewa po włączeniu „Dwie płaszczyzny”; spust = tnij zaznaczone bryły (kawałki = osobne bryły)
+  // ==========================================================================
+  // płaszczyzna ręki w świecie: { srodek, u, v, n, bok } (m)
+  plaszczyznaReki(c, k) {
+    c.updateMatrixWorld(true);
+    const q = c.getWorldQuaternion(new THREE.Quaternion());
+    const naprzod = new THREE.Vector3(0, 0, -1).applyQuaternion(q), gora = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+    const n = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
+    const bok = this.ciecie.bok[k];
+    const srodek = c.getWorldPosition(new THREE.Vector3()).addScaledVector(naprzod, SZK.CIECIE_ODSUNIECIE_M + bok / 2);
+    return { srodek, u: naprzod, v: gora, n, bok };
+  }
+
+  // świat → układ CAD (mm), z przyciąganiem normalnej do osi
+  plaszczyznaDoCad(pw) {
+    this.root.updateMatrixWorld(true);
+    const M = this.root.matrixWorld, inv = M.clone().invert();
+    const sw = new THREE.Vector3(); this.root.getWorldScale(sw);
+    const kier = (w) => w.clone().transformDirection(inv);
+    const o = pw.srodek.clone().applyMatrix4(inv);
+    let n = kier(pw.n), u = kier(pw.u);
+    for (const os of [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)]) {
+      const cos = n.dot(os);
+      if (Math.abs(cos) > Math.cos(SZK.CIECIE_SNAP_DEG * DEG)) { n = os.clone().multiplyScalar(Math.sign(cos)); break; }
+    }
+    u.addScaledVector(n, -u.dot(n));
+    if (u.lengthSq() < 1e-9) u = new THREE.Vector3(1, 0, 0).cross(n).lengthSq() > 1e-6 ? new THREE.Vector3(1, 0, 0).cross(n) : new THREE.Vector3(0, 1, 0).cross(n);
+    u.normalize();
+    const v = new THREE.Vector3().crossVectors(n, u).normalize();
+    const r6 = (x) => Math.round(x * 1e6) / 1e6;
+    return { o: o.toArray().map(r6), u: u.toArray().map(r6), v: v.toArray().map(r6), n: n.toArray().map(r6), bok: r6(pw.bok / Math.max(sw.x, 1e-9)) };
+  }
+
+  plaszczyznyCieciaXR() {
+    const a = this.api;
+    const glowna = a.controllers.find((c) => c.userData.inputSource && a.isMain(c));
+    const druga = a.controllers.find((c) => c.userData.inputSource && !a.isMain(c));
+    const lista = [];
+    if (glowna) lista.push(this.plaszczyznaReki(glowna, 0));
+    if (this.ciecie.dwie && druga) lista.push(this.plaszczyznaReki(druga, 1));
+    return lista;
+  }
+
+  tnijPlaszczyznamiZRak(plaszczyznyCad = null) {
+    const ids = this.zazn.filter((id) => this.bryla(id) && this.bryla(id).def.typ !== 'powierzchnia');
+    if (!ids.length) { this.powiedz('Najpierw zaznacz bryłę do pocięcia (spust na bryle)'); return null; }
+    const pl = plaszczyznyCad || this.plaszczyznyCieciaXR().map((p) => this.plaszczyznaDoCad(p));
+    if (!pl.length) { this.powiedz('Brak płaszczyzny cięcia'); return null; }
+    return this.zadanie('Tnę…', async () => {
+      const nowe = [], bledy = [];
+      for (const id of ids) {
+        const nazwa = this.bryla(id).nazwa;
+        try { nowe.push(...await this.projekt.tnijPlaszczyznami(id, pl)); }
+        catch (e) { if (e.kod === 'TIMEOUT' || ids.length === 1) throw e; bledy.push(`${nazwa}: ${e.message}`); }
+      }
+      if (!nowe.length) throw new Error(bledy[0] || 'Nic nie pocięto');
+      this.wiele = false; this.zazn = []; this.prowadzaca = null; this.przypnijUchwyty();
+      this.powiedz(`Pocięto: ${nowe.length} kawałków` + (bledy.length ? ` (pominięte: ${bledy.length})` : '') + ' — chwyć i odsuń, A = usuń kawałek, B = cofnij');
+      return nowe;
+    }, 'cięcie płaszczyzną');
+  }
+
+  // kwadraty w rękach + linia przecięcia dwóch płaszczyzn (tu powstanie krawędź)
+  odswiezPlaszczyznyCiecia() {
+    const a = this.api;
+    if (!this.ciecie.widok) {
+      const grupa = new THREE.Group();
+      grupa.name = 'Płaszczyzny cięcia';
+      const kw = (kolor) => {
+        const g = new THREE.Group();
+        const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: kolor, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false }));
+        const ramka = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(1, 1)), new THREE.LineBasicMaterial({ color: kolor }));
+        const krzyz = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.5, 0, 0), new THREE.Vector3(0.5, 0, 0), new THREE.Vector3(0, -0.5, 0), new THREE.Vector3(0, 0.5, 0)]),
+                                             new THREE.LineBasicMaterial({ color: kolor, transparent: true, opacity: 0.5 }));
+        g.add(m, ramka, krzyz);
+        g.matrixAutoUpdate = false;
+        return g;
+      };
+      const krawedz = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 8, 1, true), new THREE.MeshBasicMaterial({ color: SZK.CIECIE_KOLOR_KRAWEDZI, depthTest: false }));
+      krawedz.renderOrder = 997;
+      const kw0 = kw(SZK.CIECIE_KOLOR), kw1 = kw(SZK.CIECIE_KOLOR_LEWA);
+      grupa.add(kw0, kw1, krawedz);
+      this.ciecie.widok = { grupa, kw: [kw0, kw1], krawedz };
+    }
+    const V = this.ciecie.widok;
+    const vr = a.renderer.xr.isPresenting;
+    if (V.grupa.parent !== a.scene) a.scene.add(V.grupa);
+    V.grupa.visible = this.aktywny && vr && this.narzedzie === 'ciecie';
+    if (!V.grupa.visible) return;
+    const pl = this.plaszczyznyCieciaXR();
+    V.kw.forEach((g, i) => {
+      const p = pl[i];
+      g.visible = !!p;
+      if (!p) return;
+      g.matrix.makeBasis(p.u, p.v, p.n).scale(new THREE.Vector3(p.bok, p.bok, 1)).setPosition(p.srodek);
+      g.matrixWorldNeedsUpdate = true;
+    });
+    // krawędź: odcinek wspólny dwóch kwadratów
+    V.krawedz.visible = false;
+    if (pl.length === 2) {
+      const [p, q] = pl;
+      const d = new THREE.Vector3().crossVectors(p.n, q.n);
+      if (d.lengthSq() > 1e-6) {
+        d.normalize();
+        // punkt na prostej przecięcia: rozwiązanie n1·x = n1·c1, n2·x = n2·c2 (najbliższy środkowi pierwszego kwadratu)
+        const h1 = p.n.dot(p.srodek), h2 = q.n.dot(q.srodek), n12 = p.n.dot(q.n), det = 1 - n12 * n12;
+        const c1 = (h1 - h2 * n12) / det, c2 = (h2 - h1 * n12) / det;
+        const P0 = p.n.clone().multiplyScalar(c1).addScaledVector(q.n, c2);
+        let tmin = -Infinity, tmax = Infinity;
+        for (const pk of [p, q]) for (const os of [pk.u, pk.v]) {        // obcięcie do obu kwadratów
+          const dd = d.dot(os), s0 = P0.clone().sub(pk.srodek).dot(os), h = pk.bok / 2;
+          if (Math.abs(dd) < 1e-9) { if (Math.abs(s0) > h) { tmin = 1; tmax = 0; } continue; }
+          const t1 = (-h - s0) / dd, t2 = (h - s0) / dd;
+          tmin = Math.max(tmin, Math.min(t1, t2)); tmax = Math.min(tmax, Math.max(t1, t2));
+        }
+        if (tmax > tmin) {
+          const A = P0.clone().addScaledVector(d, tmin), B = P0.clone().addScaledVector(d, tmax);
+          V.krawedz.position.copy(A).add(B).multiplyScalar(0.5);
+          V.krawedz.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d);
+          V.krawedz.scale.set(0.0025, A.distanceTo(B), 0.0025);
+          V.krawedz.visible = true;
+        }
+      }
+    }
+    this.ciecie.krawedz = V.krawedz.visible;
   }
 
   // ==========================================================================
@@ -2022,6 +2286,7 @@ export class Szkicownik {
     if (this.zajety) return 'Liczę…';
     if (this.trybSzkicu()) {
       const S = this.szkic, s = S.s;
+      if (this.stawianiePl) return vr ? 'Spust na ścianie bryły = płaszczyzna na niej · w powietrzu = wg kontrolera' : 'Klik na ścianie bryły = płaszczyzna na niej';
       if (S.faza === 'wyciagnij') return `Wysokość ${fmt(S.h)} mm — ${vr ? 'odsuń rękę' : 'rusz myszą'}, ${spust} = gotowe, B = wróć`;
       if (S.faza === 'os') return `Wskaż odcinek-oś (żółty), ${spust} = obrót ${this.katObrotu}°, B = wróć`;
       if (s.zamkniety) return 'Obrys zamknięty — „Wyciągnij” albo „Obrót”';
@@ -2038,6 +2303,8 @@ export class Szkicownik {
                 : `Krzywa ${nr}: klikaj punkty, Enter = koniec krzywej` + (nr === 2 ? ' → powierzchnia' : '');
     }
     if (this.narzedzie === 'wstazka') return vr ? (this.wstazka ? 'Rozciągasz wstążkę — puść spust = gotowe' : 'Trzymaj OBA spusty i prowadź ręce') : 'Wstążka działa w goglach';
+    if (this.narzedzie === 'ciecie') return vr ? (this.zazn.length ? 'Spust = tnij · lewy spust = druga płaszczyzna · gałki = wielkość' : 'Spust na bryle = zaznacz, potem spust = tnij')
+      : 'Cięcie płaszczyznami działa w goglach (na PC: klik w zaznaczoną bryłę = cięcie pionowe)';
     if (this.narzedzie === 'belka') return vr ? `${this.belkaTekst()} · spust w A → przeciągnij → puść w B` : `${this.belkaTekst()} · przeciągnij myszą od A do B · Esc = wybierz`;
     if (this.narzedzie !== 'wybierz') return vr ? 'Spust w punkcie A → przeciągnij → puść' : 'Przeciągnij myszą po płaszczyźnie · Esc = wybierz';
     return vr ? 'Spust: wybierz · Grip: chwyć (prawy spust = kopia, A = usuń) · B: cofnij' : 'Klik: wybierz · Ctrl+Z: cofnij';
@@ -2046,9 +2313,10 @@ export class Szkicownik {
   uklad() {
     const U = new Uklad();
     if (this.numpad) return this.ukladNumpada(U);
-    U.rzad(20, 80, [['bryly', 'Bryły', 'prostopadloscian', 1], ['szkic', 'Szkic', 'szkic', 0.95], ['pow', 'Powierzchnie', 'powierzchnia', 1.65],
+    U.rzad(20, 80, [['wroc', '', 'wroc', 0.5], ['bryly', 'Bryły', 'prostopadloscian', 1], ['szkic', 'Szkic', 'szkic', 0.95], ['pow', 'Powierzchnie', 'powierzchnia', 1.65],
                     ['edycja', 'Edycja', 'numer', 1], ['plik', 'Plik', 'plik', 0.8]]
-      .map(([id, text, icon, flex]) => ({ id: 'tab:' + id, text, icon, flex, active: this.strona === id, tab: true })));
+      .map(([id, text, icon, flex]) => (id === 'wroc' ? { id: 'wroc', text: '', icon, flex, tab: true }      // ◀ powrót do podglądu
+                                                      : { id: 'tab:' + id, text, icon, flex, active: this.strona === id, tab: true })));
     if (this.strona === 'bryly') this.ukladBryly(U);
     else if (this.strona === 'szkic') this.ukladSzkic(U);
     else if (this.strona === 'pow') this.ukladPowierzchnie(U);
@@ -2067,9 +2335,17 @@ export class Szkicownik {
     const lista = this.projekt ? this.projekt.bryly : [];
     const brak = !this.zazn.length;
     U.ramka(112, 196, 'Narzędzie — spust: rozciągnij bryłę od punktu do punktu');
-    U.rzadW(150, 140, [['wybierz', 'Wybierz'], ['prostopadloscian', 'Prostopadłościan'], ['walec', 'Walec'], ['kula', 'Kula'], ['belka', 'Belka']]
-      .map(([id, text]) => ({ id: 'narz:' + id, text, icon: id, active: this.narzedzie === id, flex: id === 'prostopadloscian' ? 1.45 : 1 })));
-    if (this.narzedzie === 'belka') {
+    U.rzadW(150, 140, [['wybierz', 'Wybierz', 'wybierz'], ['prostopadloscian', 'Prostopadłościan', 'prostopadloscian'], ['walec', 'Walec', 'walec'], ['kula', 'Kula', 'kula'],
+                       ['belka', 'Belka', 'belka'], ['ciecie', 'Tnij', 'tnij']]
+      .map(([id, text, icon]) => ({ id: 'narz:' + id, text, icon, active: this.narzedzie === id, flex: id === 'prostopadloscian' ? 1.5 : 1 })));
+    if (this.narzedzie === 'ciecie') {
+      const C = this.ciecie, sw = new THREE.Vector3(); this.root.getWorldScale(sw);
+      const mm = (m) => `${fmt(m / Math.max(sw.x, 1e-9), 0)} mm`;
+      U.ramka(322, 196, this.zazn.length ? `Cięcie: zaznaczone ${this.zazn.length} · spust = tnij, gałki = wielkość` : 'Cięcie: najpierw spust na bryle (zaznacz)');
+      U.rzadW(360, 140, [{ id: 'ct:dwie', text: C.dwie ? 'Dwie płaszczyzny' : 'Jedna płaszczyzna', icon: 'tnij', active: C.dwie, flex: 1.5 },
+                         { id: 'ct:p-', sub: 'Prawa', text: '−', flex: 0.55 }, { id: 'ct:p+', sub: mm(C.bok[0]), text: '+', flex: 0.8 },
+                         { id: 'ct:l-', sub: 'Lewa', text: '−', disabled: !C.dwie, flex: 0.55 }, { id: 'ct:l+', sub: mm(C.bok[1]), text: '+', disabled: !C.dwie, flex: 0.8 }]);
+    } else if (this.narzedzie === 'belka') {
       const okr = this.belka.ksztalt === 'okrag';
       U.ramka(322, 196, `${this.belkaTekst()} — gałki: prawa ${okr ? 'Ø' : 'a'}` + (okr ? '' : ', lewa b'));
       U.rzadW(360, 140, [{ id: 'bk:prostokat', text: 'Prostokąt', icon: 'prostokat', active: !okr, flex: 1.2 },
@@ -2109,8 +2385,10 @@ export class Szkicownik {
     const S = this.szkic, s = S && S.s, pl = this.plaszczyznaSzkicu(), poz = this.plaszczyznaPozioma();
     const zamk = !!(s && s.zamkniety), ma = !!(s && s.start);
     U.ramka(112, 196, 'Płaszczyzna szkicu');
-    U.rzadW(150, 140, ['XY', 'XZ', 'YZ'].map((p) => ({ id: 'pl:' + p, icon: 'pl' + p, text: p + (p === poz ? ' · poziom' : ' · pion'),
-                                                    active: pl === p, disabled: ma && pl !== p })));
+    U.rzadW(150, 140, [...['XY', 'XZ', 'YZ'].map((p) => ({ id: 'pl:' + p, icon: 'pl' + p, text: p + (p === poz ? ' · poziom' : ' · pion'),
+                                                           active: pl === p && !this.stawianiePl, disabled: ma && pl !== p })),
+                       { id: 'pl:wlasna', icon: 'plWlasna', text: this.stawianiePl ? 'Postaw (spust)' : (jestWlasna(pl) ? 'Postawiona' : 'Postaw płaszczyznę'),
+                         active: this.stawianiePl || jestWlasna(pl), disabled: ma && !jestWlasna(pl), flex: 1.3 }]);
     U.ramka(322, 300, 'Rysowanie obrysu' + (s ? ` · odcinki: ${s.segmenty.length}` + (zamk ? ' · zamknięty ✓' : '') : ''));
     const N = (id, text, icon, flex = 1) => ({ id: 'sz:' + id, text, icon, active: this.narzSzkicu === id, flex });
     U.rzadW(360, 128, [N('linia', 'Linia', 'linia'), N('lukStyczny', 'Łuk styczny', 'lukStyczny', 1.2), N('luk', 'Łuk 3 pkt', 'luk'),
@@ -2216,6 +2494,7 @@ export class Szkicownik {
     U.ramka(440, 196, 'Tryb i geometria');
     const st = { brak: 'nie uruchomiona', laduje: 'ładowanie…', gotowy: 'gotowa', blad: 'błąd' }[this.stanSilnika];
     U.rzadW(478, 140, [{ id: 'wroc', text: 'Wróć do podglądu', icon: 'wroc', flex: 1.4 }, this.przyciskCofnij(),
+                       { id: 'limit', sub: 'Limit czasu cięcia', text: `${this.ustawienia.limitCiecia} s`, flex: 1.1 },
                        { id: '', kind: 'info', align: 'center', text: `Geometria: ${st}` + (this.silnik && this.silnik.restarty ? ` · restarty: ${this.silnik.restarty}` : ''), flex: 1.6 }]);
     const vr = this.api.renderer.xr.isPresenting;
     const pomoc = vr
@@ -2291,6 +2570,18 @@ export class Szkicownik {
       case 'eksport': this.eksport(v); break;
       // szkic
       case 'pl': this.ustawPlaszczyzne(v); break;
+      case 'ct':
+        if (v === 'dwie') { this.ciecie.dwie = !this.ciecie.dwie; this.powiedz(this.ciecie.dwie ? 'Dwie płaszczyzny (lewa ręka też trzyma płaszczyznę)' : 'Jedna płaszczyzna'); }
+        else { const k = v[0] === 'p' ? 0 : 1; this.ciecie.bok[k] = Math.min(SZK.CIECIE_BOK_MAX_M, Math.max(SZK.CIECIE_BOK_MIN_M, this.ciecie.bok[k] * (v.endsWith('+') ? 1.25 : 0.8))); }
+        break;
+      case 'limit': {
+        const L = SZK.LIMITY_CIECIA_S;
+        this.ustawienia.limitCiecia = L[(L.indexOf(this.ustawienia.limitCiecia) + 1) % L.length] || 12;
+        zapiszUstawienia(this.ustawienia);
+        if (this.silnik) this.silnik.limity.CIECIE_TIMEOUT_MS = this.ustawienia.limitCiecia * 1000;
+        this.powiedz(`Limit czasu cięcia: ${this.ustawienia.limitCiecia} s (dłuższe operacje są przerywane)`);
+        break;
+      }
       case 'bk':
         if (v === 'prostokat' || v === 'okrag') this.belka.ksztalt = v;
         else this.zmienBelke(v[0] === 'a' ? (this.belka.ksztalt === 'okrag' ? 'd' : 'a') : 'b', v.endsWith('+') ? 1.25 : 0.8, true);

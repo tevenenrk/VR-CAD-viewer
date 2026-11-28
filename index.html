@@ -143,6 +143,7 @@
       <input type="file" id="bgFile" hidden accept="image/*">
     </div>
     <div class="small" id="bgInfo"></div>
+    <label class="row"><input type="checkbox" id="holoBox"> Tryb hologramu (części świecą, projektor pod modelem)</label>
     <p class="small" style="margin-bottom:2px">Rozstrzelenie modelu (części odsuwają się od środka):</p>
     <input type="range" id="explode" min="0" max="200" value="0" step="5">
   </details>
@@ -209,7 +210,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
-import { rysujIkone } from './ikony.js';
+import { rysujIkone, tloPanelu, tloPrzycisku } from './ikony.js';
+import { dodajRamke, ustawRysowanieRamki, utworzKropke, ustawKropke, WYGLAD } from './panele3d.js';
 import { TLA, TLA_NET, generujTlo, urlPliku, urlNet } from './tla.js';
 
 // ============================================================================
@@ -332,6 +334,9 @@ const CONFIG = {
   HIGHLIGHT_RGB: 0xff7a00,     // wskazana / wybrana część
   HIGHLIGHT_INTENSITY: 0.55,
   GRAB_RGB: 0x1aa3ff,          // część w zasięgu chwytu / trzymana
+  HOLO_KOLOR: 0x2fd0ff,        // tryb hologramu: kolor poświaty części
+  HOLO_ZABARWIENIE: 0.2,       // ile koloru części zostaje w hologramie (0 = sam niebieski)
+  HOLO_PROJEKTOR: true,        // pod modelem urządzenie wyświetlające hologram (stożek światła)
   BG_DESKTOP: 0x1d2026,
   BG_VR: 0x2b2f36,
   TLO_DOMYSLNE: 'szary',       // tło na start (lista w tla.js; potem zapamiętany wybór)
@@ -358,7 +363,7 @@ for (const id of ['fileInput', 'quality', 'upAxis', 'btnVR', 'btnAR', 'btnShot',
   'secOn', 'secX', 'secY', 'secZ', 'secFlip', 'secPos', 'secInfo', 'sectionBox',
   'cloudBox', 'cloudState', 'cloudConnect', 'cloudDisconnect', 'cloudAuto', 'cloudFolder', 'cloudBrowse', 'cloudUp', 'cloudSetFolder', 'cloudPending',
   'cloudPath', 'cloudFiles', 'recent', 'recentCount', 'setClientId', 'setGeminiKey', 'setGeminiModel', 'setSave', 'setMic', 'setInfo', 'xrKb', 'btnSzk',
-  'fileAdd', 'btnSaveStep', 'btnSaveStepDrive', 'partNoSection', 'secAll', 'bgSelect', 'bgRotate', 'bgFile', 'bgInfo', 'explode'])
+  'fileAdd', 'btnSaveStep', 'btnSaveStepDrive', 'partNoSection', 'secAll', 'bgSelect', 'bgRotate', 'bgFile', 'bgInfo', 'explode', 'holoBox'])
   ui[id] = $(id);
 Object.assign(ui, { file: ui.fileInput, vr: ui.btnVR, ar: ui.btnAR, shot: ui.btnShot });
 
@@ -761,19 +766,33 @@ function makeGeometry(m) {
 
 // Przekrój: płaszczyzna cięcia wspólna dla wszystkich części. Tylne ściany (widoczne tylko po przecięciu bryły)
 // są malowane płaskim kolorem przekroju — wygląda jak zamknięty przekrój, bez dodatkowego rysowania.
-const SECTION_UNI = { uSectionOn: { value: false }, uCapColor: { value: new THREE.Color(CONFIG.SECTION_CAP_RGB) }, uCapMix: { value: CONFIG.SECTION_CAP_MIX } };
+const SECTION_UNI = { uSectionOn: { value: false }, uCapColor: { value: new THREE.Color(CONFIG.SECTION_CAP_RGB) }, uCapMix: { value: CONFIG.SECTION_CAP_MIX },
+                      uHolo: { value: false }, uHoloKolor: { value: new THREE.Color(CONFIG.HOLO_KOLOR) }, uHoloMix: { value: CONFIG.HOLO_ZABARWIENIE }, uCzas: { value: 0 } };
 const section = { on: false, local: new THREE.Plane(new THREE.Vector3(1, 0, 0), 0), world: new THREE.Plane(new THREE.Vector3(0, 1, 0), 1e9), axis: 'X', vis: null };
 const SECTION_PLANES = [section.world];
 
 function sectionShader(sh) {
-  if (this && this.userData && this.userData.bezPrzekroju) return;   // część wyłączona z przekroju: zwykły materiał
+  const bez = !!(this && this.userData && this.userData.bezPrzekroju);   // część wyłączona z przekroju: bez zamalowania przekroju
   sh.uniforms.uSectionOn = SECTION_UNI.uSectionOn;
   sh.uniforms.uCapColor = SECTION_UNI.uCapColor;
   sh.uniforms.uCapMix = SECTION_UNI.uCapMix;
+  for (const k of ['uHolo', 'uHoloKolor', 'uHoloMix', 'uCzas']) sh.uniforms[k] = SECTION_UNI[k];
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vHoloPos;')
+    .replace('#include <project_vertex>', '#include <project_vertex>\nvHoloPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
   sh.fragmentShader = sh.fragmentShader
-    .replace('#include <common>', '#include <common>\nuniform bool uSectionOn;\nuniform vec3 uCapColor;\nuniform float uCapMix;')
+    .replace('#include <common>', '#include <common>\nuniform bool uSectionOn;\nuniform vec3 uCapColor;\nuniform float uCapMix;\n' +
+             'uniform bool uHolo;\nuniform vec3 uHoloKolor;\nuniform float uHoloMix;\nuniform float uCzas;\nvarying vec3 vHoloPos;')
     .replace('#include <tonemapping_fragment>',
-      'if (uSectionOn && !gl_FrontFacing) gl_FragColor = vec4(mix(diffuseColor.rgb, uCapColor, uCapMix) * 0.9 + totalEmissiveRadiance, 1.0);\n#include <tonemapping_fragment>');
+      (bez ? '' : 'if (uSectionOn && !gl_FrontFacing) gl_FragColor = vec4(mix(diffuseColor.rgb, uCapColor, uCapMix) * 0.9 + totalEmissiveRadiance, 1.0);\n') +
+      // hologram: poświata na krawędziach (fresnel), linie skanowania, przesuwający się jasny pas
+      'if (uHolo) {\n' +
+      '  float fr = pow(1.0 - abs(dot(normalize(normal), normalize(vViewPosition))), 2.0);\n' +
+      '  float skan = 0.5 + 0.5 * sin(vHoloPos.y * 320.0 - uCzas * 3.0);\n' +
+      '  float pas = smoothstep(0.93, 1.0, fract(vHoloPos.y * 3.0 - uCzas * 0.3));\n' +
+      '  vec3 hk = mix(uHoloKolor, diffuseColor.rgb, uHoloMix);\n' +
+      '  gl_FragColor = vec4(hk * (0.14 + 1.3 * fr + 0.10 * skan + 0.7 * pas) + totalEmissiveRadiance, 0.28 + 0.6 * fr);\n' +
+      '}\n#include <tonemapping_fragment>');
 }
 
 function newMaterial(rgb) {
@@ -818,6 +837,7 @@ function clearModel() {
   grupyCzesci = []; S.wiele = false;
   rozstrzel.f = 0; syncRozstrzelUI();
   zamknijOkno();
+  holo.materialy.clear();
   closeNoteEditor(false);
   noteCounter = 0;
   section.on = false; SECTION_UNI.uSectionOn.value = false; section.vis = null;
@@ -1996,6 +2016,7 @@ function setupPalette() {
   pal.mesh.name = 'Panel narzędzi';
   pal.mesh.visible = false;
   pal.mesh.renderOrder = 10;
+  pal.ramka = dodajRamke(THREE, pal.mesh, w, h);
   scene.add(pal.mesh);
   layoutPalette();
 }
@@ -2042,7 +2063,8 @@ function layoutPalette() {
     const T = (id) => ({ id: 'tool:' + id, text: TOOLS[id], icon: id, active: S.tool === id });
     card(112, 318, 'Narzędzie — spust');
     row(152, 124, [T('wskaz'), T('rysuj'), T('belka'), T('gumka'), T('miarka')], IN0, IN1);
-    row(290, 124, [T('kolor'), T('komentarz'), T('przekroj'), { id: 'undo', text: 'Cofnij (B)', icon: 'cofnij' }], IN0, IN1);
+    row(290, 124, [T('kolor'), T('komentarz'), T('przekroj'), { id: 'tryb:szkicownik', text: 'Szkicownik', icon: 'szkicownik', flex: 1.15 },
+                   { id: 'undo', text: 'Cofnij (B)', icon: 'cofnij' }], IN0, IN1);
     card(444, 246, 'Chwytanie — grip (części, grupy i rysunki)');
     row(484, 100, [{ id: 'grab:czesc', text: GRABS.czesc, icon: 'czesc', active: S.grabMode === 'czesc' },
                    { id: 'grab:grupa', text: 'Sfera ' + fmtLen(S.sphere), icon: 'grupa', active: S.grabMode === 'grupa', flex: 1.2 },
@@ -2082,19 +2104,20 @@ function layoutPalette() {
                                         active: tlo.id === 'net:' + t.id, x: P, y: 222 + k * 84, w: W - 2 * P, h: 74 }));
     row(1036, 88, [{ id: 'widok:glowne', text: 'Wróć', icon: 'wroc' }]);
   } else if (pal.page === 'widok') {
-    card(112, 636, 'Tło dookoła (w goglach VR i na ekranie)' + (tlo.laduje ? ' — ładuję…' : ''));
+    card(112, 608, 'Tło dookoła (w goglach VR i na ekranie)' + (tlo.laduje ? ' — ładuję…' : ''));
     const kafle = [...TLA.map((t) => ({ id: 'tlo:' + t.id, kind: 'thumb', text: t.nazwa, img: tlo.mini.get(t.id) || null, kolor: t.typ === 'kolor' ? '#2b2f36' : null,
                                         active: tlo.id === t.id })),
                    { id: 'widok:net', kind: 'thumb', text: 'Z internetu ▸', icon: 'chmura', active: tlo.id.startsWith('net:') }];
-    for (let r = 0; r < 3; r++) row(150 + r * 162, 150, kafle.slice(r * 3, r * 3 + 3), IN0, IN1);
-    row(636, 96, [{ id: 'tlodrive', text: tlo.id === 'wlasne' ? 'Własne: ' + (tlo.nazwa || 'zdjęcie') : 'Własne zdjęcie (Drive)', icon: 'plik', active: tlo.id === 'wlasne', flex: 1.6 },
+    for (let r = 0; r < 4; r++) row(150 + r * 116, 106, kafle.slice(r * 3, r * 3 + 3).concat(Array(Math.max(0, 3 - kafle.slice(r * 3, r * 3 + 3).length)).fill({ id: 'noop', kind: 'info', text: '' })), IN0, IN1);
+    row(614, 92, [{ id: 'tlodrive', text: tlo.id === 'wlasne' ? 'Własne: ' + (tlo.nazwa || 'zdjęcie') : 'Własne zdjęcie (Drive)', icon: 'plik', active: tlo.id === 'wlasne', flex: 1.6 },
                   { id: 'tloobrot', text: 'Obróć tło 45°', icon: 'obrot', disabled: tlo.id === 'szary' }], IN0, IN1);
-    card(762, 168, 'Rozstrzelenie modelu');
-    row(800, 96, [{ id: 'roz:-', text: '', icon: 'minus', disabled: rozstrzel.f <= 0, flex: 0.6 }, { id: 'rozinfo', kind: 'info', text: rozstrzelTekst(), align: 'center', flex: 2 },
-                  { id: 'roz:+', text: '', icon: 'plus', disabled: rozstrzel.f >= CONFIG.ROZSTRZEL_MAX, flex: 0.6 },
-                  { id: 'roz:0', text: 'Złóż', icon: 'reset', disabled: rozstrzel.f <= 0, flex: 1 }], IN0, IN1);
-    card(944, 168, 'Porządki');
-    row(982, 96, [{ id: 'clear:strokes', text: 'Usuń rysunki', icon: 'usun' }, { id: 'clear:measures', text: 'Usuń miary', icon: 'usun' },
+    card(734, 168, 'Rozstrzelenie i hologram');
+    row(772, 96, [{ id: 'roz:-', text: '', icon: 'minus', disabled: rozstrzel.f <= 0, flex: 0.55 }, { id: 'rozinfo', kind: 'info', text: rozstrzelTekst(), align: 'center', flex: 1.7 },
+                  { id: 'roz:+', text: '', icon: 'plus', disabled: rozstrzel.f >= CONFIG.ROZSTRZEL_MAX, flex: 0.55 },
+                  { id: 'roz:0', text: 'Złóż', icon: 'reset', disabled: rozstrzel.f <= 0, flex: 0.9 },
+                  { id: 'holo', text: 'Hologram', icon: 'hologram', active: holo.wl, flex: 1.2 }], IN0, IN1);
+    card(916, 168, 'Porządki');
+    row(954, 96, [{ id: 'clear:strokes', text: 'Usuń rysunki', icon: 'usun' }, { id: 'clear:measures', text: 'Usuń miary', icon: 'usun' },
                   { id: 'clear:notes', text: 'Usuń komentarze', icon: 'usun' }], IN0, IN1);
   } else if (pal.page === 'drzewo') {
     if (!treeRows.length) info(130, 'Brak modelu — otwórz plik w zakładce Menu.');
@@ -2241,8 +2264,10 @@ function rysujPrzyciski(ctx, buttons, hover) {
     const text = b.text == null ? '' : String(b.text);
     const hov = hover === b.id && !b.disabled;
     if (b.kind === 'card') {                     // ramka grupy przycisków z tytułem
-      ctx.fillStyle = '#1e2228'; rr(b.x, b.y, b.w, b.h, 26); ctx.fill();
-      ctx.lineWidth = 3; ctx.strokeStyle = '#30353d'; ctx.stroke();
+      const gk = ctx.createLinearGradient(0, b.y, 0, b.y + b.h); gk.addColorStop(0, 'rgba(30,40,52,0.85)'); gk.addColorStop(1, 'rgba(18,23,30,0.85)');
+      ctx.fillStyle = gk; rr(b.x, b.y, b.w, b.h, 22); ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(47,208,255,0.22)'; ctx.stroke();
+      ctx.fillStyle = '#2fd0ff'; ctx.fillRect(b.x + 10, b.y + 10, 4, 24);
       ctx.textAlign = 'left'; ctx.fillStyle = '#9aa0a6'; fitFont(ctx, text, b.w - 44, 28, 600);
       ctx.fillText(text, b.x + 22, b.y + 22);
       continue;
@@ -2302,9 +2327,7 @@ function rysujPrzyciski(ctx, buttons, hover) {
       ctx.fillText(text, b.x + 18, b.y + b.h / 2 + 1, b.w - 36);
       continue;
     }
-    ctx.fillStyle = b.active ? '#ff8a1f' : (hov ? '#3b424d' : (b.tab ? '#23272e' : '#2c3139'));
-    rr(b.x, b.y, b.w, b.h, 20); ctx.fill();
-    ctx.lineWidth = hov ? 6 : 3; ctx.strokeStyle = hov ? '#ffffff' : '#3a3f47'; ctx.stroke();
+    tloPrzycisku(ctx, b, { aktywny: !!b.active, nad: !!hov, zakladka: !!b.tab, wylaczony: !!b.disabled });
     ctx.fillStyle = b.disabled ? '#6b7079' : (b.active ? '#111111' : '#e8eaed'); ctx.textAlign = 'center';
     const kol = ctx.fillStyle;
     if (b.icon && !text) {                       // sama ikona
@@ -2335,8 +2358,7 @@ function rysujPrzyciski(ctx, buttons, hover) {
 function drawPalette() {
   const ctx = pal.ctx, W = PAL.W, H = PAL.H, P = PAL.PAD;
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = 'rgba(24,27,33,0.95)'; ctx.beginPath(); ctx.roundRect(4, 4, W - 8, H - 8, 36); ctx.fill();
-  ctx.lineWidth = 4; ctx.strokeStyle = '#3a3f47'; ctx.stroke();
+  tloPanelu(ctx, W, H);
   rysujPrzyciski(ctx, pal.buttons, pal.hover);
   const foot = footerText();
   ctx.textAlign = 'center'; ctx.fillStyle = pal.msg ? '#ffd27a' : '#9aa0a6';
@@ -2366,6 +2388,7 @@ function paletteAction(id) {
   else if (k === 'tlo') ustawTlo(v);
   else if (k === 'tlonet') ustawTlo('net:' + v);
   else if (k === 'tloobrot') obrocTlo();
+  else if (k === 'holo') ustawHologram(!holo.wl);
   else if (k === 'tlodrive') {
     if (!drive.connected) { say('Połącz Google Drive na ekranie 2D (panel → Chmura)'); return; }
     browser.tryb = 'obraz'; pal.page = 'menu'; pal.menuView = 'drive'; pal.listScroll = 0; browserList();
@@ -2534,10 +2557,12 @@ function setupControllers() {
     cursor.renderOrder = grabSphere.renderOrder = 5;
     tip.add(cursor, grabSphere);
     c.add(ray, tip);
+    const kropka = utworzKropke(THREE);
+    scene.add(kropka);
     c.userData = {
       inputSource: null, handed: 'none', ray, tip, cursor, grabSphere,
       selecting: false, squeezing: false, trigPrev: false, gripPrev: false, prev: {},
-      held: null, uiHover: null, uiConsumed: false, activeTool: null, rayHit: null,
+      held: null, uiHover: null, uiConsumed: false, activeTool: null, rayHit: null, kropka, uiPunkt: null, uiPanel: null,
       stroke: null, smooth: new THREE.Vector3(), measure: null, grabHover: [], noteHit: null, noteDrag: null, gestureDone: false,
     };
     c.addEventListener('connected', (e) => {
@@ -2580,7 +2605,7 @@ function setupControllers() {
   renderer.xr.addEventListener('sessionend', () => {
     xrMode = null;
     if (pal.page === 'klawiatura') pal.page = pal.returnPage || 'narzedzia';
-    for (const c of controllers) { endHold(c); toolEnd(c); }
+    for (const c of controllers) { endHold(c); toolEnd(c); c.userData.kropka.visible = false; }
     releaseAll();
     toast.sprite.visible = false;
     label.sprite.visible = false;
@@ -2924,18 +2949,19 @@ function handleXRInput(dt) {
     u.uiHover = null;
     u.rayHit = null;
     u.noteHit = null;
+    u.uiPunkt = null; u.uiPanel = null;
     let rayLen = CONFIG.RAY_LENGTH;
     if (pal.mesh.visible && pal.mesh.parent !== c) {
       raycaster.setFromXRController(c);
       raycaster.firstHitOnly = false;
       const hit = raycaster.intersectObject(pal.mesh, false)[0];
-      if (hit) { u.uiHover = paletteButtonAt(hit.uv); rayLen = hit.distance; }
+      if (hit) { u.uiHover = paletteButtonAt(hit.uv); rayLen = hit.distance; u.uiPunkt = hit.point; u.uiPanel = pal.mesh; }
     }
     if (okno.mesh.visible) {                     // okienko przy części: wygrywa, gdy jest bliżej niż panel
       raycaster.setFromXRController(c);
       raycaster.firstHitOnly = false;
       const hit = raycaster.intersectObject(okno.mesh, false)[0];
-      if (hit && (!u.uiHover || hit.distance < rayLen)) { u.uiHover = oknoButtonAt(hit.uv) || 'okno:tlo'; rayLen = hit.distance; }
+      if (hit && (!u.uiPanel || hit.distance < rayLen)) { u.uiHover = oknoButtonAt(hit.uv) || 'okno:tlo'; rayLen = hit.distance; u.uiPunkt = hit.point; u.uiPanel = okno.mesh; }
     }
     if (!u.uiHover && !u.uiConsumed && (u.activeTool || S.tool) === 'komentarz' && !u.noteDrag) {
       raycaster.setFromXRController(c);
@@ -2954,6 +2980,8 @@ function handleXRInput(dt) {
     if (!u.uiHover && (S.tool === 'rysuj' || S.tool === 'gumka' || S.tool === 'belka')) rayLen = CONFIG.DRAW_TIP_OFFSET;
     if (S.tool === 'belka' && main && !u.belka && !u.uiHover && cadRoot) showLabelAt(belkaTekst(), tipWorld(c, new THREE.Vector3()));
     u.ray.scale.z = rayLen;
+    ustawKropke(u.kropka, u.uiPunkt, u.uiPanel, THREE);           // kropka tam, gdzie celujesz w panel
+    u.ray.material.color.setHex(u.uiPanel ? WYGLAD.PROMIEN_NAD_PANELEM : 0xffffff);
 
     // Spust: klik w panel albo narzędzie
     const trig = u.selecting;
@@ -3666,6 +3694,7 @@ function setupUI() {
   ui.bgFile.addEventListener('change', () => { const f = ui.bgFile.files[0]; ui.bgFile.value = ''; if (f) ustawTlo('wlasne', { blob: f, nazwa: f.name }); else syncTloUI(); });
   ui.bgRotate.addEventListener('click', obrocTlo);
   ui.explode.addEventListener('input', () => ustawRozstrzelenie(Number(ui.explode.value) / 100));
+  ui.holoBox.addEventListener('change', () => ustawHologram(ui.holoBox.checked));
   ui.partUngroup.addEventListener('click', () => { rozgrupujZaznaczone(); showPicked(selectedObj); });
   ui.shotsDownload.addEventListener('click', () => {
     [...ui.shots.querySelectorAll('a[download]')].forEach((a, i) => setTimeout(() => a.click(), i * 400));
@@ -3801,6 +3830,7 @@ function setupOkno() {
     new THREE.MeshBasicMaterial({ map: okno.tex, transparent: true, toneMapped: false, depthTest: false }));
   okno.mesh.name = 'Okienko części';
   okno.mesh.renderOrder = 20;
+  ustawRysowanieRamki(dodajRamke(THREE, okno.mesh, w, w * OKNO.H / OKNO.W), true, 20);
   okno.mesh.visible = false;
   scene.add(okno.mesh);
 }
@@ -3874,8 +3904,7 @@ function odswiezOkno() {
   okno.sig = sig;
   const ctx = okno.ctx;
   ctx.clearRect(0, 0, OKNO.W, OKNO.H);
-  ctx.fillStyle = 'rgba(24,27,33,0.96)'; ctx.beginPath(); ctx.roundRect(4, 4, OKNO.W - 8, OKNO.H - 8, 32); ctx.fill();
-  ctx.lineWidth = 6; ctx.strokeStyle = '#ff8a1f'; ctx.stroke();
+  tloPanelu(ctx, OKNO.W, OKNO.H);
   rysujPrzyciski(ctx, B, okno.hover);
   okno.tex.needsUpdate = true;
 }
@@ -3931,6 +3960,95 @@ function ustawRozstrzelenie(f) {
 
 function syncRozstrzelUI() { if (ui.explode) ui.explode.value = String(Math.round(rozstrzel.f * 100)); }
 
+
+// ============================================================================
+// TRYB HOLOGRAMU: części jak świecące hologramy (poświata krawędzi, linie skanowania) + projektor pod modelem
+// Kolory i przekrój działają dalej — zmienia się tylko sposób rysowania (wspólny kod w sectionShader).
+// ============================================================================
+const holo = { wl: false, materialy: new Map(), projektor: null, licznik: 0 };
+
+function stosujHoloDoMaterialu(m) {
+  if (holo.materialy.has(m)) return;
+  holo.materialy.set(m, { transparent: m.transparent, depthWrite: m.depthWrite, blending: m.blending });
+  m.transparent = true; m.depthWrite = false; m.blending = THREE.AdditiveBlending;
+}
+
+function stosujHoloDoCzesci() {
+  for (const p of parts) for (const m of mats(p.mesh)) stosujHoloDoMaterialu(m);
+}
+
+function ustawHologram(wl) {
+  holo.wl = !!wl;
+  SECTION_UNI.uHolo.value = holo.wl;
+  if (holo.wl) stosujHoloDoCzesci();
+  else {
+    for (const [m, st] of holo.materialy) { m.transparent = st.transparent; m.depthWrite = st.depthWrite; m.blending = st.blending; }
+    holo.materialy.clear();
+  }
+  if (ui.holoBox) ui.holoBox.checked = holo.wl;
+  if (holo.wl && CONFIG.HOLO_PROJEKTOR) zbudujProjektor();
+  if (holo.projektor) holo.projektor.visible = holo.wl && CONFIG.HOLO_PROJEKTOR;
+  say(holo.wl ? 'Tryb hologramu: włączony' : 'Tryb hologramu: wyłączony');
+}
+
+// Projektor: podstawa z pierścieniem świetlnym, stożek światła do góry, poświata na podłodze
+function zbudujProjektor() {
+  if (holo.projektor) return;
+  const g = new THREE.Group();
+  g.name = 'Projektor hologramu';
+  const kol = new THREE.Color(CONFIG.HOLO_KOLOR);
+  const metal = new THREE.MeshStandardMaterial({ color: 0x1a2028, metalness: 0.85, roughness: 0.3 });
+  const podstawa = new THREE.Mesh(new THREE.CylinderGeometry(1, 1.12, 0.12, 64), metal);
+  podstawa.position.y = -0.06;
+  const pierscien = new THREE.Mesh(new THREE.TorusGeometry(0.92, 0.025, 12, 96), new THREE.MeshBasicMaterial({ color: kol, toneMapped: false }));
+  pierscien.rotation.x = Math.PI / 2; pierscien.position.y = 0.002;
+  const soczewka = new THREE.Mesh(new THREE.CircleGeometry(0.8, 64), new THREE.MeshBasicMaterial({ color: kol, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false }));
+  soczewka.rotation.x = -Math.PI / 2; soczewka.position.y = 0.003;
+  // stożek światła: przezroczystość zanika ku górze (tekstura z gradientem)
+  const cv = document.createElement('canvas'); cv.width = 4; cv.height = 128;
+  const cx = cv.getContext('2d'), gr = cx.createLinearGradient(0, 0, 0, 128);
+  gr.addColorStop(0, 'rgba(255,255,255,0)'); gr.addColorStop(1, 'rgba(255,255,255,0.32)');
+  cx.fillStyle = gr; cx.fillRect(0, 0, 4, 128);
+  const tx = new THREE.CanvasTexture(cv);
+  const stozek = new THREE.Mesh(new THREE.CylinderGeometry(1.25, 0.85, 1, 64, 1, true),
+    new THREE.MeshBasicMaterial({ color: kol, map: tx, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+  stozek.position.y = 0.5;
+  const cv2 = document.createElement('canvas'); cv2.width = cv2.height = 128;
+  const c2 = cv2.getContext('2d'), rg = c2.createRadialGradient(64, 64, 0, 64, 64, 64);
+  rg.addColorStop(0, 'rgba(255,255,255,0.6)'); rg.addColorStop(1, 'rgba(255,255,255,0)');
+  c2.fillStyle = rg; c2.fillRect(0, 0, 128, 128);
+  const poswiata = new THREE.Mesh(new THREE.PlaneGeometry(4, 4), new THREE.MeshBasicMaterial({ color: kol, map: new THREE.CanvasTexture(cv2), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  poswiata.rotation.x = -Math.PI / 2; poswiata.position.y = -0.115;
+  g.add(podstawa, pierscien, soczewka, stozek, poswiata);
+  g.userData = { pierscien, stozek, soczewka };
+  g.visible = false;
+  scene.add(g);
+  holo.projektor = g;
+}
+
+function aktualizujHologram(dt) {
+  SECTION_UNI.uCzas.value += dt;
+  if (!holo.wl) return;
+  if (++holo.licznik % 30 === 0) stosujHoloDoCzesci();          // nowe części (kopie, belki, pliki) też jako hologram
+  const P = holo.projektor;
+  if (!P || !P.visible || !cadRoot) return;
+  if (holo.licznik % 10 === 0 || !P.userData.ramka) {           // położenie: pod widocznymi częściami
+    const box = new THREE.Box3();
+    for (const m of visibleParts()) box.union(new THREE.Box3().setFromObject(m));
+    if (!box.isEmpty()) P.userData.ramka = box;
+  }
+  const b = P.userData.ramka;
+  if (!b) return;
+  const sz = b.getSize(new THREE.Vector3()), c = b.getCenter(new THREE.Vector3());
+  const r = clamp(Math.max(sz.x, sz.z) * 0.55, 0.06, 3);
+  const wys = Math.max(0.02, sz.y);
+  P.position.set(c.x, b.min.y - Math.max(0.02, r * 0.15), c.z);
+  P.scale.set(r, r, r);
+  P.userData.stozek.scale.set(1, (wys + Math.max(0.02, r * 0.15)) / r, 1);
+  P.userData.stozek.position.y = P.userData.stozek.scale.y / 2;
+  P.userData.pierscien.rotation.z += dt * 0.6;
+  P.userData.stozek.material.opacity = 0.85 + 0.15 * Math.sin(SECTION_UNI.uCzas.value * 7.0);
+}
 // ============================================================================
 // TŁO 360° (VR i ekran; w AR zawsze pokój z kamer)
 // ============================================================================
@@ -4307,6 +4425,7 @@ async function przelaczSzkicownik(wlacz) {
   try {
     if (wlacz) {
       zamknijOkno();
+      if (holo.wl) ustawHologram(false);
       if (rozstrzel.f) { ustawRozstrzelenie(0); say('Model złożony z powrotem (Szkicownik pracuje na złożonym modelu)'); }
       if (!szkicownik) {
         say('Wczytywanie Szkicownika…');
@@ -4337,7 +4456,7 @@ function exposeDebug() {                      // do testów automatycznych i dia
     get recentList() { return recentList; }, get szkicownik() { return szkicownik; }, przelaczSzkicownik,
     get pliki() { return pliki; }, zapiszStep, loadFiles, copyParts, hideObjects, selectObject, grupujZaznaczone, rozgrupujZaznaczone,
     get grupyCzesci() { return grupyCzesci; }, get selectedMeshes() { return selectedMeshes; },
-    okno, OKNO, otworzOkno, odswiezOkno, tlo, rozstrzel, ustawRozstrzelenie, get belkaPodglad() { return belkaPodglad; }, ustawTlo, ustawBezPrzekroju, get blysk() { return blysk; }, browser,
+    okno, OKNO, otworzOkno, odswiezOkno, holo, ustawHologram, tlo, rozstrzel, ustawRozstrzelenie, get belkaPodglad() { return belkaPodglad; }, ustawTlo, ustawBezPrzekroju, get blysk() { return blysk; }, browser,
     scene, modelSize, pivot, S, pal, PAL, controllers, renderer, THREE, section, cadBox, settings, drive, browser, voice,
     pick(o, d) { raycaster.set(o, d.clone().normalize()); return pickRay(); },
     requestScreenshot, shotStore, modelStore, undo, paletteAction, layoutPalette, refreshPaletteTexture, editKey, openNoteEditor, closeNoteEditor, createNote,
@@ -4362,6 +4481,7 @@ function tick() {
   }
   if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toast.sprite.visible = false; }
   aktualizujBlysk(dt);
+  aktualizujHologram(dt);
   updateHighlights();
   updateSection();
   updateMeasureLabels();

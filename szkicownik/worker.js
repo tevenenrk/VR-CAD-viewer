@@ -136,6 +136,19 @@ const KOMENDY = {
     return { wynik: [g.wynik, d.wynik], transfer: [...g.transfer, ...d.transfer] };
   },
 
+  // cięcie bryły a kwadratowymi płaszczyznami → kawałki (id po kolei z listy ids)
+  tnijPlaszczyznami({ ids, a, plaszczyzny }) {
+    const A = G.przeksztalc(lokalna(a.id), a);
+    const kawalki = G.tnijPlaszczyznami(A, plaszczyzny);
+    const wynik = [], transfer = [];
+    kawalki.forEach((k, i) => {
+      const r = wynikWysrodkowany(ids[i], k.ksztalt);
+      wynik.push({ ...r.wynik, znaki: k.znaki });
+      transfer.push(...r.transfer);
+    });
+    return { wynik, transfer };
+  },
+
   // powierzchnia a → bryła o grubości
   pogrub({ idWyniku, a, grubosc }) {
     return wynikWysrodkowany(idWyniku, G.pogrub(G.przeksztalc(lokalna(a.id), a), grubosc));
